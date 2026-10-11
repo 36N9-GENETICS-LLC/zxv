@@ -1,0 +1,57 @@
+# Copyright (c) 2024-2026 Michael Laurence Curzi and 36N9 Genetics, LLC
+# SPDX-License-Identifier: Apache-2.0
+#
+# SDKs: libzxv (the one C ABI) and every language SDK that wraps it.
+# Each language job builds libzxv itself and runs that SDK's tests against
+# sdk/conformance/vectors.json and the generated fixtures.
+name: SDKs
+
+on:
+  push:
+    paths: ['sdk/**', 'kernel/src/**', 'kernel/third_party/**', '.github/workflows/sdk.yml']
+  pull_request:
+    paths: ['sdk/**', 'kernel/src/**', 'kernel/third_party/**', '.github/workflows/sdk.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  libzxv:
+    name: libzxv ${{ matrix.os }} ${{ matrix.cc }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-24.04, cc: gcc }
+          - { os: ubuntu-24.04, cc: clang }
+          - { os: ubuntu-24.04-arm, cc: gcc }
+          - { os: macos-14, cc: clang }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v5
+      - name: Build and run the C conformance tests
+        run: make -C sdk/libzxv CC=${{ matrix.cc }} test
+      - name: vectors.json is up to date
+        run: |
+          make -C sdk/libzxv CC=${{ matrix.cc }} vectors
+          git diff --exit-code sdk/conformance/vectors.json
+      - name: Minimal build (no PQC, no engine)
+        run: |
+          make -C sdk/libzxv clean
+          make -C sdk/libzxv CC=${{ matrix.cc }} ZXV_NO_PQC=1 ZXV_NO_TENSOR=1
+      - name: Stage dist
+        run: |
+          make -C sdk/libzxv clean
+          make -C sdk/libzxv CC=${{ matrix.cc }} dist
+      - uses: actions/upload-artifact@v5
+        with:
+          name: libzxv-${{ matrix.os }}-${{ matrix.cc }}
+          path: sdk/libzxv/build/dist
+
+  libzxv-sanitize:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - name: ASan + UBSan
+        run: make -C sdk/libzxv CC=gcc SANITIZE=1 test

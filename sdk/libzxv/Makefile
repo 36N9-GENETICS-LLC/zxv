@@ -31,9 +31,11 @@ UNAME_S := $(shell uname -s)
 ifeq ($(UNAME_S),Darwin)
   LIB    := $(OUT)/libzxv.dylib
   SOFLAG := -dynamiclib -install_name @rpath/libzxv.dylib
+  RPATH  := -Wl,-rpath,@loader_path
 else
   LIB    := $(OUT)/libzxv.so
   SOFLAG := -shared -Wl,-soname,libzxv.so -Wl,-z,defs -Wl,-z,now -Wl,-z,relro
+  RPATH  := -Wl,-rpath,'$$ORIGIN'
 endif
 STATIC := $(OUT)/libzxv.a
 
@@ -126,11 +128,11 @@ $(STATIC): $(OBJ) $(KOBJ)
 
 TESTCC := $(CC) -std=c11 -O1 -g -Wall -Wextra -Werror -Iinclude $(SAN)
 $(OUT)/test_zxv_api: test/test_zxv_api.c include/zxv_api.h $(LIB)
-	$(TESTCC) $< -L$(OUT) -lzxv -Wl,-rpath,'$$ORIGIN' -lpthread -o $@
+	$(TESTCC) $< -L$(OUT) -lzxv $(RPATH) -lpthread -o $@
 $(OUT)/test_zxv_abi11: test/test_zxv_abi11.c include/zxv_api.h $(LIB)
-	$(TESTCC) $< -L$(OUT) -lzxv -Wl,-rpath,'$$ORIGIN' -lpthread -o $@
+	$(TESTCC) $< -L$(OUT) -lzxv $(RPATH) -lpthread -o $@
 $(OUT)/gen_vectors: tools/gen_vectors.c include/zxv_api.h $(LIB)
-	$(TESTCC) $< -L$(OUT) -lzxv -Wl,-rpath,'$$ORIGIN' -lpthread -o $@
+	$(TESTCC) $< -L$(OUT) -lzxv $(RPATH) -lpthread -o $@
 $(OUT)/mkfixture: tools/mkfixture.c
 	$(CC) -std=c11 -O1 -I$(K)/src/tensor -o $@ $<
 
