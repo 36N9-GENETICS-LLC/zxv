@@ -12,7 +12,10 @@ no floats.
 
 | Kit | Folder | What it is | Status | Tests |
 |---|---|---|---|---|
-| Z-Wasm | [`z-wasm`](z-wasm/) | Plugin sandbox. A no-float load-time validator for WebAssembly plugins, fuel metering charged to an `rmag` budget, a wasm3 host with capability-gated host functions, and the S0 proposal queue (Tri-Isolate starter). | kit API 0.1 (preview) | 1140 validator checks, 126 host checks, mutation fuzzing under ASan + UBSan, a V8 cross-check |
+| Z-Wasm | [`z-wasm`](z-wasm/) | Plugin sandbox. A no-float load-time validator for WebAssembly plugins, fuel metering charged to an `rmag` budget, a wasm3 host with capability-gated host functions, call checks on exports, and the S0 proposal queue (Tri-Isolate starter). | kit API 0.2 (preview) | 1140 validator checks, 149 host checks, mutation fuzzing under ASan + UBSan, a V8 cross-check |
+| z-contract | [`z-contract`](z-contract/) | Contracts for plugin boundaries. An IDL with exact-rational bounds, a parser with precise error positions, a checker, a Z-Wasm binding that stops a violating plugin like a trap, and a SHA3-256 hash-chained evidence log (ready to feed the ABI 1.3 quarantine log). | kit API 0.1 (preview) | 655 checks, parser fuzzing under ASan + UBSan |
+| z-ffi | [`z-ffi`](z-ffi/) | A typed boundary for C libraries. A spec generates wrappers that need a capability, check integer ranges, take float arguments only when exact and return float results only as exact rationals; signatures are proved at compile time. A wrapper generator, not a sandbox. | kit API 0.1 (preview) | 369 checks over libc and libm, compile-time signature checks, spec fuzzing under ASan + UBSan |
+| adapter-matrix | [`adapter-matrix`](adapter-matrix/) | Inbound data adapters: JSON (HTTP bodies), MQTT payloads and FIX tag=value. Exact decimals, a label on every record (accepted-unverified or refused with reasons), z-contract validation with evidence, host attestation behind `ZXV_CAP_ATTEST`. Labels data; cannot make a source accurate. | kit API 0.1 (preview) | 684 checks, adapter fuzzing under ASan + UBSan |
 
 ## Rules every kit follows
 

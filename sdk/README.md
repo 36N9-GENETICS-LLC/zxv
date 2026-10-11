@@ -32,9 +32,14 @@ every language.
 ## Kits
 
 Kits are building blocks on top of the same C ABI; see
-[`kits/`](kits/). The first is [Z-Wasm](kits/z-wasm/), a sandbox for
-WebAssembly plugins: a no-float validator, fuel charged to an `rmag`
-budget, and a proposal queue the host must approve.
+[`kits/`](kits/).
+
+| Kit | What it is |
+|---|---|
+| [Z-Wasm](kits/z-wasm/) | A sandbox for WebAssembly plugins: a no-float validator, fuel charged to an `rmag` budget, and a proposal queue the host must approve. |
+| [z-contract](kits/z-contract/) | Typed contracts with exact-rational bounds for plugin exports; a violation stops the plugin like a trap and is recorded in a SHA3-256 hash-chained evidence log. |
+| [z-ffi](kits/z-ffi/) | Typed, capability-gated wrappers for calling C libraries, generated from a spec; float results only by exact conversion. Not a sandbox. |
+| [adapter-matrix](kits/adapter-matrix/) | JSON, MQTT and FIX adapters that parse numbers exactly and label every inbound record (accepted-unverified or refused, with reasons). |
 
 ## What every SDK gives you
 
