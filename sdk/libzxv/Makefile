@@ -32,6 +32,8 @@ ifeq ($(UNAME_S),Darwin)
   LIB    := $(OUT)/libzxv.dylib
   SOFLAG := -dynamiclib -install_name @rpath/libzxv.dylib
   RPATH  := -Wl,-rpath,@loader_path
+  # _POSIX_C_SOURCE in the sources would otherwise hide arc4random_buf.
+  OSDEFS := -D_DARWIN_C_SOURCE
 else
   LIB    := $(OUT)/libzxv.so
   SOFLAG := -shared -Wl,-soname,libzxv.so -Wl,-z,defs -Wl,-z,now -Wl,-z,relro
@@ -49,9 +51,9 @@ endif
 # TEST_HOST selects the hosted representation of the kernel number types
 # for the triple ledger only (see the exactness note in src/zxv_api.c).
 CFLAGS_COMMON := -std=c11 -O2 -g -fPIC -fvisibility=hidden -Wall -Wextra -Werror \
-                 -fstack-protector-strong -D_FORTIFY_SOURCE=2 -DTEST_HOST $(SAN)
+                 -fstack-protector-strong -D_FORTIFY_SOURCE=2 -DTEST_HOST $(OSDEFS) $(SAN)
 # Kernel files are third-party to this build: no -Werror on them.
-KFLAGS := -std=c11 -O2 -g -fPIC -fvisibility=hidden -DTEST_HOST $(SAN) -w
+KFLAGS := -std=c11 -O2 -g -fPIC -fvisibility=hidden -DTEST_HOST $(OSDEFS) $(SAN) -w
 
 INC := -Iinclude -Isrc -I$(K)/src/iso20022 -I$(K)/src/finance -I$(K)/src/vino_stores \
        -I$(K)/src/vino -I$(K)/src/surplus -I$(K)/src/edp_risk -I$(K)/src/onepolicy \
