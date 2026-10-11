@@ -11,7 +11,9 @@ other C++ game engines use this SDK too (see [Game engines](#game-engines-unreal
 
 ## Install
 
-You need a C++20 compiler (tested with gcc 13 and clang 18), CMake 3.20 or later and a built
+You need a C++20 compiler whose standard library has `std::jthread` and `<stop_token>`
+(gcc 13+, clang 18+ with libstdc++ or libc++, or Apple clang from Xcode 16.3+; tested with
+gcc 13, clang 18 and Xcode 16 on macOS 15), CMake 3.20 or later and a built
 `libzxv` (`make -C sdk/libzxv`).
 
 ```sh

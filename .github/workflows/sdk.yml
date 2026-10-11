@@ -261,7 +261,7 @@ jobs:
           - { os: ubuntu-24.04, cxx: g++, sanitize: 'OFF' }
           - { os: ubuntu-24.04, cxx: clang++, sanitize: 'OFF' }
           - { os: ubuntu-24.04, cxx: g++, sanitize: 'ON' }
-          - { os: macos-14, cxx: clang++, sanitize: 'OFF' }
+          - { os: macos-15, cxx: clang++, sanitize: 'OFF' } # Xcode 16.3+ libc++ has std::jthread
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v5
