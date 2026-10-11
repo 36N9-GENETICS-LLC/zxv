@@ -191,8 +191,10 @@ module Zxv
           bundled = File.expand_path("native", __dir__)
           candidates.concat(Dir[File.join(bundled, "{libzxv.so,libzxv.dylib,zxv.dll}")])
           # Inside the ZXV repository: sdk/libzxv/build next to sdk/ruby.
-          in_repo = File.expand_path("../../../libzxv/build/libzxv.so", __dir__)
-          candidates << in_repo if File.exist?(in_repo)
+          %w[libzxv.so libzxv.dylib zxv.dll].each do |name|
+            in_repo = File.expand_path("../../../libzxv/build/#{name}", __dir__)
+            candidates << in_repo if File.exist?(in_repo)
+          end
           candidates << "zxv"
           errors = []
           candidates.each do |c|

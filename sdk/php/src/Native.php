@@ -61,9 +61,11 @@ final class Native
                 $candidates[] = $p;
             }
         }
-        $repo = dirname(__DIR__, 2) . "/libzxv/build/libzxv.so";
-        if (is_file($repo)) {
-            $candidates[] = $repo;
+        foreach (["libzxv.so", "libzxv.dylib", "zxv.dll"] as $n) {
+            $repo = dirname(__DIR__, 2) . "/libzxv/build/" . $n;
+            if (is_file($repo)) {
+                $candidates[] = $repo;
+            }
         }
         $candidates[] = PHP_OS_FAMILY === "Darwin" ? "libzxv.dylib" : (PHP_OS_FAMILY === "Windows" ? "zxv.dll" : "libzxv.so");
         $header = (string) file_get_contents(__DIR__ . "/zxv.h");

@@ -45,10 +45,10 @@ export class ZxvError extends Error {
 
 /**
  * Load libzxv and bind the calls the channel flow needs.
- * @param {string} [libPath] defaults to $ZXV_LIBRARY_PATH, then sdk/libzxv/build/libzxv.so
+ * @param {string} [libPath] defaults to $ZXV_LIBRARY_PATH, then sdk/libzxv/build/libzxv.{so,dylib}
  */
 export function loadZxv(libPath) {
-  const p = libPath ?? process.env.ZXV_LIBRARY_PATH ?? path.resolve(HERE, '../../libzxv/build/libzxv.so');
+  const p = libPath ?? process.env.ZXV_LIBRARY_PATH ?? path.resolve(HERE, '../../libzxv/build', process.platform === 'darwin' ? 'libzxv.dylib' : process.platform === 'win32' ? 'zxv.dll' : 'libzxv.so');
   const lib = koffi.load(p);
   koffi.opaque('zxv_ctx');
   koffi.opaque('zxv_cap');
