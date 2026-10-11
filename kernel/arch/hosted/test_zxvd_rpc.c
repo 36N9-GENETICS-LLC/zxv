@@ -13,12 +13,15 @@
 #include <sys/select.h>
 #include <sys/stat.h>
 #include <sys/un.h>
+#include <fcntl.h>
 #include <unistd.h>
 #include <errno.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <wchar.h>
+#include <stdint.h>
 
 #include "zxvd_rpc.h"
 #include "zxv_api.h"
@@ -77,6 +80,11 @@ static void h_shutdown(void)
 {
     stopped++;
 }
+static void h_ask_silent(const char *q, zxvd_buf_t *o)
+{
+    (void) q;
+    (void) o; /* writes nothing: the answer must still be "" */
+}
 static void h_empty(zxvd_buf_t *o)
 {
     (void) o; /* writes nothing: must become -32603 "no result" */
@@ -86,6 +94,7 @@ static const zxvd_host_ops_t OPS = {h_state,      h_ask, h_model,  h_notes,   h_
                                     h_net,        h_update, h_shutdown, "9.8.7"};
 static const zxvd_host_ops_t NONE = {0};
 static const zxvd_host_ops_t EMPTY = {h_empty, 0, 0, 0, 0, 0, 0, 0, 0};
+static const zxvd_host_ops_t SILENT = {0, h_ask_silent, 0, 0, 0, 0, 0, 0, 0};
 
 /* ---------------- helpers ---------------- */
 
@@ -96,6 +105,11 @@ static const char *rpc(const char *line)
 {
     bool r = zxvd_rpc_handle_line(line, strlen(line), &OUT);
     if (!r) return "<none>";
+    checks++;
+    if (OUT.p && OUT.len != strlen(OUT.p)) { /* no stray NUL inside a reply */
+        fails++;
+        printf("  FAIL reply length %zu != text length %zu: %s\n", OUT.len, strlen(OUT.p), OUT.p);
+    }
     return OUT.p ? OUT.p : "";
 }
 
@@ -138,6 +152,37 @@ static void test_buf(void)
     zxvd_buf_raw(&e, "", 0);
     CHECK(e.len == 0 && e.p && e.p[0] == 0, "empty append terminates");
     free(e.p);
+    zxvd_buf_t ep = {0};
+    zxvd_buf_printf(&ep, "%s", "");
+    CHECK(ep.len == 0 && ep.p && ep.p[0] == 0 && !ep.oom, "empty printf terminates");
+    free(ep.p);
+    /* one append far larger than the first allocation */
+    static char big[100000];
+    memset(big, 'b', sizeof big);
+    zxvd_buf_t g = {0};
+    zxvd_buf_raw(&g, big, sizeof big);
+    CHECK(!g.oom && g.len == sizeof big && g.p[g.len] == 0 && !memcmp(g.p, big, sizeof big),
+          "one large append");
+    zxvd_buf_printf(&g, "%s", "tail");
+    CHECK(!g.oom && g.len == sizeof big + 4 && !strcmp(g.p + sizeof big, "tail"), "then printf");
+    free(g.p);
+    /* an allocation that cannot succeed sets oom and leaves the buffer alone */
+    zxvd_buf_t h = {0};
+    zxvd_buf_raw(&h, "x", SIZE_MAX / 4);
+    CHECK(h.oom && h.len == 0 && !h.p, "an impossible allocation sets oom");
+    /* once oom, every write is dropped (and never touches the NULL pointer) */
+    zxvd_buf_raw(&h, "abc", 3);
+    zxvd_buf_printf(&h, "%d", 12345);
+    zxvd_buf_json_str(&h, "q");
+    CHECK(h.oom && h.len == 0 && !h.p, "writes after oom are dropped");
+    /* a format the C library cannot encode (vsnprintf < 0) writes nothing */
+    if (snprintf(NULL, 0, "%lc", (wint_t) 0x4e2d) < 0) {
+        zxvd_buf_t w = {0};
+        zxvd_buf_raw(&w, "k", 1);
+        zxvd_buf_printf(&w, "%lc", (wint_t) 0x4e2d);
+        CHECK(!w.oom && w.len == 1 && !strcmp(w.p, "k"), "an encoding error writes nothing");
+        free(w.p);
+    }
 }
 
 /* ---------------- protocol ---------------- */
@@ -147,6 +192,7 @@ static void test_protocol(void)
     zxvd_rpc_set_ops(&OPS);
     EXPECT("{not json", ERR("null", "-32700", "parse error"));
     EXPECT("", ERR("null", "-32700", "parse error"));
+    EXPECT("  \t ", ERR("null", "-32700", "parse error"));
     EXPECT("[{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"zxvd.version\"}]",
            ERR("null", "-32600", "batches are not supported"));
     EXPECT("\"hello\"", ERR("null", "-32600", "not a request object"));
@@ -199,6 +245,10 @@ static void test_protocol(void)
     EXPECT("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"swarm.state\",\"params\":{\"a\":"
            "[[[[[[[[[[[[[[1]]]]]]]]]]]]]]}}",
            OK("1", "{\"tick\":7}"));
+    /* 17 levels (object, params, 15 arrays): one too deep */
+    EXPECT("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"swarm.state\",\"params\":{\"a\":"
+           "[[[[[[[[[[[[[[[1]]]]]]]]]]]]]]]}}",
+           ERR("null", "-32700", "parse error"));
     /* a line over the limit */
     char *huge = malloc(ZXVD_RPC_MAX_LINE + 2);
     memset(huge, ' ', ZXVD_RPC_MAX_LINE + 1);
@@ -250,6 +300,14 @@ static void test_host_methods(void)
            ERR("8", "-32602", "command must be off, lan, online, peer, share, want or sell"));
     CHECK(!strcmp(last_net, "everything"), "the command reaches the host");
     EXPECT(REQ("8", "net.command", ""), ERR("8", "-32602", "missing string parameter \\\"command\\\""));
+    /* 255-byte commands reach the host, 256 do not */
+    k = snprintf(req, sizeof req, "{\"jsonrpc\":\"2.0\",\"id\":8,\"method\":\"net.command\",\"params\":{\"command\":\"");
+    memset(req + k, 'c', 255);
+    strcpy(req + k + 255, "\"}}");
+    CHECK(has(req, "command must be off") && strlen(last_net) == 255, "a 255-byte command reaches the host");
+    memset(req + k, 'c', 256);
+    strcpy(req + k + 256, "\"}}");
+    CHECK(has(req, "\\\"command\\\" must be a string of at most 255 bytes"), "a 256-byte command is refused");
     updated = 0;
     EXPECT(REQ("9", "update.check", ""), OK("9", "{\"status\":\"up to date\"}"));
     CHECK(updated == 1, "update.check runs one check");
@@ -290,6 +348,8 @@ static void test_host_methods(void)
     EXPECT(REQ("1", "zxvd.version", ""), want);
     zxvd_rpc_set_ops(NULL);
     EXPECT(REQ("1", "swarm.state", ""), ERR("1", "-32601", "not available"));
+    zxvd_rpc_set_ops(&SILENT);
+    EXPECT(REQ("1", "swarm.ask", ",\"params\":{\"prompt\":\"x\"}"), OK("1", "{\"answer\":\"\"}"));
     zxvd_rpc_set_ops(&EMPTY);
     EXPECT(REQ("1", "swarm.state", ""), ERR("1", "-32603", "no result"));
     zxvd_rpc_set_ops(&OPS);
@@ -358,6 +418,18 @@ static void test_books(void)
     nm[64] = 0;
     snprintf(req, sizeof req, REQ("3", "ledger.open_account", ",\"params\":{\"name\":\"%s\",\"currency\":\"USD\"}"), nm);
     EXPECT(req, ERR("3", "-32602", "\\\"name\\\" must be a string of at most 63 bytes"));
+    /* refused names, currencies and kinds open nothing (the account list is checked below) */
+    EXPECT(REQ("3", "ledger.open_account", ",\"params\":{\"name\":\"a\\u0000b\",\"currency\":\"USD\"}"),
+           ERR("3", "-32602", "\\\"name\\\" must not contain NUL"));
+    EXPECT(REQ("3", "ledger.open_account", ",\"params\":{\"name\":\"c\",\"currency\":\"0123456789ABCDEF\"}"),
+           ERR("3", "-32602", "\\\"currency\\\" must be a string of at most 15 bytes"));
+    EXPECT(REQ("3", "ledger.open_account",
+               ",\"params\":{\"name\":\"c\",\"currency\":\"USD\",\"kind\":\"0123456789ABCDEF\"}"),
+           ERR("3", "-32602", "\\\"kind\\\" must be a string of at most 15 bytes"));
+    /* reopening the books keeps them */
+    CHECK(zxvd_rpc_books_open() == 0, "opening again with accounts open");
+    EXPECT(REQ("3", "ledger.balance", ",\"params\":{\"account\":4}"),
+           OK("3", "{\"debit_minor\":\"0\",\"credit_minor\":\"0\",\"equity_minor\":\"0\"}"));
 
 #define POST(f, t, a, ref)                                                                         \
     REQ("4", "ledger.post",                                                                        \
@@ -396,6 +468,11 @@ static void test_books(void)
            ERR("4", "-32602", "missing string parameter \\\"reference\\\""));
     EXPECT(POST("1", "2", "1", "0123456789012345678901234567890123456789"),
            ERR("4", "-32602", "\\\"reference\\\" must be a string of at most 39 bytes"));
+    EXPECT(POST("1", "2", "1", "N\\u0000x"), ERR("4", "-32602", "\\\"reference\\\" must not contain NUL"));
+    EXPECT(REQ("4", "ledger.post",
+               ",\"params\":{\"from\":1,\"to\":2,\"amount_minor\":1,\"currency\":\"0123456789ABCDEF\","
+               "\"reference\":\"R10\"}"),
+           ERR("4", "-32602", "\\\"currency\\\" must be a string of at most 15 bytes"));
     EXPECT(POST("1", "2", "1", "R9"), OK("4", "{\"entry_id\":\"4\"}"));
 
     EXPECT(REQ("5", "ledger.balance", ",\"params\":{\"account\":1}"),
@@ -525,6 +602,37 @@ static void test_socket(void)
     longp[0] = '/';
     longp[sizeof longp - 1] = 0;
     CHECK(zxvd_rpc_open(longp, &OPS) == -1, "a path longer than sun_path is refused");
+    /* the limit is exact: sun_path holds the path and its NUL */
+    size_t sun = sizeof(((struct sockaddr_un *) 0)->sun_path);
+    char edge[300];
+    int el = snprintf(edge, sizeof edge, "%s/", tmpl);
+    memset(edge + el, 'e', sun - (size_t) el);
+    edge[sun] = 0;
+    CHECK(zxvd_rpc_open(edge, &OPS) == -1, "a path of exactly sun_path bytes is refused");
+    edge[sun - 1] = 0;
+    CHECK(zxvd_rpc_open(edge, &OPS) == 0, "one byte shorter is served");
+    zxvd_rpc_close();
+    CHECK(access(edge, F_OK) != 0, "and removed on close");
+    /* a bare file name is a socket in the current folder */
+    char cwd[1024];
+    CHECK(getcwd(cwd, sizeof cwd) != NULL && chdir(tmpl) == 0, "chdir");
+    CHECK(zxvd_rpc_open("rel.sock", &OPS) == 0, "a relative socket name is served");
+    struct stat rs;
+    CHECK(lstat("rel.sock", &rs) == 0 && S_ISSOCK(rs.st_mode), "in the current folder");
+    zxvd_rpc_close();
+    CHECK(chdir(cwd) == 0, "chdir back");
+    /* a folder others can write in is refused; so is one that cannot be made */
+    char gw[260], gws[300];
+    snprintf(gw, sizeof gw, "%s/gw", tmpl);
+    snprintf(gws, sizeof gws, "%s/zxvd.sock", gw);
+    CHECK(mkdir(gw, 0700) == 0 && chmod(gw, 0770) == 0, "group-writable folder");
+    CHECK(zxvd_rpc_open(gws, &OPS) == -1, "a group-writable folder is refused");
+    CHECK(chmod(gw, 0702) == 0 && zxvd_rpc_open(gws, &OPS) == -1, "an other-writable folder is refused");
+    CHECK(chmod(gw, 0700) == 0 && zxvd_rpc_open(gws, &OPS) == 0, "the same folder at 0700 is served");
+    zxvd_rpc_close();
+    rmdir(gw);
+    snprintf(gws, sizeof gws, "%s/no/such/zxvd.sock", tmpl);
+    CHECK(zxvd_rpc_open(gws, &OPS) == -1, "a folder whose parent is missing is refused");
     CHECK(mkdir(DIR_, 0700) == 0, "mkdir");
     FILE *f = fopen(SOCK, "w");
     fputs("keep", f);
@@ -557,6 +665,25 @@ static void test_socket(void)
     CHECK(stat(SOCK, &st) == 0 && S_ISSOCK(st.st_mode) && (st.st_mode & 0777) == 0600,
           "socket mode 0600 (%o)", (unsigned) (st.st_mode & 0777));
     CHECK(zxvd_rpc_open(SOCK, &OPS) == -1, "a live socket is never taken over");
+
+    /* zxvd_rpc_fds returns the highest descriptor even when a later slot
+     * holds a lower one */
+    int dummy[6];
+    for (int i = 0; i < 6; i++) dummy[i] = open("/dev/null", O_RDONLY);
+    int ca = connect_to(SOCK);
+    pump(3);
+    for (int i = 0; i < 6; i++) close(dummy[i]);
+    int cb = connect_to(SOCK);
+    pump(3);
+    fd_set fs;
+    FD_ZERO(&fs);
+    int mx = zxvd_rpc_fds(&fs), hi = -1;
+    for (int fd = 0; fd < FD_SETSIZE; fd++)
+        if (FD_ISSET(fd, &fs)) hi = fd;
+    CHECK(ca >= 0 && cb >= 0 && mx == hi, "fds: highest %d, returned %d", hi, mx);
+    close(ca);
+    close(cb);
+    pump(3);
 
     /* serve: two requests in one write, a split line, CRLF, an empty line */
     int c1 = connect_to(SOCK);
@@ -601,6 +728,19 @@ static void test_socket(void)
     send(cs[1], junk, sizeof junk, 0);
     CHECK(closed_by_server(cs[1]), "over-long line: client closed");
     close(cs[1]);
+    /* the line limit is exact: ZXVD_RPC_MAX_LINE bytes and LF are served,
+     * one byte more closes the client */
+    static char edge_line[ZXVD_RPC_MAX_LINE + 3];
+    memset(edge_line, ' ', sizeof edge_line);
+    memcpy(edge_line, REQ("13", "swarm.state", ""), sizeof(REQ("13", "swarm.state", "")) - 1);
+    edge_line[ZXVD_RPC_MAX_LINE] = '\n';
+    send(cs[3], edge_line, ZXVD_RPC_MAX_LINE + 1, 0);
+    CHECK(read_line(cs[3], line, sizeof line) && !strcmp(line, OK("13", "{\"tick\":7}")),
+          "a line of exactly the limit is served");
+    edge_line[ZXVD_RPC_MAX_LINE] = ' ';
+    edge_line[ZXVD_RPC_MAX_LINE + 1] = '\n';
+    send(cs[4], edge_line, ZXVD_RPC_MAX_LINE + 2, 0);
+    CHECK(closed_by_server(cs[4]), "one byte over the limit: client closed");
     /* a client that closes is dropped, freeing its slot */
     close(cs[2]);
     pump(3);
@@ -619,10 +759,21 @@ static void test_socket(void)
     CHECK(read_line(again, line, sizeof line), "exactly the idle limit: still served");
     NOW += ZXVD_RPC_IDLE_MS + 1;
     CHECK(closed_by_server(c1), "an idle client is dropped");
+    int cz = connect_to(SOCK); /* takes slot 0 again */
+    pump(3);
+    send(cz, REQ("14", "swarm.state", "") "\n", sizeof(REQ("14", "swarm.state", "")), 0);
+    CHECK(read_line(cz, line, sizeof line) && !strcmp(line, OK("14", "{\"tick\":7}")), "slot 0 reused");
 
     zxvd_rpc_close();
+    CHECK(closed_by_server(cz) && closed_by_server(again), "close drops every client");
+    close(cz);
     CHECK(stat(SOCK, &st) != 0, "close removes the socket file");
     CHECK(zxvd_rpc_fds(&(fd_set){0}) == -1, "and nothing is listening");
+    f = fopen(SOCK, "w");
+    fclose(f);
+    zxvd_rpc_close(); /* closing twice touches nothing */
+    CHECK(stat(SOCK, &st) == 0 && S_ISREG(st.st_mode), "a second close leaves the path alone");
+    unlink(SOCK);
     EXPECT(REQ("1", "ledger.check", ""), ERR("1", "-32603", "the books are not open"));
     for (int i = 0; i < ZXVD_RPC_MAX_CLIENTS; i++) close(cs[i]);
     close(again);

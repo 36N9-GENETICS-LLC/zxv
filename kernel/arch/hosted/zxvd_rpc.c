@@ -605,7 +605,7 @@ void zxvd_rpc_close(void)
 
 typedef struct {
     int fd; /* -1 when free */
-    char in[ZXVD_RPC_MAX_LINE + 1];
+    char in[ZXVD_RPC_MAX_LINE + 2]; /* a full-length line, its LF, and a NUL */
     size_t n;
     uint64_t last_ms;
 } client_t;
@@ -627,7 +627,8 @@ static bool same_user(int fd)
 #    endif
 }
 
-/* the parent directory exists (created 0700 if not) and is ours */
+/* the parent directory exists (created 0700 if not), is ours, and nobody
+ * else can write in it (else they could swap the socket file under us) */
 static int ensure_dir(const char *path)
 {
     char dir[sizeof PATH_];
@@ -640,7 +641,8 @@ static int ensure_dir(const char *path)
         if (mkdir(dir, S_IRWXU) != 0) return -1;
         return 0;
     }
-    if (!S_ISDIR(st.st_mode) || st.st_uid != geteuid()) return -1;
+    if (!S_ISDIR(st.st_mode) || st.st_uid != geteuid() || (st.st_mode & (S_IWGRP | S_IWOTH)))
+        return -1;
     return 0;
 }
 
@@ -652,7 +654,8 @@ int zxvd_rpc_open(const char *path, const zxvd_host_ops_t *ops)
         return -1;
     }
     if (ensure_dir(path) != 0) {
-        fprintf(stderr, "zxvd: the folder of %s is not usable (missing, or not ours)\n", path);
+        fprintf(stderr, "zxvd: the folder of %s is not usable (missing, not ours, or writable by others)\n",
+                path);
         return -1;
     }
     struct stat st;
@@ -758,7 +761,6 @@ static void serve(client_t *c, uint64_t now_ms)
         }
         memmove(c->in, nl + 1, c->n - ll - 1);
         c->n -= ll + 1;
-        if (c->fd < 0) break;
     }
     free(out.p);
     if (c->n >= sizeof c->in - 1) drop(c); /* T3: line too long */

@@ -30,7 +30,8 @@ port with its token, printed on the `ZXV-URL:` line.
 ## The socket
 
 - JSON-RPC 2.0, one request per line, one response per line.
-- A UNIX socket, mode 0600, in a folder zxvd creates 0700. Only processes of
+- A UNIX socket, mode 0600, in a folder zxvd creates 0700 (an existing folder
+  must belong to the same user and not be writable by group or others). Only processes of
   the same user are served (checked with `SO_PEERCRED` / `getpeereid`).
 - A regular file at the path is never replaced; a live zxvd on the path is
   never displaced.
