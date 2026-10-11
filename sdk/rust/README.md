@@ -4,7 +4,7 @@
 # ZXV Rust SDK
 
 Safe Rust bindings to `libzxv`, the stable C ABI of the ZXV platform
-(`sdk/libzxv/include/zxv_api.h`, ABI 1.2). Two crates:
+(`sdk/libzxv/include/zxv_api.h`, ABI 1.3). Two crates:
 
 | Crate | What it is |
 |---|---|
@@ -139,6 +139,38 @@ with and the library re-checks it on every call. The 1.0 forms
 `register_private_currency` and `new_message` still work but are
 `#[deprecated(since = "1.2.0")]`.
 
+## The hexagram tag (ABI 1.3)
+
+A `Hexagram` tags one unit of work with a four-valued base, the polarity
+of its evidence (entropic, neutral, forbidden, negentropic) and its phase
+(potential -> emerging -> manifest -> dissolving), packed into one byte
+0..63. Its action is proceed, wait, refuse, escalate or rollback. Every rule
+comes from libzxv and is tested against `vectors.json` key `hex`.
+Forbidden is absorbing, a phase moves one step at a time, and the base is
+**not** numbered like `Truth` (TRUE is base 3 but Truth 1): convert only
+with the explicit `to_truth()` / `Hexagram::from_truth(...)`. Combining BOTH with NEITHER follows
+the `Truth` tables (AND gives NEITHER, OR gives BOTH); those two results
+are pending an owner decision. A `QuarantineLog` (needs the ATTEST
+capability) records forbidden work in a SHA-256 hash chain; when it is
+full, append is refused with `ZXV_E_CAPACITY` and you must halt the
+context. See [ABI.md, Changes in 1.3](../docs/ABI.md#changes-in-13).
+
+```rust
+use zxv::{HexAction, HexBase, HexPhase, HexPolarity, Hexagram, QuarantineLog};
+
+let h = Hexagram::new(HexBase::True, HexPolarity::Negentropic, HexPhase::Potential);
+assert_eq!(h.action(), HexAction::Proceed);
+let h = h.advance();                               // Emerging
+assert!(h.step(HexPhase::Dissolving).is_err());    // Error::Refused (ZXV_E_STATE)
+let bad = h.forbid();                              // Rollback, forever
+let log = QuarantineLog::new(&cap, 1024)?;         // needs Caps::ATTEST
+let seq = log.append(bad, 7, 42, &digest32)?;
+log.verify()?;
+```
+
+`Hexagram` is `Copy` with `&`, `|` and `!`; there is no `From<Hexagram>`
+for `Truth` or `bool` (a compile-fail doc test checks it).
+
 ## API overview
 
 | Area | Types | Key calls |
@@ -178,7 +210,10 @@ cargo test            # conformance vectors + behaviour + doc tests
 cargo doc --no-deps
 ```
 
-`tests/conformance.rs` checks every key of `sdk/conformance/vectors.json`
+`tests/hexagram.rs` checks the `hex` key (ABI 1.3): every tag, the logic, step and
+set tables, the Truth mapping and the quarantine chain.
+
+`tests/conformance.rs` checks every other key of `sdk/conformance/vectors.json`
 (status classes, rationals, IEEE-754 boundary, Q16, lpres tables, UBH-168
 frames byte for byte in pure Rust and in C, hashes, Ed25519, ML-DSA-87 and
 ML-KEM-1024 digests, swarm allotments, greedy and seeded generation, EVM

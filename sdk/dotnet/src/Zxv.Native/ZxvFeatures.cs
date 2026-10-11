@@ -98,4 +98,7 @@ public enum ZxvFeatures : uint
 
     /// <summary>EVM state-channel encoding (ABI 1.1).</summary>
     Evm = 0x0400_0000,
+
+    /// <summary>The 64-state hexagram tag and quarantine log (ABI 1.3).</summary>
+    Hex = 0x0800_0000,
 }

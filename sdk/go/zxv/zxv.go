@@ -76,6 +76,7 @@ const (
 	FeatTensor    Features = 0x01000000
 	FeatLoRA      Features = 0x02000000 // not built yet
 	FeatEVM       Features = 0x04000000
+	FeatHex       Features = 0x08000000 // ABI 1.3: Hexagram, QuarantineLog
 )
 
 // Has reports whether every bit of f is live.
@@ -94,12 +95,12 @@ var (
 )
 
 // checkVersion refuses a library whose major ABI differs or whose minor is
-// below 2.
+// below 3.
 func checkVersion() error {
 	versionOnce.Do(func() {
 		major, minor, _ := Version()
-		if major != C.ZXV_ABI_VERSION_MAJOR || minor < 2 {
-			versionErr = newError(StatusInternal, fmt.Sprintf("libzxv ABI %d.%d is not compatible with this SDK (needs 1.2+)", major, minor))
+		if major != C.ZXV_ABI_VERSION_MAJOR || minor < 3 {
+			versionErr = newError(StatusInternal, fmt.Sprintf("libzxv ABI %d.%d is not compatible with this SDK (needs 1.3+)", major, minor))
 		}
 	})
 	return versionErr

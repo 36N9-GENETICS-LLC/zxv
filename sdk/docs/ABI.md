@@ -9,13 +9,13 @@ explains the rules in that header with small examples. If you write a new
 binding, read this page and [SDK_DESIGN.md](SDK_DESIGN.md); if you only use
 an SDK, you can skip it.
 
-ABI version: **1.2.0**. Check it at load time with `zxv_version`.
+ABI version: **1.3.0**. Check it at load time with `zxv_version`.
 
 ## Building it
 
 ```sh
 make -C sdk/libzxv            # build/libzxv.so (or .dylib) and build/libzxv.a
-make -C sdk/libzxv test       # 1,233 C conformance checks + the portable Q16 sweep
+make -C sdk/libzxv test       # 3,478 C conformance checks + the portable Q16 sweep
 make -C sdk/libzxv SANITIZE=1 test   # the same under ASan + UBSan
 make -C sdk/libzxv fixtures   # sdk/conformance/fixtures: tiny test model
 make -C sdk/libzxv dist       # build/dist/{include,lib} for packaging
@@ -93,7 +93,7 @@ call on it has returned, and destroy children before parents:
 | `zxv_session` | its `zxv_model`, and any `zxv_rmag` bound to it |
 | `zxv_msg` made with `zxv_msg_create_cap` | that `zxv_cap` |
 | an attenuated `zxv_cap` | its parent cap |
-| `zxv_cap`, `zxv_rmag`, `zxv_phase`, `zxv_lpres`, `zxv_swarm`, `zxv_msg` | their `zxv_ctx` |
+| `zxv_cap`, `zxv_rmag`, `zxv_phase`, `zxv_lpres`, `zxv_swarm`, `zxv_msg`, `zxv_hexlog` | their `zxv_ctx` |
 
 A `zxv_model` holds no context and may outlive the cap that opened it.
 
@@ -149,12 +149,12 @@ zxv_cap_revoke(root);               /* reader is now dead too */
 | `AI_INFERENCE` | model open, generate |
 | `BUDGET` | rmag budgets |
 | `PHASE` | phase clock admit, defer, advance |
-| `ATTEST` | lpres attestations |
+| `ATTEST` | lpres attestations; the quarantine log (`zxv_hexlog_create`, `zxv_hexlog_append`, 1.3) |
 | `SWARM` | swarm token economy |
 | `EVM` | state-channel encoding |
 
-Pure functions (rationals, logic tables, hashes, wire framing) take no
-capability.
+Pure functions (rationals, logic tables, the hexagram tag, hashes, wire
+framing) take no capability.
 
 ABI 1.2 adds `_cap` forms for the 1.0 context calls that took none, and for
 the 1.1 handle creates. The old forms keep working unchanged (the .NET
@@ -199,7 +199,8 @@ SDK maps them to the same exception families.
 
 When the ledger finds a broken invariant it rolls back and **poisons** the
 context: every later call on it, or on any handle made from it (caps,
-messages, rmag, phase, lpres, swarm, and the netting, card and VSS stubs),
+messages, rmag, phase, lpres, swarm, quarantine logs, and the netting, card
+and VSS stubs),
 returns `ZXV_E_POISONED`, whatever the host does. The check comes before
 argument validation, so a bad argument still gets `POISONED`. Only the
 destroy functions, `zxv_ctx_is_poisoned` and `zxv_cap_revoke` (which can
@@ -245,6 +246,105 @@ offer an opt-in policy that aborts the process.
 - `zxv_session_position` after `zxv_generate` on a fresh session is
   `prompt + N - 1`. The last generated token is returned but not yet in
   the KV cache.
+
+## Changes in 1.3
+
+1.3 adds the kernel's 64-state paraconsistent hexagram tag
+(`kernel/src/lpres/lpres_hex.h`, the source of truth) and its quarantine
+log. Feature bit: `ZXV_FEAT_HEX` (`0x08000000`). Nothing in 1.2 changed.
+
+### The tag
+
+One byte, `tag = base << 4 | polarity << 2 | phase`, 0..63. Every function
+takes and returns fixed-width integers, and every tag, base, polarity or
+phase argument above its range is refused with `ZXV_E_ARG` (a tag above 63,
+a field above 3).
+
+| Field | Values |
+|---|---|
+| base (bits 5-4) | `ZXV_HEX_BASE_FALSE` 0, `NEITHER` 1, `BOTH` 2, `TRUE` 3 |
+| polarity (bits 3-2) | `ZXV_HEX_POL_ENTROPIC` 0, `NEUTRAL` 1, `FORBIDDEN` 2, `NEGENTROPIC` 3 |
+| phase (bits 1-0) | `ZXV_HEX_PHASE_POTENTIAL` 0, `EMERGING` 1, `DISSOLVING` 2, `MANIFEST` 3 |
+| action | `ZXV_HEX_ACT_PROCEED` 0, `WAIT` 1, `REFUSE` 2, `ESCALATE` 3, `ROLLBACK` 4 |
+
+**The base is not numbered like `ZXV_LP_*`.** The base is numbered by its
+line pattern (F 00, N 01, B 10, T 11); the four-valued logic numbers
+NEITHER 0, TRUE 1, FALSE 2, BOTH 3. Never cast one to the other; convert
+with `zxv_hex_from_lp` and `zxv_hex_to_lp`:
+
+| State | `ZXV_LP_*` | `ZXV_HEX_BASE_*` |
+|---|---|---|
+| NEITHER | 0 | 1 |
+| TRUE | 1 | 3 |
+| FALSE | 2 | 0 |
+| BOTH | 3 | 2 |
+
+`zxv_hex_from_lp` refuses a value outside 0..3 with `ZXV_E_ARG` (the
+kernel's own helper maps it to NEITHER). Every SDK exposes this only as an
+explicit conversion and tests the table against `vectors.json`.
+
+| Function | Does |
+|---|---|
+| `zxv_hex_pack`, `zxv_hex_unpack` | fields <-> tag (`unpack` out pointers may be NULL, so it doubles as a range check) |
+| `zxv_hex_action` | the kernel's 64-entry action table: FORBIDDEN -> ROLLBACK; TRUE -> PROCEED (WAIT if entropic); FALSE -> REFUSE; BOTH -> WAIT if negentropic, else ESCALATE; NEITHER -> WAIT |
+| `zxv_hex_phase_next` | the cycle POTENTIAL -> EMERGING -> MANIFEST -> DISSOLVING -> POTENTIAL (a Gray code: one bit per step) |
+| `zxv_hex_step` | move to the same or the next phase; a jump is `ZXV_E_STATE` |
+| `zxv_hex_set` | new base and polarity, same phase; a forbidden tag asked for another polarity is `ZXV_E_STATE` (the kernel's `lpx_set` silently keeps it forbidden; the ABI refuses instead, so a caller cannot believe it un-forbade something) |
+| `zxv_hex_forbid` | polarity FORBIDDEN, base and phase kept |
+| `zxv_hex_and`, `zxv_hex_or`, `zxv_hex_not` | base by `zxv_lp_and` / `zxv_lp_or` / `zxv_lp_not`; polarity the worst of the two (FORBIDDEN > ENTROPIC > NEUTRAL > NEGENTROPIC); phase the least advanced on the cycle order POTENTIAL < EMERGING < MANIFEST < DISSOLVING; `not` keeps polarity and phase |
+| `zxv_hex_polarity` | from evidence counts before and after: stale -> ENTROPIC, else the margin \|pos - neg\| growing -> NEGENTROPIC, shrinking -> ENTROPIC, same -> NEUTRAL; never FORBIDDEN |
+| `zxv_hex_name`, `zxv_hex_action_name` | static ASCII, e.g. `"true/negentropic/manifest"`, `"rollback"`; `"INVALID"` out of range |
+
+Forbidden is absorbing: `step`, `and`, `or` and `not` of a forbidden tag
+stay forbidden. A PROCEED needs base TRUE with a non-entropic polarity.
+
+**Pending decision.** Combined bases follow the existing `zxv_lp_and` and
+`zxv_lp_or` tables, so BOTH AND NEITHER is NEITHER and BOTH OR NEITHER is
+BOTH. Those two results are still waiting on the owner's decision; if they
+change, the `and` and `or` tables in `vectors.json` are regenerated from
+libzxv and every SDK picks them up through its conformance test.
+
+### The quarantine log
+
+`zxv_hexlog` is an opaque, mutex-guarded, append-only record of forbidden
+work, read for audit and never replayed:
+
+```c
+zxv_hexlog *log;
+zxv_hexlog_create(cap, 1024, &log);              /* needs ATTEST; 1..65536 */
+zxv_hexlog_append(cap, log, tag, reason, submitter, subject32, &seq);
+zxv_hexlog_count(log, &n);
+zxv_hexlog_head(log, head32);                    /* last hash; zeros if empty */
+zxv_hexlog_at(log, i, &seq, &tag, &reason, &who, subj, prev, hash); /* NULL outs allowed */
+zxv_hexlog_verify(log);
+zxv_hexlog_destroy(log);                         /* before its context */
+```
+
+- **Capability: `ATTEST`.** A quarantine record is an attestation about
+  refused work of any kind (a model call, a posting, a frame), signed off
+  later by whoever holds the head. `LEDGER_POST` means moving capital, and
+  `BUDGET` or `PHASE` would let a scheduler write the audit trail of what
+  it refused. Create and append re-check the cap; reads take none but fail
+  closed on a poisoned context like every other handle. No new bit was
+  added.
+- **Hash: SHA-256** (the kernel's `robin_debanks/sha256.c`), not SHA3:
+  `hash_k = SHA-256("zxv/lpx-qlog/v1" || seq u64 LE || tag || reason ||
+  submitter u32 LE || subject[32] || prev[32])`, with `prev_0` all zeros.
+  Anyone can recompute the chain from `zxv_hexlog_at`. Signing the head is
+  the caller's job.
+- `append` refuses a tag that is not forbidden with `ZXV_E_ARG`.
+- **A full log is `ZXV_E_CAPACITY` (REFUSED), and the library does not
+  halt by itself.** Forbidden work that cannot be recorded must not go on,
+  so the caller must halt the context (`zxv_ctx_halt`) or stop the work.
+  Pick the capacity for the worst case.
+- `verify` recomputes every link; a mismatch is `ZXV_E_INVARIANT` and
+  poisons the context.
+
+`vectors.json` gains a `"hex"` section, written by
+`tools/gen_vectors.c` from libzxv itself: the 64 tags with names and
+actions, `not`, the 64x64 `and`/`or` tables, `step` and `set` (with -1
+where the call is refused), polarity cases, the base mapping, and a
+three-record quarantine chain with its head.
 
 The header documents every function. The answer key every SDK tests
 against is [`sdk/conformance/vectors.json`](../conformance/vectors.json),

@@ -185,7 +185,30 @@ module Zxv
       [:zxv_lora_load, %i[pointer pointer string int32 pointer], :int32],
       # EVM
       [:zxv_evm_encode_state, %i[pointer pointer uint64 pointer pointer uint32 pointer size_t pointer pointer], :int32],
-      [:zxv_evm_ledger_state, %i[pointer pointer uint64 string pointer pointer uint32 pointer size_t pointer pointer], :int32]
+      [:zxv_evm_ledger_state, %i[pointer pointer uint64 string pointer pointer uint32 pointer size_t pointer pointer], :int32],
+      # ABI 1.3: the hexagram tag and the quarantine log
+      [:zxv_hex_pack, %i[uint8 uint8 uint8 pointer], :int32],
+      [:zxv_hex_unpack, %i[uint8 pointer pointer pointer], :int32],
+      [:zxv_hex_action, %i[uint8 pointer], :int32],
+      [:zxv_hex_phase_next, %i[uint8 pointer], :int32],
+      [:zxv_hex_step, %i[uint8 uint8 pointer], :int32],
+      [:zxv_hex_set, %i[uint8 uint8 uint8 pointer], :int32],
+      [:zxv_hex_forbid, %i[uint8 pointer], :int32],
+      [:zxv_hex_and, %i[uint8 uint8 pointer], :int32],
+      [:zxv_hex_or, %i[uint8 uint8 pointer], :int32],
+      [:zxv_hex_not, %i[uint8 pointer], :int32],
+      [:zxv_hex_polarity, %i[uint32 uint32 uint32 uint32 int32 pointer], :int32],
+      [:zxv_hex_from_lp, %i[int32 pointer], :int32],
+      [:zxv_hex_to_lp, %i[uint8 pointer], :int32],
+      [:zxv_hex_name, %i[uint8], :string],
+      [:zxv_hex_action_name, %i[int32], :string],
+      [:zxv_hexlog_create, %i[pointer uint32 pointer], :int32],
+      [:zxv_hexlog_destroy, %i[pointer], :void],
+      [:zxv_hexlog_append, %i[pointer pointer uint8 uint8 uint32 pointer pointer], :int32],
+      [:zxv_hexlog_count, %i[pointer pointer], :int32],
+      [:zxv_hexlog_head, %i[pointer pointer], :int32],
+      [:zxv_hexlog_at, %i[pointer uint32 pointer pointer pointer pointer pointer pointer pointer], :int32],
+      [:zxv_hexlog_verify, %i[pointer], :int32]
     ].freeze
 
     @loaded = nil
@@ -255,9 +278,9 @@ module Zxv
         zxv_version(maj, min, nil)
         major = maj.read_uint32
         minor = min.read_uint32
-        return if major == 1 && minor >= 2
+        return if major == 1 && minor >= 3
 
-        raise LoadError, "libzxv ABI #{major}.#{minor} is not compatible (need 1.x, x >= 2)"
+        raise LoadError, "libzxv ABI #{major}.#{minor} is not compatible (need 1.x, x >= 3)"
       end
     end
   end

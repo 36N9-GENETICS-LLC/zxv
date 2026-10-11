@@ -4,7 +4,7 @@
 # ZXV SDK for the JVM
 
 Java bindings for `libzxv`, the one C surface of the ZXV platform
-(`sdk/libzxv/include/zxv_api.h`, ABI 1.2). It is built on the Java
+(`sdk/libzxv/include/zxv_api.h`, ABI 1.3). It is built on the Java
 **Foreign Function & Memory API** (`java.lang.foreign`, final since Java 22),
 not JNI: there is no glue library to compile, and downcalls, upcalls and
 off-heap memory are plain Java. Kotlin and Scala use it directly.
@@ -55,8 +55,9 @@ On first use the SDK loads `libzxv` from the first of:
 4. the copy bundled in the jar under `/native/<os>-<arch>/`, extracted to a temp file;
 5. `System.mapLibraryName("zxv")` (`libzxv.so`, `libzxv.dylib`, `zxv.dll`) on the system loader path.
 
-It refuses a library whose ABI major is not 1 or whose minor is below 2
-(it calls the `_cap` functions added in ABI 1.2).
+It refuses a library whose ABI major is not 1 or whose minor is below 3
+(it calls the `zxv_hex_*` functions added in ABI 1.3 and the `_cap`
+functions added in 1.2).
 `Zxv.libraryLocation()` tells you which one won.
 
 ## Quickstart
@@ -178,6 +179,37 @@ stop), as a `Flow.Publisher<Token>` with back-pressure (`publisher(...)`),
 or as a `CompletableFuture<GenerateResult>` (`generateAsync(...)`). An
 exception in your listener stops generation and is rethrown; it never
 crosses into C.
+
+## The hexagram tag (ABI 1.3)
+
+A `Hexagram` tags one unit of work with a four-valued base, the polarity
+of its evidence (entropic, neutral, forbidden, negentropic) and its phase
+(potential -> emerging -> manifest -> dissolving), packed into one byte
+0..63. Its action is proceed, wait, refuse, escalate or rollback. Every rule
+comes from libzxv and is tested against `vectors.json` key `hex`.
+Forbidden is absorbing, a phase moves one step at a time, and the base is
+**not** numbered like `Truth` (TRUE is base 3 but Truth 1): convert only
+with the explicit `toTruth()` / `Hexagram.fromTruth(...)`. Combining BOTH with NEITHER follows
+the `Truth` tables (AND gives NEITHER, OR gives BOTH); those two results
+are pending an owner decision. A `QuarantineLog` (needs the ATTEST
+capability) records forbidden work in a SHA-256 hash chain; when it is
+full, append is refused with `ZXV_E_CAPACITY` and you must halt the
+context. See [ABI.md, Changes in 1.3](../docs/ABI.md#changes-in-13).
+
+```java
+Hexagram h = new Hexagram(HexBase.TRUE, HexPolarity.NEGENTROPIC, HexPhase.POTENTIAL);
+h.action();                              // PROCEED
+h = h.advance();                         // EMERGING
+h.step(HexPhase.DISSOLVING);             // ZxvRefusedException (ZXV_E_STATE): a jump
+Hexagram bad = h.forbid();               // ROLLBACK, forever
+try (QuarantineLog log = QuarantineLog.create(cap, 1024)) {   // needs ATTEST
+    long seq = log.append(bad, 7, 42, digest32);
+    log.verify();
+}
+```
+
+`org.zedec.zxv.trust.QuarantineLog`; `Hexagram`, `HexBase`, `HexPolarity`,
+`HexPhase` and `HexAction` are in `org.zedec.zxv`.
 
 ## API overview
 
@@ -318,7 +350,7 @@ import org.zedec.zxv.ledger.*
 
 ```sh
 export JAVA_HOME=/opt/tools/jdk-25.0.4.1+1    # any JDK 22+
-mvn test        # 37 tests against the real libzxv and sdk/conformance/vectors.json
+mvn test        # 48 tests against the real libzxv and sdk/conformance/vectors.json
 ```
 
 Surefire runs the tests on the class path with

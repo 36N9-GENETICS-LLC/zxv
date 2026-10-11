@@ -44,8 +44,8 @@ To depend on the package from another package:
 ```
 
 When you create the first `ZxvContext`, it checks the library's `zxv_version`. It refuses a
-library whose major version is not 1 or whose minor version is below 2 (ABI 1.2 added the
-capability-gated `*_cap` forms the SDK calls).
+library whose major version is not 1 or whose minor version is below 3 (ABI 1.3 added the
+hexagram tag, 1.2 the capability-gated `*_cap` forms the SDK calls).
 
 ## Quickstart
 
@@ -79,6 +79,35 @@ streams tokens, and shows the fail-closed path.
 | Streaming | `session.stream(prompt, options:)` returns an `AsyncThrowingStream<Token, Error>`. Generation runs on its own thread. If you break out of the `for try await` loop, generation stops at the next token. |
 | Secrets | `SecretKey` keeps its bytes in a `malloc`ed buffer that is not a Swift array, so the bytes are never copied on write. `deinit` and `wipe()` overwrite it with `zxv_secure_zero`. `withUnsafeBytes` reads the key without copying it. `exportBytesUnsafe()` returns a copy that is not wiped. |
 | Sendable | These types are `@unchecked Sendable` because the C library locks internally: `ZxvContext`, `Capability`, `Budgets`, `PhaseClock`, `Attestations`, `Swarm`, `Model` and `SecretKey`. `Session` is also `@unchecked Sendable`: the C session handle must be used by one thread at a time, so the SDK refuses overlapping calls with `ZXV_E_STATE`. `Message` follows the C rule (not thread-safe) and is not `Sendable`. |
+
+## The hexagram tag (ABI 1.3)
+
+A `Hexagram` tags one unit of work with a four-valued base, the polarity
+of its evidence (entropic, neutral, forbidden, negentropic) and its phase
+(potential -> emerging -> manifest -> dissolving), packed into one byte
+0..63. Its action is proceed, wait, refuse, escalate or rollback. Every rule
+comes from libzxv and is tested against `vectors.json` key `hex`.
+Forbidden is absorbing, a phase moves one step at a time, and the base is
+**not** numbered like `Truth` (TRUE is base 3 but Truth 1): convert only
+with the explicit `toTruth()` / `Hexagram(truth:polarity:phase:)`. Combining BOTH with NEITHER follows
+the `Truth` tables (AND gives NEITHER, OR gives BOTH); those two results
+are pending an owner decision. A `QuarantineLog` (needs the ATTEST
+capability) records forbidden work in a SHA-256 hash chain; when it is
+full, append is refused with `ZXV_E_CAPACITY` and you must halt the
+context. See [ABI.md, Changes in 1.3](../docs/ABI.md#changes-in-13).
+
+```swift
+var h = Hexagram(base: .true, polarity: .negentropic, phase: .potential)
+h.action                                   // .proceed
+h = h.advance()                            // .emerging
+try h.step(to: .dissolving)                // throws .refused (ZXV_E_STATE): a jump
+let bad = h.forbid()                       // .rollback, forever
+let log = try QuarantineLog(cap, capacity: 1024)   // needs .attest
+let seq = try log.append(bad, reason: 7, submitter: 42, subject: digest32)
+try log.verify()
+```
+
+`Hexagram` is a `Hashable`, `Sendable` value with `&`, `|` and prefix `~`.
 
 ## API overview
 
@@ -203,7 +232,7 @@ cd sdk/swift && swift test          # macOS CI and Linux alike
 ASAN_OPTIONS=detect_leaks=0 swift test --sanitize=address
 ```
 
-`--sanitize=address` passes all 20 tests. LeakSanitizer reports only
+`--sanitize=address` passes all 30 tests. LeakSanitizer reports only
 allocations made by the XCTest runner and the Swift runtime. None of them
 come from `Sources/Zxv` or libzxv, which is why `detect_leaks=0` is set above.
 `--sanitize=thread` is not supported here: ThreadSanitizer and the fork in the

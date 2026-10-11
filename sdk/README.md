@@ -16,18 +16,18 @@ every language.
 
 | Language | Folder | Package | How it binds | Tests |
 |---|---|---|---|---|
-| C / C ABI | [`libzxv`](libzxv/) | `libzxv.so` / `.dylib` | the library itself | 916 checks, ASan + UBSan |
-| Java, Kotlin, Scala | [`java`](java/) | `org.zedec.zxv` | Java 22 FFM (no JNI) | 37 |
-| .NET (C#, F#, Unity) | [`dotnet`](dotnet/) | `Zxv.Sdk` | `LibraryImport` | 125 |
-| Python | [`python`](python/) | `zxv-sdk` | cffi, GIL released | 99, `mypy --strict` |
-| TypeScript / JavaScript | [`typescript`](typescript/) | `@zedec/zxv` | Node-API addon and WebAssembly | 83 on each backend |
+| C / C ABI | [`libzxv`](libzxv/) | `libzxv.so` / `.dylib` | the library itself | 3,478 checks, ASan + UBSan |
+| Java, Kotlin, Scala | [`java`](java/) | `org.zedec.zxv` | Java 22 FFM (no JNI) | 48 |
+| .NET (C#, F#, Unity) | [`dotnet`](dotnet/) | `Zxv.Sdk` | `LibraryImport` | 128 |
+| Python | [`python`](python/) | `zxv-sdk` | cffi, GIL released | 111, `mypy --strict` |
+| TypeScript / JavaScript | [`typescript`](typescript/) | `@zedec/zxv` | Node-API addon and WebAssembly | 102 (both backends) |
 | Solidity / EVM | [`solidity`](solidity/) | `ZxvStateChannel.sol` | verifies libzxv's state encoding | 10 |
-| Ruby | [`ruby`](ruby/) | gem `zxv` | ffi | 40 runs |
-| PHP | [`php`](php/) | `zedec/zxv` | PHP FFI | 31 |
-| Rust | [`rust`](rust/) | crates `zxv`, `zxv-sys` | bindgen, `Result` types | 40 |
-| Go | [`go`](go/) | `.../sdk/go/zxv` | cgo, `error` returns | 36, `-race` |
-| C++ | [`cpp`](cpp/) | header-only `zxv.hpp` (C++20) | direct C ABI, RAII | 409 checks, ASan + UBSan + TSan |
-| Swift | [`swift`](swift/) | SwiftPM `Zxv` | C module map | 20 |
+| Ruby | [`ruby`](ruby/) | gem `zxv` | ffi | 50 runs |
+| PHP | [`php`](php/) | `zedec/zxv` | PHP FFI | 41 |
+| Rust | [`rust`](rust/) | crates `zxv`, `zxv-sys` | bindgen, `Result` types | 52 |
+| Go | [`go`](go/) | `.../sdk/go/zxv` | cgo, `error` returns | 46, `-race` |
+| C++ | [`cpp`](cpp/) | header-only `zxv.hpp` (C++20) | direct C ABI, RAII | 10,519 checks, ASan + UBSan + TSan |
+| Swift | [`swift`](swift/) | SwiftPM `Zxv` | C module map | 30 |
 
 ## Kits
 
@@ -42,6 +42,7 @@ budget, and a proposal queue the host must approve.
 |---|---|---|
 | Exact numbers, no floats | `Rational` | [SDK_DESIGN §3](docs/SDK_DESIGN.md#3-exactness-no-floats-at-the-boundary) |
 | Four-valued logic | `Truth` (`NEITHER`, `TRUE`, `FALSE`, `BOTH`) | [§4](docs/SDK_DESIGN.md#4-four-valued-logic) |
+| 64-state hexagram tag, quarantine log (ABI 1.3) | `Hexagram`, `QuarantineLog` | [§4](docs/SDK_DESIGN.md#the-hexagram-tag-abi-13), [ABI](docs/ABI.md#changes-in-13) |
 | Errors and fail-closed | `ZxvException` family, `ZxvFatal…` | [§5](docs/SDK_DESIGN.md#5-errors) |
 | Capabilities on every call | `Capability` | [§6](docs/SDK_DESIGN.md#6-capabilities-on-every-call) |
 | Wiped secret keys | `SecretKey`, `MlKem1024`, `MlDsa87`, `Ed25519` | [§7](docs/SDK_DESIGN.md#7-secrets) |

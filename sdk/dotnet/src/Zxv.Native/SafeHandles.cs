@@ -165,6 +165,12 @@ public sealed class ZxvAttestationsHandle : ZxvDependentHandle
     private protected override void Destroy(IntPtr native) => NativeMethods.LpresDestroy(native);
 }
 
+/// <summary>Owns a native <c>zxv_hexlog*</c> (a quarantine log, ABI 1.3).</summary>
+public sealed class ZxvQuarantineLogHandle : ZxvDependentHandle
+{
+    private protected override void Destroy(IntPtr native) => NativeMethods.HexlogDestroy(native);
+}
+
 /// <summary>Owns a native <c>zxv_rmag*</c> (a set of rational resource budgets).</summary>
 public sealed class ZxvBudgetsHandle : ZxvDependentHandle
 {

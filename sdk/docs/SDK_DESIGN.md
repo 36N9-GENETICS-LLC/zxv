@@ -16,8 +16,9 @@ guess the names in another.
   passes, the `ZXV_LIBRARY_PATH` environment variable, the copy bundled
   with the package, then the system loader path.
 - Each SDK checks `zxv_version` at load time and refuses a library whose
-  major version differs, or whose minor version is below 2 (ABI 1.2 added
-  the capability-gated `*_cap` forms every SDK now calls).
+  major version differs, or whose minor version is below 3 (ABI 1.3 added
+  the hexagram tag every SDK now binds; 1.2 the capability-gated `*_cap`
+  forms).
 
 ## 2. Names
 
@@ -30,6 +31,8 @@ Use the host language's conventions, with the same nouns everywhere:
 | Capability | `Capability` | `attenuate`, `revoke`, `check` |
 | Exact rational | `Rational` | immutable value type |
 | Four-valued logic | `Truth` | `NEITHER`, `TRUE`, `FALSE`, `BOTH` |
+| Hexagram tag | `Hexagram` (+ `HexBase`, `HexPolarity`, `HexPhase`, `HexAction`) | `action`, `step`, `advance`, `and`/`or`/`not`, `toTruth` |
+| Quarantine log | `QuarantineLog` | `append`, `count`, `head`, `record`, `verify` |
 | Ledger | `Ledger` | accounts, `post`, `balance`, `check` |
 | Attestations | `Attestations` | `attest`, `evidence`, `gate` |
 | Budgets | `Budgets` / `Budget` | `consume`, `consumeAsync`, `release` |
@@ -72,6 +75,32 @@ Use the host language's conventions, with the same nouns everywhere:
 - Keep `Truth` a value type with room for one more accessor: the kernel is
   adding an orthogonal 2-bit `mode` beside the four states. Do not encode
   `Truth` in a way that would break if a `mode` field is added later.
+
+### The hexagram tag (ABI 1.3)
+
+- `Hexagram` is an immutable value holding one tag byte (0..63) with
+  accessors `base`, `polarity`, `phase`, `isForbidden`, `action`, `name`
+  and `tag`. The four field types are closed enums numbered as the
+  `ZXV_HEX_*` constants. Construct from fields, from a tag (63 < tag is a
+  USAGE error), or from a `Truth`.
+- Every rule comes from libzxv (`zxv_hex_*`) or, where an SDK keeps a pure
+  host copy (TypeScript, for its Wasm and browser builds), is checked
+  against libzxv and `vectors.json` key `hex`.
+- `step(phase)` returns a new value or raises REFUSED (`ZXV_E_STATE`) for a
+  jump; `advance()` takes the next step and cannot fail. `withState(base,
+  polarity)` refuses to un-forbid a forbidden tag. `forbid()` is absorbing.
+- `and`, `or`, `not` (operators where the language has them) follow the
+  libzxv tables. BOTH AND NEITHER = NEITHER and BOTH OR NEITHER = BOTH are
+  pending an owner decision; SDKs must not hard-code them outside a pure
+  host table that the conformance test checks.
+- The base is NOT numbered like `Truth` (TRUE is base 3 but Truth 1). The
+  only conversions are the explicit `toTruth()` and `fromTruth(...)`; no
+  implicit or numeric coercion, and no conversion to the host boolean.
+- `QuarantineLog(cap, capacity)` needs `ATTEST`. A full log raises REFUSED
+  (`ZXV_E_CAPACITY`) and the caller must halt the context; `verify()`
+  raises FATAL on a broken chain. Records expose `seq`, `tag`, `reason`,
+  `submitter`, `subject`, `prev` and `hash`, so the SHA-256 chain can be
+  recomputed outside the library.
 
 ## 5. Errors
 

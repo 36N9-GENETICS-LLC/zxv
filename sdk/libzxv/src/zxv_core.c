@@ -46,7 +46,7 @@ uint32_t zxvi_features_11(void)
 {
     uint32_t m = ZXV_FEAT_RATIONAL | ZXV_FEAT_LPRES | ZXV_FEAT_CAPS | ZXV_FEAT_RMAG |
                  ZXV_FEAT_PHASE | ZXV_FEAT_WIRE | ZXV_FEAT_SWARM | ZXV_FEAT_HASH |
-                 ZXV_FEAT_EVM;
+                 ZXV_FEAT_EVM | ZXV_FEAT_HEX;
 #ifndef ZXV_NO_PQC
     m |= ZXV_FEAT_MLKEM1024 | ZXV_FEAT_MLDSA87 | ZXV_FEAT_ED25519;
 #endif

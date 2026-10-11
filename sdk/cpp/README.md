@@ -40,8 +40,8 @@ target_link_libraries(my_app PRIVATE zxv::zxv)
 ```
 
 At run time the SDK calls `zxv_version` once. It refuses a library whose
-major version is not 1 or whose minor version is below 2 (ABI 1.2 added the
-capability-gated `*_cap` forms the SDK calls).
+major version is not 1 or whose minor version is below 3 (ABI 1.3 added the
+hexagram tag, 1.2 the capability-gated `*_cap` forms the SDK calls).
 
 ## Quickstart
 
@@ -75,6 +75,36 @@ std::cout << zxv::Rational::parse("0.1") + zxv::Rational::parse("0.2"); // 0.3
 | Budgets | `budget.consume(r)` throws `BudgetExhausted`. `consume_async(r, zxv::stop_token, timeout)` returns a `std::future<void>`. A worker waits on a condition variable that wakes when the C listener reports a replenishment (a `release` or a larger limit). |
 | Phase ticks | `PhaseClock::advance(n)` is the manual driver, for tests and lockstep. `start_realtime(ticks_per_second)` starts a `zxv::jthread` that advances the clock in real time. `defer(tick).await_cleared()` and `until_tick(t)` return a `std::shared_future<void>`. |
 | Generation | `session.generate(prompt, opts, on_token)` takes an optional `std::function` callback. `session.stream(prompt, opts)` returns a `TokenStream` that you can loop over with range-for. Sampling options are `Rational` values, converted to Q16.16. |
+
+## The hexagram tag (ABI 1.3)
+
+A `Hexagram` tags one unit of work with a four-valued base, the polarity
+of its evidence (entropic, neutral, forbidden, negentropic) and its phase
+(potential -> emerging -> manifest -> dissolving), packed into one byte
+0..63. Its action is proceed, wait, refuse, escalate or rollback. Every rule
+comes from libzxv and is tested against `vectors.json` key `hex`.
+Forbidden is absorbing, a phase moves one step at a time, and the base is
+**not** numbered like `Truth` (TRUE is base 3 but Truth 1): convert only
+with the explicit `to_truth()` / `Hexagram::from_truth(...)`. Combining BOTH with NEITHER follows
+the `Truth` tables (AND gives NEITHER, OR gives BOTH); those two results
+are pending an owner decision. A `QuarantineLog` (needs the ATTEST
+capability) records forbidden work in a SHA-256 hash chain; when it is
+full, append is refused with `ZXV_E_CAPACITY` and you must halt the
+context. See [ABI.md, Changes in 1.3](../docs/ABI.md#changes-in-13).
+
+```cpp
+zxv::Hexagram h{zxv::HexBase::true_, zxv::HexPolarity::negentropic, zxv::HexPhase::potential};
+h.action();                                // HexAction::proceed
+h = h.advance();                           // emerging
+h.step(zxv::HexPhase::dissolving);         // throws RefusedError (ZXV_E_STATE): a jump
+auto bad = h.forbid();                     // rollback, forever
+zxv::QuarantineLog log(cap, 1024);         // needs caps::attest
+auto seq = log.append(bad, 7, 42, digest32);   // std::span<const uint8_t, 32>
+log.verify();
+```
+
+`Hexagram` is a trivially copyable value with `&`, `|`, `~` and `==`, and
+no conversion to `bool` or `Truth`.
 
 ## API overview
 
@@ -200,6 +230,7 @@ Every target compiles with `-Wall -Wextra -Werror -Wshadow -Wconversion -Wsign-c
 - status names and classes, and the exception type for every status
 - rational operations, parsing, IEEE-754 boundaries and Q16, plus 20,000 random cases where the constexpr host arithmetic is compared with C
 - the lpres tables
+- the `hex` key: all 64 hexagram tags, actions, `and`/`or`/`not`, `step`/`with_state` refusals, the Truth mapping, and the quarantine chain and its `ZXV_E_CAPACITY`, `ZXV_E_CAP` and fail-closed refusals
 - UBH-168 frames byte for byte (host and C) and idle frames
 - SHA3, SHAKE and Keccak
 - Ed25519, and the ML-DSA-87 and ML-KEM-1024 digests

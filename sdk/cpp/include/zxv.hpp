@@ -319,8 +319,9 @@ private:
 
 /// The ABI version this header was written against.
 inline constexpr std::uint32_t header_abi_major = ZXV_ABI_VERSION_MAJOR;
-/// Minimum ABI minor version this SDK needs (ABI 1.2: the *_cap forms).
-inline constexpr std::uint32_t header_abi_minor = 2;
+/// Minimum ABI minor version this SDK needs (ABI 1.3: the hexagram tag;
+/// 1.2 added the *_cap forms).
+inline constexpr std::uint32_t header_abi_minor = 3;
 
 /// One harmonic fundamental, in ticks (27,720 = lcm(1..11)).
 inline constexpr std::uint64_t phase_cycle = ZXV_PHASE_CYCLE;
@@ -355,6 +356,7 @@ inline constexpr std::uint32_t ed25519 = ZXV_FEAT_ED25519;     ///< RFC 8032
 inline constexpr std::uint32_t tensor = ZXV_FEAT_TENSOR;       ///< inference engine
 inline constexpr std::uint32_t lora = ZXV_FEAT_LORA;           ///< LoRA (not built yet)
 inline constexpr std::uint32_t evm = ZXV_FEAT_EVM;             ///< EVM state channels
+inline constexpr std::uint32_t hex = ZXV_FEAT_HEX;             ///< hexagram tag, quarantine log (1.3)
 } // namespace feature
 
 /// Capability bits (ZXV_CAP_*). Combine with `|`.
@@ -656,7 +658,7 @@ inline std::uint32_t features()
 /// True if every bit of `mask` (zxv::feature::*) is live in this build.
 inline bool has_feature(std::uint32_t mask) { return (features() & mask) == mask; }
 
-/// Refuse a library whose major version differs or whose minor is below 2
+/// Refuse a library whose major version differs or whose minor is below 3
 /// (SDK_DESIGN.md section 1). Called once, automatically, by Context.
 inline void ensure_compatible()
 {
@@ -664,7 +666,7 @@ inline void ensure_compatible()
     if (v.major != header_abi_major || v.minor < header_abi_minor)
         throw SystemError(ZXV_E_INTERNAL, "libzxv ABI " + std::to_string(v.major) + "." +
                                               std::to_string(v.minor) + " is not compatible with " +
-                                              "this SDK (needs 1.2 or later 1.x)");
+                                              "this SDK (needs 1.3 or later 1.x)");
 }
 
 // ===========================================================================
@@ -1608,6 +1610,330 @@ private:
     };
     std::shared_ptr<detail::CapCore> cap_;
     std::unique_ptr<zxv_lpres, Del> reg_;
+};
+
+// ===========================================================================
+// Hexagram (ABI 1.3)
+// ===========================================================================
+
+/// The four-valued base of a Hexagram (bits 5-4), numbered by line pattern.
+/// NOT Truth's numbering (TRUE is 1 there and 3 here): convert only with
+/// Hexagram::to_truth and Hexagram::from_truth.
+enum class HexBase : std::uint8_t {
+    false_ = ZXV_HEX_BASE_FALSE, neither = ZXV_HEX_BASE_NEITHER, both = ZXV_HEX_BASE_BOTH,
+    true_ = ZXV_HEX_BASE_TRUE,
+};
+/// The polarity of a Hexagram's evidence (bits 3-2). forbidden is absorbing.
+enum class HexPolarity : std::uint8_t {
+    entropic = ZXV_HEX_POL_ENTROPIC,       ///< margin shrinking, or stale
+    neutral = ZXV_HEX_POL_NEUTRAL,         ///< margin unchanged
+    forbidden = ZXV_HEX_POL_FORBIDDEN,     ///< rolled back, quarantined, never replayed
+    negentropic = ZXV_HEX_POL_NEGENTROPIC, ///< margin growing
+};
+/// The lifecycle phase of a Hexagram (bits 1-0). The cycle is
+/// potential -> emerging -> manifest -> dissolving -> potential.
+enum class HexPhase : std::uint8_t {
+    potential = ZXV_HEX_PHASE_POTENTIAL, emerging = ZXV_HEX_PHASE_EMERGING,
+    dissolving = ZXV_HEX_PHASE_DISSOLVING, manifest = ZXV_HEX_PHASE_MANIFEST,
+};
+/// What happens next to work with a given Hexagram.
+enum class HexAction : std::uint8_t {
+    proceed = ZXV_HEX_ACT_PROCEED, wait = ZXV_HEX_ACT_WAIT, refuse = ZXV_HEX_ACT_REFUSE,
+    escalate = ZXV_HEX_ACT_ESCALATE, rollback = ZXV_HEX_ACT_ROLLBACK,
+};
+
+/// "false", "neither", "both" or "true".
+constexpr std::string_view to_string(HexBase b) noexcept
+{
+    constexpr std::array<std::string_view, 4> n{"false", "neither", "both", "true"};
+    return n[static_cast<std::size_t>(b) & 3u];
+}
+/// "entropic", "neutral", "forbidden" or "negentropic".
+constexpr std::string_view to_string(HexPolarity p) noexcept
+{
+    constexpr std::array<std::string_view, 4> n{"entropic", "neutral", "forbidden", "negentropic"};
+    return n[static_cast<std::size_t>(p) & 3u];
+}
+/// "potential", "emerging", "dissolving" or "manifest".
+constexpr std::string_view to_string(HexPhase p) noexcept
+{
+    constexpr std::array<std::string_view, 4> n{"potential", "emerging", "dissolving", "manifest"};
+    return n[static_cast<std::size_t>(p) & 3u];
+}
+/// "proceed", "wait", "refuse", "escalate" or "rollback" (zxv_hex_action_name).
+inline std::string_view to_string(HexAction a) noexcept
+{
+    return zxv_hex_action_name(static_cast<std::int32_t>(a));
+}
+
+namespace detail {
+template <class F>
+std::uint8_t hex_out(F&& f)
+{
+    std::uint8_t o = 0;
+    check(f(&o));
+    return o;
+}
+} // namespace detail
+
+/// The next phase on the cycle (zxv_hex_phase_next).
+inline HexPhase next(HexPhase p)
+{
+    return static_cast<HexPhase>(
+        detail::hex_out([&](std::uint8_t* o) { return zxv_hex_phase_next(static_cast<std::uint8_t>(p), o); }));
+}
+
+/// The 64-state hexagram tag of ABI 1.3 (the kernel's lpres_hex): an
+/// immutable value tagging one unit of work with a four-valued HexBase, the
+/// HexPolarity of its evidence and the HexPhase of its lifecycle, packed as
+/// tag = base << 4 | polarity << 2 | phase (0..63). A default-constructed
+/// Hexagram is tag 0 (false/entropic/potential).
+///
+/// Every rule is computed by libzxv. There is no conversion to bool and no
+/// implicit one to Truth: use to_truth().
+///
+///     zxv::Hexagram h{zxv::HexBase::true_, zxv::HexPolarity::negentropic, zxv::HexPhase::potential};
+///     h.action();                        // HexAction::proceed
+///     h = h.advance();                   // emerging
+///     h.step(zxv::HexPhase::dissolving); // throws RefusedError (ZXV_E_STATE): a jump
+class Hexagram {
+public:
+    /// Number of tags (ZXV_HEX_STATES).
+    static constexpr std::uint32_t states = ZXV_HEX_STATES;
+
+    /// Tag 0.
+    constexpr Hexagram() noexcept = default;
+
+    /// The tag from its three fields (zxv_hex_pack).
+    Hexagram(HexBase base, HexPolarity polarity, HexPhase phase)
+        : tag_(detail::hex_out([&](std::uint8_t* o) {
+              return zxv_hex_pack(static_cast<std::uint8_t>(base), static_cast<std::uint8_t>(polarity),
+                                  static_cast<std::uint8_t>(phase), o);
+          }))
+    {
+    }
+
+    /// The tag with this byte value; UsageError (ZXV_E_ARG) above 63.
+    static Hexagram from_tag(std::uint8_t tag)
+    {
+        detail::check(zxv_hex_unpack(tag, nullptr, nullptr, nullptr));
+        return Hexagram(tag, 0);
+    }
+
+    /// All 64 tags, in tag order.
+    static std::array<Hexagram, 64> all() noexcept
+    {
+        std::array<Hexagram, 64> a{};
+        for (std::size_t i = 0; i < a.size(); ++i) a[i] = Hexagram(static_cast<std::uint8_t>(i), 0);
+        return a;
+    }
+
+    /// A tag whose base is `t` (zxv_hex_from_lp).
+    static Hexagram from_truth(Truth t, HexPolarity polarity, HexPhase phase)
+    {
+        const auto b = detail::hex_out([&](std::uint8_t* o) { return zxv_hex_from_lp(to_c(t), o); });
+        return Hexagram(static_cast<HexBase>(b), polarity, phase);
+    }
+
+    /// Polarity from evidence counts before (pos0, neg0) and after (pos1,
+    /// neg1): stale gives entropic; otherwise the margin |pos - neg|
+    /// growing gives negentropic, shrinking entropic, unchanged neutral.
+    /// Never forbidden.
+    static HexPolarity polarity_from_evidence(std::uint32_t pos0, std::uint32_t neg0, std::uint32_t pos1,
+                                              std::uint32_t neg1, bool stale)
+    {
+        return static_cast<HexPolarity>(detail::hex_out(
+            [&](std::uint8_t* o) { return zxv_hex_polarity(pos0, neg0, pos1, neg1, stale ? 1 : 0, o); }));
+    }
+
+    /// The byte value, 0..63.
+    [[nodiscard]] constexpr std::uint8_t tag() const noexcept { return tag_; }
+    /// Bits 5-4.
+    [[nodiscard]] constexpr HexBase base() const noexcept { return static_cast<HexBase>(tag_ >> 4); }
+    /// Bits 3-2.
+    [[nodiscard]] constexpr HexPolarity polarity() const noexcept
+    {
+        return static_cast<HexPolarity>((tag_ >> 2) & 3);
+    }
+    /// Bits 1-0.
+    [[nodiscard]] constexpr HexPhase phase() const noexcept { return static_cast<HexPhase>(tag_ & 3); }
+    /// True if the polarity is forbidden (absorbing).
+    [[nodiscard]] constexpr bool is_forbidden() const noexcept { return polarity() == HexPolarity::forbidden; }
+
+    /// What happens next: one lookup in the kernel's 64-entry table.
+    [[nodiscard]] HexAction action() const
+    {
+        std::int32_t a = 0;
+        detail::check(zxv_hex_action(tag_, &a));
+        return static_cast<HexAction>(a);
+    }
+
+    /// "base/polarity/phase", e.g. "true/negentropic/manifest".
+    [[nodiscard]] std::string_view name() const noexcept { return zxv_hex_name(tag_); }
+
+    /// The base as a Truth: the explicit conversion (zxv_hex_to_lp).
+    [[nodiscard]] Truth to_truth() const
+    {
+        std::int32_t t = 0;
+        detail::check(zxv_hex_to_lp(static_cast<std::uint8_t>(tag_ >> 4), &t));
+        return truth_from_c(t);
+    }
+
+    /// The same work in `phase`: the same phase or the next one only
+    /// (RefusedError, ZXV_E_STATE, for a jump).
+    [[nodiscard]] Hexagram step(HexPhase phase) const
+    {
+        return pure([&](std::uint8_t* o) { return zxv_hex_step(tag_, static_cast<std::uint8_t>(phase), o); });
+    }
+
+    /// One step along the cycle.
+    [[nodiscard]] Hexagram advance() const { return step(next(phase())); }
+
+    /// New base and polarity, same phase. RefusedError (ZXV_E_STATE) if
+    /// this tag is forbidden and `polarity` is not (forbidden is absorbing).
+    [[nodiscard]] Hexagram with_state(HexBase base, HexPolarity polarity) const
+    {
+        return pure([&](std::uint8_t* o) {
+            return zxv_hex_set(tag_, static_cast<std::uint8_t>(base), static_cast<std::uint8_t>(polarity), o);
+        });
+    }
+
+    /// The same tag with polarity forbidden.
+    [[nodiscard]] Hexagram forbid() const
+    {
+        return pure([&](std::uint8_t* o) { return zxv_hex_forbid(tag_, o); });
+    }
+
+    /// Conjunction: four-valued AND on the base, worst polarity, least advanced phase.
+    friend Hexagram operator&(Hexagram a, Hexagram b)
+    {
+        return pure([&](std::uint8_t* o) { return zxv_hex_and(a.tag_, b.tag_, o); });
+    }
+    /// Disjunction: four-valued OR on the base, worst polarity, least advanced phase.
+    friend Hexagram operator|(Hexagram a, Hexagram b)
+    {
+        return pure([&](std::uint8_t* o) { return zxv_hex_or(a.tag_, b.tag_, o); });
+    }
+    /// Negation of the base; polarity and phase are kept.
+    friend Hexagram operator~(Hexagram a)
+    {
+        return pure([&](std::uint8_t* o) { return zxv_hex_not(a.tag_, o); });
+    }
+
+    /// Same tag.
+    friend constexpr bool operator==(Hexagram, Hexagram) noexcept = default;
+
+private:
+    constexpr Hexagram(std::uint8_t tag, int) noexcept : tag_(tag) {}
+    template <class F>
+    static Hexagram pure(F&& f)
+    {
+        return Hexagram(detail::hex_out(std::forward<F>(f)), 0);
+    }
+    std::uint8_t tag_ = 0;
+};
+
+/// Stream as its name.
+inline std::ostream& operator<<(std::ostream& os, Hexagram h) { return os << h.name(); }
+
+/// One record of a QuarantineLog.
+struct QuarantineRecord {
+    std::uint64_t seq = 0;            ///< its index
+    Hexagram tag;                     ///< the forbidden tag
+    std::uint8_t reason = 0;          ///< the caller's reason code
+    std::uint32_t submitter = 0;      ///< who submitted the work
+    std::array<std::uint8_t, 32> subject{}; ///< digest of the refused work
+    std::array<std::uint8_t, 32> prev{};    ///< previous hash (zeros for the first)
+    std::array<std::uint8_t, 32> hash{};    ///< this record's hash
+};
+
+/// The quarantine log of ABI 1.3 (zxv_hexlog): an append-only, SHA-256
+/// hash-chained record of forbidden work, read for audit and never
+/// replayed. Creating and appending need caps::attest. Thread-safe (the C
+/// log has its own mutex).
+///
+/// Record k's hash is SHA-256("zxv/lpx-qlog/v1" || seq (u64 LE) || tag ||
+/// reason || submitter (u32 LE) || subject || prev). A full log refuses the
+/// append with ZXV_E_CAPACITY (RefusedError); the caller must then halt the
+/// context (Context::halt), since forbidden work it cannot record must not
+/// continue. Signing head() is the caller's job.
+class QuarantineLog {
+public:
+    /// Largest capacity (ZXV_HEXLOG_MAX_RECORDS).
+    static constexpr std::uint32_t max_records = ZXV_HEXLOG_MAX_RECORDS;
+
+    /// A log of at most `capacity` (1..max_records) records (needs caps::attest).
+    QuarantineLog(const Capability& cap, std::uint32_t capacity) : cap_(cap.core())
+    {
+        zxv_hexlog* l = nullptr;
+        cap_->call([&] { return zxv_hexlog_create(cap_->cap, capacity, &l); });
+        log_.reset(l);
+    }
+
+    /// Quarantine forbidden work (`tag` must be forbidden, else UsageError);
+    /// returns the record's sequence number.
+    std::uint64_t append(Hexagram tag, std::uint8_t reason, std::uint32_t submitter,
+                         std::span<const std::uint8_t, 32> subject)
+    {
+        std::uint64_t seq = 0;
+        cap_->call([&] {
+            return zxv_hexlog_append(cap_->cap, log_.get(), tag.tag(), reason, submitter, subject.data(), &seq);
+        });
+        return seq;
+    }
+
+    /// Number of records.
+    [[nodiscard]] std::uint32_t count() const
+    {
+        std::uint32_t n = 0;
+        cap_->call([&] { return zxv_hexlog_count(log_.get(), &n); });
+        return n;
+    }
+
+    /// The chain head: the last record's hash (zeros when empty).
+    [[nodiscard]] std::array<std::uint8_t, 32> head() const
+    {
+        std::array<std::uint8_t, 32> h{};
+        cap_->call([&] { return zxv_hexlog_head(log_.get(), h.data()); });
+        return h;
+    }
+
+    /// Record `index`, oldest first.
+    [[nodiscard]] QuarantineRecord record(std::uint32_t index) const
+    {
+        QuarantineRecord r;
+        std::uint8_t tag = 0;
+        cap_->call([&] {
+            return zxv_hexlog_at(log_.get(), index, &r.seq, &tag, &r.reason, &r.submitter, r.subject.data(),
+                                 r.prev.data(), r.hash.data());
+        });
+        r.tag = Hexagram::from_tag(tag);
+        return r;
+    }
+
+    /// Every record, oldest first.
+    [[nodiscard]] std::vector<QuarantineRecord> records() const
+    {
+        std::vector<QuarantineRecord> v;
+        const std::uint32_t n = count();
+        v.reserve(n);
+        for (std::uint32_t i = 0; i < n; ++i) v.push_back(record(i));
+        return v;
+    }
+
+    /// Recompute every link; a broken chain is ZXV_E_INVARIANT (FatalError:
+    /// the context halts).
+    void verify() const
+    {
+        cap_->call([&] { return zxv_hexlog_verify(log_.get()); });
+    }
+
+private:
+    struct Del {
+        void operator()(zxv_hexlog* l) const noexcept { zxv_hexlog_destroy(l); }
+    };
+    std::shared_ptr<detail::CapCore> cap_;
+    std::unique_ptr<zxv_hexlog, Del> log_;
 };
 
 // ===========================================================================

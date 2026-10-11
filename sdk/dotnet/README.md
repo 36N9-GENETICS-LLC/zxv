@@ -5,11 +5,12 @@
 
 The .NET 8 SDK for the ZXV platform core. It wraps `libzxv`, the one C
 library every ZXV SDK shares (`sdk/libzxv/include/zxv_api.h`), and covers
-every group of ABI 1.2:
+every group of ABI 1.3:
 
 - **finance**: exact-minor-unit ledger, ISO 4217, ISO 20022 (pacs.008,
   camt.053), payments, statements, netting, cards, conformance;
-- **exactness and logic**: `Rational`, four-valued `Truth`, attestations;
+- **exactness and logic**: `Rational`, four-valued `Truth`, attestations, the
+  64-state `Hexagram` tag and its `QuarantineLog`;
 - **least privilege**: `Capability` on every gated call, fail-closed contexts;
 - **economy**: rational budgets with async waiting, phase ticks, the swarm
   token economy;
@@ -43,8 +44,8 @@ The library is found in this order: `ZxvLibrary.UseLibraryPath(path)`, the
 `ZXV_LIBRARY_PATH` environment variable (or the older `ZXV_NATIVE_LIBRARY`),
 the copy next to the application, then the system loader path
 (`LD_LIBRARY_PATH`, `DYLD_LIBRARY_PATH`, `PATH`). A library whose ABI is not
-1.2 or a later 1.x is refused on first use (the SDK calls the `_cap`
-functions added in 1.2).
+1.3 or a later 1.x is refused on first use (the SDK calls the `zxv_hex_*`
+functions added in 1.3 and the `_cap` functions added in 1.2).
 
 ## Quick start
 
@@ -150,6 +151,36 @@ clock passes its tick. `Session.GenerateAsync` runs on the thread pool and
 `Session.StreamAsync` is an `IAsyncEnumerable<GeneratedToken>` fed by the
 native token callback (an `UnmanagedCallersOnly` function pointer plus a
 `GCHandle`); breaking out of the loop stops generation.
+
+## The hexagram tag (ABI 1.3)
+
+A `Hexagram` tags one unit of work with a four-valued base, the polarity
+of its evidence (entropic, neutral, forbidden, negentropic) and its phase
+(potential -> emerging -> manifest -> dissolving), packed into one byte
+0..63. Its action is proceed, wait, refuse, escalate or rollback. Every rule
+comes from libzxv and is tested against `vectors.json` key `hex`.
+Forbidden is absorbing, a phase moves one step at a time, and the base is
+**not** numbered like `Truth` (TRUE is base 3 but Truth 1): convert only
+with the explicit `ToTruth()` / `Hexagram.FromTruth(...)`. Combining BOTH with NEITHER follows
+the `Truth` tables (AND gives NEITHER, OR gives BOTH); those two results
+are pending an owner decision. A `QuarantineLog` (needs the ATTEST
+capability) records forbidden work in a SHA-256 hash chain; when it is
+full, append is refused with `ZXV_E_CAPACITY` and you must halt the
+context. See [ABI.md, Changes in 1.3](../docs/ABI.md#changes-in-13).
+
+```csharp
+var h = new Hexagram(HexBase.True, HexPolarity.Negentropic, HexPhase.Potential);
+// h.Action == HexAction.Proceed
+h = h.Advance();                          // Emerging
+h.Step(HexPhase.Dissolving);              // ZxvRefusedException (ZXV_E_STATE): a jump
+var bad = h.Forbid();                     // Rollback, forever
+using var log = platform.CreateQuarantineLog(cap, 1024);   // needs Attest
+ulong seq = log.Append(bad, reason: 7, submitter: 42, digest32);
+log.Verify();
+```
+
+`Hexagram` is a `readonly struct` (`Zxv.Sdk.Exact`) with `&`, `|` and `~`;
+`default(Hexagram)` is tag 0. `QuarantineLog` is in `Zxv.Sdk.Security`.
 
 ## API overview
 

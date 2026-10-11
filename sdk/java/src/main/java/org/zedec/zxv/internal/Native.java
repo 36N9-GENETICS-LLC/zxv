@@ -240,19 +240,43 @@ public final class Native {
             A, A, A, L, I, I, I, I, I, I, L, A, A, A, A, A);
     public static final MethodHandle lora_load = fn("zxv_lora_load", I, A, A, A, I, A);
     public static final MethodHandle lora_destroy = fn("zxv_lora_destroy", null, A);
+    // ---- ABI 1.3: the 64-state hexagram tag (pure) and the quarantine log
+    public static final MethodHandle hex_pack = pure("zxv_hex_pack", I, U8, U8, U8, A);
+    public static final MethodHandle hex_unpack = pure("zxv_hex_unpack", I, U8, A, A, A);
+    public static final MethodHandle hex_action = pure("zxv_hex_action", I, U8, A);
+    public static final MethodHandle hex_phase_next = pure("zxv_hex_phase_next", I, U8, A);
+    public static final MethodHandle hex_step = pure("zxv_hex_step", I, U8, U8, A);
+    public static final MethodHandle hex_set = pure("zxv_hex_set", I, U8, U8, U8, A);
+    public static final MethodHandle hex_forbid = pure("zxv_hex_forbid", I, U8, A);
+    public static final MethodHandle hex_and = pure("zxv_hex_and", I, U8, U8, A);
+    public static final MethodHandle hex_or = pure("zxv_hex_or", I, U8, U8, A);
+    public static final MethodHandle hex_not = pure("zxv_hex_not", I, U8, A);
+    public static final MethodHandle hex_polarity = pure("zxv_hex_polarity", I, I, I, I, I, I, A);
+    public static final MethodHandle hex_from_lp = pure("zxv_hex_from_lp", I, I, A);
+    public static final MethodHandle hex_to_lp = pure("zxv_hex_to_lp", I, U8, A);
+    public static final MethodHandle hex_name = fn("zxv_hex_name", A, U8);
+    public static final MethodHandle hex_action_name = fn("zxv_hex_action_name", A, I);
+    public static final MethodHandle hexlog_create = fn("zxv_hexlog_create", I, A, I, A);
+    public static final MethodHandle hexlog_destroy = fn("zxv_hexlog_destroy", null, A);
+    public static final MethodHandle hexlog_append = fn("zxv_hexlog_append", I, A, A, U8, U8, I, A, A);
+    public static final MethodHandle hexlog_count = fn("zxv_hexlog_count", I, A, A);
+    public static final MethodHandle hexlog_head = fn("zxv_hexlog_head", I, A, A);
+    public static final MethodHandle hexlog_at = fn("zxv_hexlog_at", I, A, I, A, A, A, A, A, A, A);
+    public static final MethodHandle hexlog_verify = fn("zxv_hexlog_verify", I, A);
     // ---- EVM
     public static final MethodHandle evm_encode_state = fn("zxv_evm_encode_state", I, A, A, L, A, A, I, A, L, A, A);
     public static final MethodHandle evm_ledger_state = fn("zxv_evm_ledger_state", I, A, A, L, A, A, A, I, A, L, A, A);
 
     static {
-        // The version gate of SDK_DESIGN section 1: same major, minor >= 2 (the _cap forms of ABI 1.2).
+        // The version gate of SDK_DESIGN section 1: same major, minor >= 3 (the _cap forms of
+        // ABI 1.2 and the hexagram tag of ABI 1.3).
         try (var arena = java.lang.foreign.Arena.ofConfined()) {
             MemorySegment ma = arena.allocate(JAVA_INT), mi = arena.allocate(JAVA_INT), pa = arena.allocate(JAVA_INT);
             int st = (int) version.invokeExact(ma, mi, pa);
             int major = ma.get(JAVA_INT, 0), minor = mi.get(JAVA_INT, 0);
-            if (st != 0 || major != 1 || minor < 2) {
+            if (st != 0 || major != 1 || minor < 3) {
                 throw new UnsatisfiedLinkError("libzxv at " + NativeLoader.loadedFrom() + " reports ABI "
-                        + major + "." + minor + "; this SDK needs ABI 1.x with x >= 2");
+                        + major + "." + minor + "; this SDK needs ABI 1.x with x >= 3");
             }
         } catch (UnsatisfiedLinkError e) {
             throw e;

@@ -18,6 +18,10 @@ export {
 } from './ledger.js';
 export type { Balance, JournalEntry, AccountInfo, NetPosition, IssuedCard, Authorization } from './ledger.js';
 export { Attestations, Subject } from './attestations.js';
+export {
+  Hexagram, HexBase, HexPolarity, HexPhase, HexAction, HEX_ACTION_NAMES, QuarantineLog, QUARANTINE_MAX_RECORDS,
+} from './hexagram.js';
+export type { QuarantineRecord } from './hexagram.js';
 export type { AttestationState, AttestOptions } from './attestations.js';
 export { Budgets, Budget, BudgetResource } from './budgets.js';
 export type { Amount, BudgetStatus, ConsumeAsyncOptions, ExhaustedEvent, BudgetOptions } from './budgets.js';

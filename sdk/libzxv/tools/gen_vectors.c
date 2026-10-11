@@ -370,6 +370,133 @@ static void evm(zxv_cap *cap)
     printf("}");
 }
 
+/* ABI 1.3: the 64-state hexagram tag. Every table below is computed by
+ * libzxv (never written by hand): the and/or results for some base pairs
+ * (e.g. BOTH and NEITHER) follow lpres's current tables and may change by
+ * the owner's decision, and `make vectors` will then show the diff. */
+static void hex_row(const char *key, int (*f)(uint8_t, uint8_t, uint8_t *))
+{
+    printf(",\"%s\":[", key);
+    for (int a = 0; a < 64; a++) {
+        printf("%s[", a ? "," : "");
+        for (int b = 0; b < 64; b++) {
+            uint8_t r = 0;
+            int st = f((uint8_t) a, (uint8_t) b, &r);
+            printf("%s%d", b ? "," : "", st == ZXV_OK ? (int) r : -1);
+        }
+        printf("]");
+    }
+    printf("]");
+}
+
+static int hex_and(uint8_t a, uint8_t b, uint8_t *o) { return zxv_hex_and(a, b, o); }
+static int hex_or(uint8_t a, uint8_t b, uint8_t *o) { return zxv_hex_or(a, b, o); }
+
+static void hex(zxv_cap *cap)
+{
+    printf(",\"hex\":{\"note\":\"tag = base<<4 | polarity<<2 | phase. Base codes are NOT ZXV_LP_* values: "
+           "use lp_to_base / base_to_lp. -1 marks a refused call (ZXV_E_STATE).\"");
+    printf(",\"base_names\":[\"false\",\"neither\",\"both\",\"true\"]");
+    printf(",\"polarity_names\":[\"entropic\",\"neutral\",\"forbidden\",\"negentropic\"]");
+    printf(",\"phase_names\":[\"potential\",\"emerging\",\"dissolving\",\"manifest\"]");
+    printf(",\"action_names\":[");
+    for (int a = 0; a < 5; a++) printf("%s\"%s\"", a ? "," : "", zxv_hex_action_name(a));
+    printf("],\"lp_to_base\":[");
+    for (int l = 0; l < 4; l++) {
+        uint8_t b;
+        zxv_hex_from_lp(l, &b);
+        printf("%s%u", l ? "," : "", b);
+    }
+    printf("],\"base_to_lp\":[");
+    for (int b = 0; b < 4; b++) {
+        int32_t l;
+        zxv_hex_to_lp((uint8_t) b, &l);
+        printf("%s%d", b ? "," : "", l);
+    }
+    printf("],\"phase_next\":[");
+    for (int p = 0; p < 4; p++) {
+        uint8_t n;
+        zxv_hex_phase_next((uint8_t) p, &n);
+        printf("%s%u", p ? "," : "", n);
+    }
+    printf("],\"tags\":[");
+    for (int t = 0; t < 64; t++) {
+        uint8_t b, p, ph;
+        int32_t act;
+        zxv_hex_unpack((uint8_t) t, &b, &p, &ph);
+        zxv_hex_action((uint8_t) t, &act);
+        printf("%s{\"tag\":%d,\"name\":\"%s\",\"base\":%u,\"polarity\":%u,\"phase\":%u,\"action\":%d}",
+               t ? "," : "", t, zxv_hex_name((uint8_t) t), b, p, ph, act);
+    }
+    printf("],\"not\":[");
+    for (int t = 0; t < 64; t++) {
+        uint8_t r;
+        zxv_hex_not((uint8_t) t, &r);
+        printf("%s%u", t ? "," : "", r);
+    }
+    printf("]");
+    hex_row("and", hex_and);
+    hex_row("or", hex_or);
+    printf(",\"step\":[");
+    for (int t = 0; t < 64; t++) {
+        printf("%s[", t ? "," : "");
+        for (int p = 0; p < 4; p++) {
+            uint8_t r;
+            int st = zxv_hex_step((uint8_t) t, (uint8_t) p, &r);
+            printf("%s%d", p ? "," : "", st == ZXV_OK ? (int) r : -1);
+        }
+        printf("]");
+    }
+    printf("],\"set\":[");
+    for (int t = 0; t < 64; t++) {
+        printf("%s[", t ? "," : "");
+        for (int bp = 0; bp < 16; bp++) {
+            uint8_t r;
+            int st = zxv_hex_set((uint8_t) t, (uint8_t) (bp >> 2), (uint8_t) (bp & 3), &r);
+            printf("%s%d", bp ? "," : "", st == ZXV_OK ? (int) r : -1);
+        }
+        printf("]");
+    }
+    static const uint32_t pc[][5] = {{0, 0, 1, 0, 0}, {3, 1, 5, 1, 0}, {3, 1, 3, 2, 0}, {3, 1, 4, 2, 0},
+                                     {0, 0, 0, 0, 0}, {3, 1, 9, 1, 1}, {1, 4, 1, 6, 0},
+                                     {4294967295u, 0, 0, 4294967295u, 0}, {2, 2, 7, 7, 0}};
+    printf("],\"polarity\":[");
+    for (size_t i = 0; i < sizeof pc / sizeof pc[0]; i++) {
+        uint8_t r;
+        zxv_hex_polarity(pc[i][0], pc[i][1], pc[i][2], pc[i][3], (int32_t) pc[i][4], &r);
+        printf("%s{\"pos0\":%u,\"neg0\":%u,\"pos1\":%u,\"neg1\":%u,\"stale\":%s,\"polarity\":%u}",
+               i ? "," : "", pc[i][0], pc[i][1], pc[i][2], pc[i][3], pc[i][4] ? "true" : "false", r);
+    }
+    /* A three-record quarantine chain, so an SDK can recompute the SHA-256
+     * links in host code and compare zxv_hexlog_at / zxv_hexlog_head. */
+    static const uint8_t qtag[3] = {0x3B, 0x28, 0x0A}; /* true/forbidden/manifest, both/forbidden/potential, false/forbidden/dissolving */
+    static const uint8_t qreason[3] = {1, 7, 255};
+    static const uint32_t qwho[3] = {42, 0xDEADBEEFu, 0};
+    zxv_hexlog *log;
+    zxv_hexlog_create(cap, 3, &log);
+    printf("],\"qlog\":{\"domain\":\"zxv/lpx-qlog/v1\",\"records\":[");
+    for (uint32_t k = 0; k < 3; k++) {
+        uint8_t subj[32], prev[32], hash[32];
+        for (int i = 0; i < 32; i++) subj[i] = (uint8_t) (i + 16 * k);
+        zxv_hexlog_append(cap, log, qtag[k], qreason[k], qwho[k], subj, NULL);
+        zxv_hexlog_at(log, k, NULL, NULL, NULL, NULL, NULL, prev, hash);
+        printf("%s{\"seq\":%u,\"tag\":%u,\"reason\":%u,\"submitter\":%u,\"subject\":", k ? "," : "", k,
+               qtag[k], qreason[k], qwho[k]);
+        phex(subj, 32);
+        printf(",\"prev\":");
+        phex(prev, 32);
+        printf(",\"hash\":");
+        phex(hash, 32);
+        printf("}");
+    }
+    uint8_t head[32];
+    zxv_hexlog_head(log, head);
+    printf("],\"head\":");
+    phex(head, 32);
+    printf("}}");
+    zxv_hexlog_destroy(log);
+}
+
 int main(int argc, char **argv)
 {
     const char *dir = argc > 1 ? argv[1] : "../conformance/fixtures";
@@ -389,6 +516,7 @@ int main(int argc, char **argv)
     swarm(ctx, cap);
     generation(cap, dir);
     evm(cap);
+    hex(cap);
     printf(",\"phase_cycle\":%u}\n", ZXV_PHASE_CYCLE);
     zxv_cap_destroy(cap);
     zxv_ctx_destroy(ctx);

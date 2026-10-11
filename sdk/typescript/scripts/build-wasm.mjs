@@ -70,7 +70,7 @@ const common = ['-std=c11', '-O2', '-DTEST_HOST', '-DZXV_HAVE_ARC4RANDOM=1', '-i
 if (noTensor && !defs.includes('-DZXV_NO_TENSOR')) common.push('-DZXV_NO_TENSOR');
 
 const units = [
-  ...['zxv_api', 'zxv_core', 'zxv_econ', 'zxv_crypto', 'zxv_tensor', 'zxv_evm'].map((n) => ({
+  ...['zxv_api', 'zxv_core', 'zxv_econ', 'zxv_crypto', 'zxv_tensor', 'zxv_evm', 'zxv_hex'].map((n) => ({
     src: join(lib, 'src', `${n}.c`), flags: ['-fvisibility=hidden', '-DZXV_BUILD_SHARED', '-Wall', '-Wno-unused-function'],
   })),
   ...ksrc.map((src) => ({ src, flags: ['-fvisibility=hidden', '-w'] })),

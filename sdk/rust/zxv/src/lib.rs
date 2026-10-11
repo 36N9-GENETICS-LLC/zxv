@@ -71,6 +71,7 @@ mod engine;
 mod error;
 mod evm;
 mod ffi;
+mod hexagram;
 pub mod iso20022;
 pub mod iso4217;
 mod ledger;
@@ -95,6 +96,9 @@ pub use evm::{Address, EvmState, StateChannel};
 pub use ffi::hex;
 #[doc(hidden)]
 pub use ffi::hex_decode;
+pub use hexagram::{
+    HexAction, HexBase, HexPhase, HexPolarity, Hexagram, QuarantineLog, QuarantineRecord,
+};
 pub use ledger::{AccountId, AccountInfo, AccountKind, Balance, JournalLine, Ledger, AMOUNT_MAX};
 pub use phase::{
     Advanced, Decision, DeferredEvent, EventFuture, EventState, Health, PhaseClock, StepFlags,
@@ -163,6 +167,8 @@ impl Features {
     pub const LORA: Features = Features(sys::ZXV_FEAT_LORA);
     /// EVM state channels.
     pub const EVM: Features = Features(sys::ZXV_FEAT_EVM);
+    /// The hexagram tag and quarantine log (ABI 1.3).
+    pub const HEX: Features = Features(sys::ZXV_FEAT_HEX);
 
     /// The raw mask.
     pub fn bits(self) -> u32 {
@@ -183,17 +189,17 @@ pub fn features() -> Features {
     Features(m)
 }
 
-/// Checks once that the loaded library speaks ABI 1.x with x >= 2.
+/// Checks once that the loaded library speaks ABI 1.x with x >= 3.
 pub(crate) fn ensure_compatible() -> Result<()> {
     static CHECK: OnceLock<Result<()>> = OnceLock::new();
     CHECK
         .get_or_init(|| {
             let (major, minor, _) = version();
-            if major != sys::ZXV_ABI_VERSION_MAJOR || minor < 2 {
+            if major != sys::ZXV_ABI_VERSION_MAJOR || minor < 3 {
                 return Err(Error::with_detail(
                     sys::ZXV_E_INTERNAL,
                     format!(
-                        "libzxv ABI {major}.{minor} is not compatible with this SDK (needs 1.2+)"
+                        "libzxv ABI {major}.{minor} is not compatible with this SDK (needs 1.3+)"
                     ),
                 ));
             }

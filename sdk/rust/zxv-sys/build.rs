@@ -81,7 +81,9 @@ impl bindgen::callbacks::ParseCallbacks for MacroTypes {
             || name.ends_with("_BYTES")
             || name == "ZXV_MLDSA_CTX_MAX"
             || name == "ZXV_PHASE_CYCLE"
-            || name == "ZXV_MINOR_NA";
+            || name == "ZXV_MINOR_NA"
+            || name == "ZXV_HEX_STATES"
+            || name == "ZXV_HEXLOG_MAX_RECORDS";
         Some(if unsigned { IntKind::U32 } else { IntKind::I32 })
     }
 }

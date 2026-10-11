@@ -188,6 +188,12 @@ public sealed class ZxvPlatform : IDisposable
     /// <returns>The registry; dispose it when done.</returns>
     public Attestations CreateAttestations(Capability capability) => new(RequireOwn(capability));
 
+    /// <summary>Creates a quarantine log for forbidden work (ABI 1.3, <c>zxv_hexlog</c>).</summary>
+    /// <param name="capability">A capability of this platform with <see cref="CapabilityRights.Attest"/>; appends go through it.</param>
+    /// <param name="capacity">The most records it holds, 1..<see cref="QuarantineLog.MaxRecords"/>.</param>
+    /// <returns>The log; dispose it when done.</returns>
+    public QuarantineLog CreateQuarantineLog(Capability capability, int capacity) => new(RequireOwn(capability), capacity);
+
     /// <summary>Creates a set of exact rational resource budgets (<c>rmag</c>).</summary>
     /// <param name="capability">A capability of this platform; budget calls need <see cref="CapabilityRights.Budget"/>.</param>
     /// <returns>The budgets; dispose them when done.</returns>

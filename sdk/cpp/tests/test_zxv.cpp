@@ -936,6 +936,161 @@ void test_stop_tokens()
     std::cout << "     stop tokens: " << (ZXV_STOP_TOKEN_FALLBACK ? "bundled fallback" : "std") << "\n";
 }
 
+// ---------------------------------------------------------------- hexagram (ABI 1.3)
+template <class E>
+std::int64_t num(E e)
+{
+    return static_cast<std::int64_t>(e);
+}
+
+void test_hexagram()
+{
+    using zxv::HexAction, zxv::HexBase, zxv::HexPhase, zxv::HexPolarity, zxv::Hexagram;
+    const auto& hx = g_vec["hex"];
+    CHECK(zxv::has_feature(zxv::feature::hex));
+    for (std::uint8_t i = 0; i < 4; ++i) {
+        CHECK(zxv::to_string(static_cast<HexBase>(i)) == hx["base_names"][i].str());
+        CHECK(zxv::to_string(static_cast<HexPolarity>(i)) == hx["polarity_names"][i].str());
+        CHECK(zxv::to_string(static_cast<HexPhase>(i)) == hx["phase_names"][i].str());
+        CHECK(num(zxv::next(static_cast<HexPhase>(i))) == hx["phase_next"][i].i64());
+    }
+    for (std::uint8_t i = 0; i < 5; ++i) CHECK(zxv::to_string(static_cast<HexAction>(i)) == hx["action_names"][i].str());
+    const auto all = Hexagram::all();
+    for (std::size_t i = 0; i < 64; ++i) {
+        const auto& v = hx["tags"][i];
+        const Hexagram h = Hexagram::from_tag(static_cast<std::uint8_t>(v["tag"].u64()));
+        CHECK(h == all[i]);
+        CHECK(h.name() == v["name"].str());
+        CHECK(num(h.base()) == v["base"].i64() && num(h.polarity()) == v["polarity"].i64());
+        CHECK(num(h.phase()) == v["phase"].i64() && num(h.action()) == v["action"].i64());
+        CHECK(Hexagram(h.base(), h.polarity(), h.phase()) == h);
+        CHECK(num((~h).tag()) == hx["not"][i].i64());
+        for (std::size_t j = 0; j < 64; ++j) {
+            CHECK(num((h & all[j]).tag()) == hx["and"][i][j].i64());
+            CHECK(num((h | all[j]).tag()) == hx["or"][i][j].i64());
+        }
+        for (std::uint8_t p = 0; p < 4; ++p) {
+            const std::int64_t want = hx["step"][i][p].i64();
+            if (want < 0) {
+                bool state = false;
+                try {
+                    (void) h.step(static_cast<HexPhase>(p));
+                } catch (const zxv::RefusedError& e) {
+                    state = e.status() == ZXV_E_STATE;
+                }
+                CHECK(state);
+            } else {
+                CHECK(num(h.step(static_cast<HexPhase>(p)).tag()) == want);
+            }
+        }
+        for (std::uint8_t b = 0; b < 4; ++b) {
+            for (std::uint8_t pol = 0; pol < 4; ++pol) {
+                const std::int64_t want = hx["set"][i][b * 4u + pol].i64();
+                if (want < 0)
+                    CHECK_THROWS_AS(h.with_state(static_cast<HexBase>(b), static_cast<HexPolarity>(pol)),
+                                    zxv::RefusedError);
+                else
+                    CHECK(num(h.with_state(static_cast<HexBase>(b), static_cast<HexPolarity>(pol)).tag()) == want);
+            }
+        }
+        CHECK(h.forbid() == Hexagram(h.base(), HexPolarity::forbidden, h.phase()));
+        CHECK(h.advance().phase() == zxv::next(h.phase()));
+    }
+    for (const auto& c : hx["polarity"].items)
+        CHECK(num(Hexagram::polarity_from_evidence(
+                  static_cast<std::uint32_t>(c["pos0"].u64()), static_cast<std::uint32_t>(c["neg0"].u64()),
+                  static_cast<std::uint32_t>(c["pos1"].u64()), static_cast<std::uint32_t>(c["neg1"].u64()),
+                  c["stale"].b)) == c["polarity"].i64());
+    for (std::int32_t t = 0; t < 4; ++t) {
+        const zxv::Truth tr = zxv::truth_from_c(t);
+        const Hexagram h = Hexagram::from_truth(tr, HexPolarity::neutral, HexPhase::potential);
+        CHECK(num(h.base()) == hx["lp_to_base"][static_cast<std::size_t>(t)].i64());
+        CHECK(h.to_truth() == tr);
+    }
+    for (std::uint8_t b = 0; b < 4; ++b)
+        CHECK(zxv::to_c(Hexagram(static_cast<HexBase>(b), HexPolarity::neutral, HexPhase::potential).to_truth()) ==
+              hx["base_to_lp"][b].i64());
+    // The numbering differs on purpose: Truth::true_ is 1, HexBase::true_ is 3.
+    CHECK(zxv::to_c(zxv::Truth::true_) == 1 && num(HexBase::true_) == 3);
+
+    for (std::uint8_t bad : {std::uint8_t{64}, std::uint8_t{100}, std::uint8_t{255}})
+        CHECK_THROWS_AS(Hexagram::from_tag(bad), zxv::UsageError);
+    CHECK_THROWS_AS(Hexagram(static_cast<HexBase>(4), HexPolarity::neutral, HexPhase::potential), zxv::UsageError);
+    CHECK(Hexagram{}.name() == "false/entropic/potential");
+    const Hexagram top(HexBase::true_, HexPolarity::negentropic, HexPhase::manifest);
+    CHECK(top.tag() == 63);
+    std::ostringstream os;
+    os << top;
+    CHECK(os.str() == "true/negentropic/manifest");
+    Hexagram f(HexBase::true_, HexPolarity::forbidden, HexPhase::potential);
+    CHECK(f.action() == HexAction::rollback);
+    for (int k = 0; k < 4; ++k) {
+        f = f.advance();
+        CHECK(f.is_forbidden());
+    }
+    CHECK((f & top).is_forbidden() && (f | top).is_forbidden() && (~f).is_forbidden());
+    CHECK_THROWS_AS(f.with_state(HexBase::true_, HexPolarity::neutral), zxv::RefusedError);
+    CHECK(f.with_state(HexBase::false_, HexPolarity::forbidden).base() == HexBase::false_);
+}
+
+void test_quarantine_log()
+{
+    using zxv::Hexagram, zxv::QuarantineLog;
+    const auto& q = g_vec["hex"]["qlog"];
+    {
+        zxv::Context ctx;
+        const zxv::Capability cap = ctx.root_capability(zxv::caps::all);
+        QuarantineLog log(cap, 3);
+        CHECK(log.count() == 0);
+        std::array<std::uint8_t, 32> prev{};
+        CHECK(log.head() == prev);
+        for (const auto& r : q["records"].items) {
+            std::array<std::uint8_t, 32> subj{};
+            const auto s = hex(r["subject"].str());
+            std::copy(s.begin(), s.end(), subj.begin());
+            const auto tag = Hexagram::from_tag(static_cast<std::uint8_t>(r["tag"].u64()));
+            const std::uint64_t seq = log.append(tag, static_cast<std::uint8_t>(r["reason"].u64()),
+                                                 static_cast<std::uint32_t>(r["submitter"].u64()), subj);
+            CHECK(seq == r["seq"].u64());
+            const auto rec = log.record(static_cast<std::uint32_t>(seq));
+            const auto want = hex(r["hash"].str());
+            CHECK(std::equal(want.begin(), want.end(), rec.hash.begin()));
+            CHECK(rec.prev == prev && rec.subject == subj && rec.tag == tag);
+            CHECK(rec.reason == r["reason"].u64() && rec.submitter == r["submitter"].u64());
+            prev = rec.hash;
+        }
+        const auto head = hex(q["head"].str());
+        const auto h = log.head();
+        CHECK(std::equal(head.begin(), head.end(), h.begin()));
+        CHECK(log.records().size() == 3 && log.records()[2].seq == 2);
+        log.verify();
+        bool full = false;
+        try {
+            (void) log.append(Hexagram::from_tag(0x3B), 0, 0, std::array<std::uint8_t, 32>{});
+        } catch (const zxv::RefusedError& e) {
+            full = e.status() == ZXV_E_CAPACITY;
+        }
+        CHECK(full);
+    }
+    {
+        zxv::Context ctx;
+        const zxv::Capability cap = ctx.root_capability(zxv::caps::all);
+        const zxv::Capability no_attest = cap.attenuate(zxv::caps::all & ~zxv::caps::attest);
+        CHECK_THROWS_AS(QuarantineLog(no_attest, 4), zxv::CapabilityDenied);
+        CHECK_THROWS_AS(QuarantineLog(cap, 0), zxv::UsageError);
+        CHECK_THROWS_AS(QuarantineLog(cap, QuarantineLog::max_records + 1), zxv::UsageError);
+        QuarantineLog log(cap, 4);
+        const std::array<std::uint8_t, 32> zero{};
+        const Hexagram plain(zxv::HexBase::true_, zxv::HexPolarity::neutral, zxv::HexPhase::emerging);
+        CHECK_THROWS_AS(log.append(plain, 1, 1, zero), zxv::UsageError);
+        const Hexagram forb(zxv::HexBase::both, zxv::HexPolarity::forbidden, zxv::HexPhase::emerging);
+        CHECK(log.append(forb, 9, 0xFFFFFFFFu, zero) == 0);
+        CHECK(log.record(0).submitter == 0xFFFFFFFFu);
+        ctx.halt("test");
+        CHECK_THROWS_AS(log.count(), zxv::FatalError);
+    }
+}
+
 } // namespace
 
 int main(int argc, char** argv)
@@ -960,6 +1115,8 @@ int main(int argc, char** argv)
         {"cap_from_another_context", test_cap_from_another_context},
         {"deprecated_no_cap_forms", test_deprecated_no_cap_forms},
         {"stop_tokens", test_stop_tokens},
+        {"hexagram", test_hexagram},
+        {"quarantine_log", test_quarantine_log},
     };
     for (const auto& [name, fn] : tests) {
         const int before = g_failures;
