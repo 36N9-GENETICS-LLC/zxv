@@ -297,6 +297,8 @@ static void test_engines(zxv_cap *cap)
     OK(zxv_hw_call(cap, mx, ZXV_HW_FN_SHA256, 0, (const uint8_t *) "abc", 3, out, sizeof out, &n));
     static const uint8_t abc[4] = {0xba, 0x78, 0x16, 0xbf};
     CHECK(n == 32 && !memcmp(out, abc, 4), "sha256(abc)");
+    /* Too small an output buffer is the caller's error, not the engine's. */
+    IS(zxv_hw_call(cap, mx, ZXV_HW_FN_SHA256, 0, (const uint8_t *) "abc", 3, out, 8, &n), ZXV_E_BUFFER);
     uint8_t mac_in[34] = {4, 0, 'J', 'e', 'f', 'e'};
     memcpy(mac_in + 6, "what do ya want for nothing?", 28);
     OK(zxv_hw_call(cap, mx, ZXV_HW_FN_MAC, 0, mac_in, 34, out, sizeof out, &n));

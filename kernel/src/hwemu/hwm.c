@@ -383,9 +383,11 @@ static int run(hwm_t *m, uint32_t pv, uint32_t op, const uint8_t *in, uint32_t i
     m->depth--;
     p->calls++;
     p->cost_spent += p->cost;
-    /* A nested M5 refusal is reported as itself; anything else the
-     * provider returns is its own error. */
-    if (rc < 0) return rc == HWM_E_DEP || rc == HWM_E_DEPTH ? rc : HWM_E_PROVIDER;
+    /* A nested M5 refusal and an output buffer too small for the result
+     * are reported as themselves; anything else the provider returns is
+     * its own error. */
+    if (rc < 0)
+        return rc == HWM_E_DEP || rc == HWM_E_DEPTH || rc == HWM_E_BUFFER ? rc : HWM_E_PROVIDER;
     if (got > out_cap) return HWM_E_BUFFER;
     if (out_len) *out_len = got;
     return HWM_OK;
