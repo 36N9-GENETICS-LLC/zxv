@@ -317,7 +317,8 @@ static void test_books(void)
            OK("2", "{\"enabled\":\"NGN\"}"));
     EXPECT(REQ("2", "currency.enable", ",\"params\":{\"code\":\"XXQ\"}"),
            "{\"jsonrpc\":\"2.0\",\"id\":2,\"error\":{\"code\":-32000,\"message\":\"ZXV_E_CURRENCY: "
-           "'XXQ' is not an ISO 4217 currency\",\"data\":{\"status\":\"ZXV_E_CURRENCY\",\"code\":-7}}}");
+           "'XXQ' is not an ISO 4217 currency\",\"data\":{\"status\":-7,\"name\":\"ZXV_E_CURRENCY\","
+           "\"class\":\"USAGE\"}}}");
     EXPECT(REQ("2", "currency.enable", ""), ERR("2", "-32602", "missing string parameter \\\"code\\\""));
     EXPECT(REQ("2", "currency.enable", ",\"params\":{\"code\":\"0123456789ABCDEF\"}"),
            ERR("2", "-32602", "\\\"code\\\" must be a string of at most 15 bytes"));
@@ -345,7 +346,7 @@ static void test_books(void)
            ERR("3", "-32602", "missing string parameter \\\"currency\\\""));
     CHECK(has(REQ("3", "ledger.open_account",
                   ",\"params\":{\"name\":\"x\",\"currency\":\"EUR\"}"),
-              "\"status\":\"ZXV_E_CURRENCY\""),
+              "\"name\":\"ZXV_E_CURRENCY\""),
           "a disabled currency is refused by libzxv");
     /* 63-byte names fit, 64 do not */
     char req[800], nm[80];
@@ -362,24 +363,24 @@ static void test_books(void)
     REQ("4", "ledger.post",                                                                        \
         ",\"params\":{\"from\":" f ",\"to\":" t ",\"amount_minor\":" a                             \
         ",\"currency\":\"USD\",\"reference\":\"" ref "\"}")
-    EXPECT(POST("0", "1", "10000", "R1"), OK("4", "{\"entry_id\":1}"));
-    EXPECT(POST("1", "2", "2550", "R2"), OK("4", "{\"entry_id\":2}"));
-    CHECK(has(POST("2", "1", "2551", "R3"), "\"status\":\"ZXV_E_FUNDS\",\"code\":-6"),
+    EXPECT(POST("0", "1", "10000", "R1"), OK("4", "{\"entry_id\":\"1\"}"));
+    EXPECT(POST("1", "2", "2550", "R2"), OK("4", "{\"entry_id\":\"2\"}"));
+    CHECK(has(POST("2", "1", "2551", "R3"), "\"data\":{\"status\":-6,\"name\":\"ZXV_E_FUNDS\",\"class\":\"REFUSED\"}"),
           "overdraft: ZXV_E_FUNDS");
-    EXPECT(POST("2", "1", "2550", "R4"), OK("4", "{\"entry_id\":3}"));
-    CHECK(has(POST("1", "2", "1", "R1"), "\"status\":\"ZXV_E_DUPLICATE\""), "reused reference");
-    CHECK(has(POST("1", "2", "0", "R5"), "\"status\":\"ZXV_E_RANGE\""), "zero amount");
-    CHECK(has(POST("1", "2", "-5", "R6"), "\"status\":\"ZXV_E_RANGE\""), "negative amount");
-    CHECK(has(POST("1", "9", "1", "R7"), "\"status\":\"ZXV_E_NOT_FOUND\""), "unknown account");
+    EXPECT(POST("2", "1", "2550", "R4"), OK("4", "{\"entry_id\":\"3\"}"));
+    CHECK(has(POST("1", "2", "1", "R1"), "\"name\":\"ZXV_E_DUPLICATE\""), "reused reference");
+    CHECK(has(POST("1", "2", "0", "R5"), "\"name\":\"ZXV_E_RANGE\""), "zero amount");
+    CHECK(has(POST("1", "2", "-5", "R6"), "\"name\":\"ZXV_E_RANGE\""), "negative amount");
+    CHECK(has(POST("1", "9", "1", "R7"), "\"name\":\"ZXV_E_NOT_FOUND\""), "unknown account");
     EXPECT(POST("1", "2", "1.5", "R8"),
-           ERR("4", "-32602", "\\\"amount_minor\\\" must be an integer (no fraction or exponent)"));
+           ERR("4", "-32602", "\\\"amount_minor\\\" must be an integer or a decimal string (no fraction or exponent)"));
     EXPECT(POST("1", "2", "1e3", "R8"),
-           ERR("4", "-32602", "\\\"amount_minor\\\" must be an integer (no fraction or exponent)"));
-    EXPECT(POST("1", "2", "\"5\"", "R8"),
-           ERR("4", "-32602", "\\\"amount_minor\\\" must be an integer (no fraction or exponent)"));
+           ERR("4", "-32602", "\\\"amount_minor\\\" must be an integer or a decimal string (no fraction or exponent)"));
+    EXPECT(POST("1", "2", "\"5.0\"", "R8"),
+           ERR("4", "-32602", "\\\"amount_minor\\\" must be an integer or a decimal string (no fraction or exponent)"));
     EXPECT(POST("-1", "2", "1", "R8"), ERR("4", "-32602", "\\\"from\\\" is out of range"));
     EXPECT(POST("4294967296", "2", "1", "R8"), ERR("4", "-32602", "\\\"from\\\" is out of range"));
-    CHECK(has(POST("4294967295", "2", "1", "R8"), "\"status\":\"ZXV_E_NOT_FOUND\""),
+    CHECK(has(POST("4294967295", "2", "1", "R8"), "\"name\":\"ZXV_E_NOT_FOUND\""),
           "UINT32_MAX is in range (and unknown)");
     EXPECT(POST("1", "-1", "1", "R8"), ERR("4", "-32602", "\\\"to\\\" is out of range"));
     EXPECT(REQ("4", "ledger.post", ",\"params\":{\"to\":1}"),
@@ -395,22 +396,22 @@ static void test_books(void)
            ERR("4", "-32602", "missing string parameter \\\"reference\\\""));
     EXPECT(POST("1", "2", "1", "0123456789012345678901234567890123456789"),
            ERR("4", "-32602", "\\\"reference\\\" must be a string of at most 39 bytes"));
-    EXPECT(POST("1", "2", "1", "R9"), OK("4", "{\"entry_id\":4}"));
+    EXPECT(POST("1", "2", "1", "R9"), OK("4", "{\"entry_id\":\"4\"}"));
 
     EXPECT(REQ("5", "ledger.balance", ",\"params\":{\"account\":1}"),
-           OK("5", "{\"debit_minor\":12550,\"credit_minor\":2551,\"equity_minor\":9999}"));
+           OK("5", "{\"debit_minor\":\"12550\",\"credit_minor\":\"2551\",\"equity_minor\":\"9999\"}"));
     EXPECT(REQ("5", "ledger.balance", ",\"params\":{\"account\":2}"),
-           OK("5", "{\"debit_minor\":2551,\"credit_minor\":2550,\"equity_minor\":1}"));
+           OK("5", "{\"debit_minor\":\"2551\",\"credit_minor\":\"2550\",\"equity_minor\":\"1\"}"));
     EXPECT(REQ("5", "ledger.balance", ",\"params\":{\"account\":0}"),
-           OK("5", "{\"debit_minor\":0,\"credit_minor\":10000,\"equity_minor\":-10000}"));
+           OK("5", "{\"debit_minor\":\"0\",\"credit_minor\":\"10000\",\"equity_minor\":\"-10000\"}"));
     CHECK(has(REQ("5", "ledger.balance", ",\"params\":{\"account\":44}"), "ZXV_E_NOT_FOUND"),
           "unknown account balance");
     EXPECT(REQ("5", "ledger.balance", ""), ERR("5", "-32602", "missing integer parameter \\\"account\\\""));
 
     EXPECT(REQ("6", "ledger.entries", ",\"params\":{\"account\":2}"),
-           OK("6", "{\"entries\":[{\"entry_id\":2,\"signed_minor\":2550,\"counterparty\":1,"
-                   "\"reference\":\"R2\"},{\"entry_id\":3,\"signed_minor\":-2550,\"counterparty\":1,"
-                   "\"reference\":\"R4\"},{\"entry_id\":4,\"signed_minor\":1,\"counterparty\":1,"
+           OK("6", "{\"entries\":[{\"entry_id\":\"2\",\"signed_minor\":\"2550\",\"counterparty\":1,"
+                   "\"reference\":\"R2\"},{\"entry_id\":\"3\",\"signed_minor\":\"-2550\",\"counterparty\":1,"
+                   "\"reference\":\"R4\"},{\"entry_id\":\"4\",\"signed_minor\":\"1\",\"counterparty\":1,"
                    "\"reference\":\"R9\"}]}"));
     EXPECT(REQ("6", "ledger.entries", ",\"params\":{\"account\":3}"), OK("6", "{\"entries\":[]}"));
     CHECK(has(REQ("6", "ledger.entries", ",\"params\":{\"account\":99}"), "ZXV_E_NOT_FOUND"),
@@ -425,6 +426,21 @@ static void test_books(void)
                      "{\"account\":4,\"name\":\"%s\",\"currency\":\"USD\",\"kind\":\"holder\"}]}"),
              "nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn");
     EXPECT(REQ("7", "ledger.accounts", ""), req);
+    EXPECT(POST("1", "2", "\"2\"", "S1"), OK("4", "{\"entry_id\":\"5\"}"));
+    EXPECT(POST("2", "1", "\"0002\"", "S2"), OK("4", "{\"entry_id\":\"6\"}"));
+    CHECK(has(POST("1", "2", "\"-3\"", "S3"), "\"name\":\"ZXV_E_RANGE\""), "a negative string amount");
+    CHECK(has(POST("1", "2", "\"9223372036854775807\"", "S4"), "\"name\":\"ZXV_E_RANGE\""),
+          "INT64_MAX parses, then libzxv refuses its range");
+    const char *bad[] = {"\"\"", "\"-\"", "\"+5\"", "\" 5\"", "\"5 \"", "\"1.0\"", "\"12a\"", "\"1e3\"",
+                         "\"9223372036854775808\"", "\"10000000000000000000\"", "\"-9223372036854775809\"",
+                         "\"99999999999999999999\"", "true", "null", "{}", "[1]"};
+    for (size_t i = 0; i < sizeof bad / sizeof bad[0]; i++) {
+        char r[300];
+        snprintf(r, sizeof r, "{\"jsonrpc\":\"2.0\",\"id\":4,\"method\":\"ledger.post\",\"params\":{\"from\":1,"
+                 "\"to\":2,\"amount_minor\":%s,\"currency\":\"USD\",\"reference\":\"SB\"}}", bad[i]);
+        EXPECT(r, ERR("4", "-32602", "\\\"amount_minor\\\" must be an integer or a decimal string (no "
+                                     "fraction or exponent)"));
+    }
     EXPECT(REQ("8", "ledger.check", ""), OK("8", "{\"ok\":true}"));
 }
 

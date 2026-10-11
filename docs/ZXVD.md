@@ -35,7 +35,10 @@ port with its token, printed on the `ZXV-URL:` line.
 - A regular file at the path is never replaced; a live zxvd on the path is
   never displaced.
 - Batches are refused. Notifications run and get no reply.
-- Amounts are integers in minor units. `1.5` is refused, never rounded.
+- Amounts are exact integers in minor units. 64-bit results (`entry_id`,
+  `*_minor`) are decimal strings; `amount_minor` may be an integer or a
+  decimal string. `1.5` is refused, never rounded.
+- zxvd refuses to start against libzxv older than ABI 1.3.
 - Up to 8 clients; an idle client is dropped after 60 s; a line over 16 KiB
   closes that client only.
 
@@ -70,11 +73,15 @@ CI checks it matches what zxvd serves.
 
 Errors: -32700 parse, -32600 invalid request or batch, -32601 unknown method,
 -32602 bad params, -32603 internal, -32000 a libzxv status, with
-`error.data.status` set to its `ZXV_E_*` name (e.g. `ZXV_E_FUNDS`).
+`error.data` = `{"status": -6, "name": "ZXV_E_FUNDS", "class": "REFUSED"}`
+(classes USAGE, REFUSED, FATAL, SYSTEM as in `zxv_api.h`). Capabilities are
+never sent over the socket.
 
 ## Tests
 
-`kernel/arch/hosted/test_zxvd.py ZXVD [GGUF]` drives everything above over
+`kernel/arch/hosted/test_zxvd_rpc.sh` runs the RPC layer alone against a
+stub host and the real libzxv (exact replies, every error, the socket); it is
+the mutation harness's test for `zxvd_rpc.c`. `kernel/arch/hosted/test_zxvd.py ZXVD [GGUF]` drives everything above over
 the socket only. CI (`.github/workflows/zxvd.yml`) runs it on Linux x86_64
 (gcc, clang, gcc with ASan+UBSan), Linux arm64 and macOS, without a model and
 with the tokenizer test model, and once with the real Qwen2.5-1.5B-Instruct

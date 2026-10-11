@@ -31,11 +31,17 @@
  *   M1  Host methods (swarm.*, model.*, notes.*, net.*, update.*,
  *       zxvd.shutdown) are served by callbacks the host fills in
  *       (zxvd_host_ops_t), so they act on the same state as the window.
- *   M2  Book methods (ledger.*, currency.*) call libzxv through one root
- *       capability created at start with the LEDGER_READ|LEDGER_POST bits
- *       only. Results and errors carry libzxv's status names verbatim.
- *   M3  Amounts are integers in minor units, on the wire and inside;
- *       a fraction or exponent in an amount is -32602, never rounded.
+ *   M2  Book methods (ledger.*, currency.*) call libzxv's *_cap forms
+ *       through one root capability, created at start with the
+ *       LEDGER_READ|LEDGER_POST bits only and never put on the wire. zxvd
+ *       refuses to start against libzxv older than ABI 1.3. A libzxv
+ *       failure is error -32000 with data {"status": ZXV_E_* number,
+ *       "name": its symbolic name, "class": USAGE|REFUSED|FATAL|SYSTEM}; once
+ *       the context is poisoned every book call returns the FATAL class.
+ *   M3  Amounts are exact integers in minor units. 64-bit values travel as
+ *       decimal strings in results ("entry_id", "*_minor"), as the SDKs
+ *       expect; "amount_minor" may be sent as a JSON integer or a decimal
+ *       string. A fraction or exponent is -32602, never rounded.
  *   M4  A notification (no "id") is executed and gets no response.
  */
 #ifndef ZXVD_RPC_H

@@ -196,27 +196,36 @@ def main(binary, gguf=None):
                                   'reference': 'E2E-ISSUE-1'})
         e2 = c.ok('ledger.post', {'from': A, 'to': O, 'amount_minor': 2550, 'currency': 'USD',
                                   'reference': 'E2E-PAY-1'})
-        check(e2['entry_id'] > e1['entry_id'], 'postings get increasing entry ids')
+        check(int(e2['entry_id']) > int(e1['entry_id']) and isinstance(e1['entry_id'], str),
+              'postings get increasing entry ids (64-bit values as decimal strings)')
         ba = c.ok('ledger.balance', {'account': A})
         bo = c.ok('ledger.balance', {'account': O})
         bb = c.ok('ledger.balance', {'account': B})
-        check(ba['equity_minor'] == 7450 and bo['equity_minor'] == 2550 and
-              bb['equity_minor'] == -10000,
+        check(ba['equity_minor'] == '7450' and bo['equity_minor'] == '2550' and
+              bb['equity_minor'] == '-10000',
               'balances are exact: alice 7450, bob 2550, bank -10000')
         r = c.call('ledger.post', {'from': O, 'to': A, 'amount_minor': 2551, 'currency': 'USD',
                                    'reference': 'E2E-OVERDRAW'})
         check(r.get('error', {}).get('code') == -32000 and
-              r['error'].get('data', {}).get('status') == 'ZXV_E_FUNDS',
-              'an overdraft is refused with ZXV_E_FUNDS')
+              r['error'].get('data') == {'status': -6, 'name': 'ZXV_E_FUNDS', 'class': 'REFUSED'},
+              'an overdraft is refused: ZXV_E_FUNDS, class REFUSED')
         r = c.call('ledger.post', {'from': A, 'to': O, 'amount_minor': 1.5, 'currency': 'USD',
                                    'reference': 'E2E-FRACTION'})
         check(r.get('error', {}).get('code') == -32602, 'a fractional amount is -32602, never rounded')
         r = c.call('ledger.post', {'from': A, 'to': O, 'amount_minor': 1, 'currency': 'USD',
                                    'reference': 'E2E-PAY-1'})
-        check(r.get('error', {}).get('data', {}).get('status') == 'ZXV_E_DUPLICATE',
+        check(r.get('error', {}).get('data', {}).get('name') == 'ZXV_E_DUPLICATE',
               'a reused reference is refused with ZXV_E_DUPLICATE')
-        ent = c.ok('ledger.entries', {'account': A})['entries']
-        check([e['signed_minor'] for e in ent] == [10000, -2550] and
+        e3 = c.ok('ledger.post', {'from': O, 'to': A, 'amount_minor': '50', 'currency': 'USD',
+                                  'reference': 'E2E-STR-1'})
+        check(int(e3['entry_id']) == int(e2['entry_id']) + 1 and
+              c.ok('ledger.balance', {'account': O})['equity_minor'] == '2500',
+              'a decimal-string amount is accepted')
+        c.ok('ledger.post', {'from': A, 'to': O, 'amount_minor': 50, 'currency': 'USD',
+                             'reference': 'E2E-STR-2'})
+        ent = [e for e in c.ok('ledger.entries', {'account': A})['entries']
+               if not e['reference'].startswith('E2E-STR')]
+        check([e['signed_minor'] for e in ent] == ['10000', '-2550'] and
               ent[1]['counterparty'] == O and ent[1]['reference'] == 'E2E-PAY-1',
               'ledger.entries: alice\'s journal')
         acc = c.ok('ledger.accounts')['accounts']

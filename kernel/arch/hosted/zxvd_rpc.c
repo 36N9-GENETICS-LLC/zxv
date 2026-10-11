@@ -38,7 +38,7 @@
 #define E_METHOD   (-32601)
 #define E_PARAMS   (-32602)
 #define E_INTERNAL (-32603)
-#define E_LIBZXV   (-32000) /* a libzxv status: data.status names it */
+#define E_LIBZXV   (-32000) /* a libzxv status: data = {status, name, class} */
 
 /* ===================== output buffer ===================== */
 
@@ -109,7 +109,10 @@ void zxvd_rpc_set_ops(const zxvd_host_ops_t *ops)
 
 int zxvd_rpc_books_open(void)
 {
+    uint32_t ma = 0, mi = 0, pa = 0;
     if (CTX) return 0;
+    /* the methods here need ABI 1.3 (zxvd_rpc.h M2): refuse an older library */
+    if (zxv_version(&ma, &mi, &pa) != ZXV_OK || ma != 1 || mi < 3) return -1;
     if (zxv_ctx_create(&CTX) != ZXV_OK) return -1;
     if (zxv_cap_create(CTX, 1, NULL, ZXV_CAP_LEDGER_READ | ZXV_CAP_LEDGER_POST, &CAP) != ZXV_OK) {
         zxv_ctx_destroy(CTX);
@@ -213,6 +216,36 @@ static bool p_u32(call_t *c, const char *key, uint32_t *v)
     }
     *v = (uint32_t) x;
     return true;
+}
+
+/* M3: an amount is a JSON integer or a decimal string ("-12", no sign "+",
+ * no spaces, no fraction): the SDKs send 64-bit values as strings. */
+static bool p_amount(call_t *c, const char *key, int64_t *v)
+{
+    int32_t i = param(c, key);
+    if (i < 0) {
+        fail(c, E_PARAMS, "missing integer parameter \"%s\"", key);
+        return false;
+    }
+    if (c->t[i].type == W4_J_NUM && w4_json_i64(c->js, &c->t[i], v) == W4_OK) return true;
+    if (c->t[i].type == W4_J_STR) {
+        const char *p = c->js + c->t[i].start, *e = c->js + c->t[i].end;
+        bool neg = p < e && *p == '-';
+        if (neg) p++;
+        uint64_t x = 0;
+        bool ok = p < e && e - p <= 19;
+        for (; ok && p < e; p++) {
+            if (*p < '0' || *p > '9') ok = false;
+            else x = x * 10u + (uint64_t) (*p - '0');
+        }
+        if (ok && x <= (uint64_t) INT64_MAX) {
+            *v = neg ? -(int64_t) x : (int64_t) x;
+            return true;
+        }
+    }
+    fail(c, E_PARAMS, "\"%s\" must be an integer or a decimal string (no fraction or exponent)",
+         key);
+    return false;
 }
 
 /* ----- host methods (M1) ----- */
@@ -336,11 +369,11 @@ static void m_post(call_t *c)
     char ccy[16], ref[40];
     uint64_t entry;
     if (!books(c) || !p_u32(c, "from", &from) || !p_u32(c, "to", &to) ||
-        !p_i64(c, "amount_minor", &amount) || !p_str(c, "currency", ccy, sizeof ccy, true) ||
+        !p_amount(c, "amount_minor", &amount) || !p_str(c, "currency", ccy, sizeof ccy, true) ||
         !p_str(c, "reference", ref, sizeof ref, true))
         return;
     if (!zok(c, zxv_ledger_post_cap(CAP, from, to, amount, ccy, ref, &entry))) return;
-    zxvd_buf_printf(c->res, "{\"entry_id\":%llu}", (unsigned long long) entry);
+    zxvd_buf_printf(c->res, "{\"entry_id\":\"%llu\"}", (unsigned long long) entry);
 }
 
 static void m_balance(call_t *c)
@@ -349,7 +382,7 @@ static void m_balance(call_t *c)
     int64_t d, cr, eq;
     if (!books(c) || !p_u32(c, "account", &acct)) return;
     if (!zok(c, zxv_ledger_balance_cap(CAP, acct, &d, &cr, &eq))) return;
-    zxvd_buf_printf(c->res, "{\"debit_minor\":%lld,\"credit_minor\":%lld,\"equity_minor\":%lld}",
+    zxvd_buf_printf(c->res, "{\"debit_minor\":\"%lld\",\"credit_minor\":\"%lld\",\"equity_minor\":\"%lld\"}",
                     (long long) d, (long long) cr, (long long) eq);
 }
 
@@ -391,7 +424,7 @@ static void m_entries(call_t *c)
         if (!zok(c, zxv_ledger_entry_at_cap(CAP, acct, i, &id, &amt, &cp, ref, sizeof ref, &rl)))
             return;
         zxvd_buf_printf(c->res,
-                        "%s{\"entry_id\":%llu,\"signed_minor\":%lld,\"counterparty\":%u,"
+                        "%s{\"entry_id\":\"%llu\",\"signed_minor\":\"%lld\",\"counterparty\":%u,"
                         "\"reference\":",
                         i ? "," : "", (unsigned long long) id, (long long) amt, (unsigned) cp);
         zxvd_buf_json_str(c->res, ref);
@@ -467,9 +500,11 @@ static void put_error(zxvd_buf_t *out, const char *js, const w4_jtok_t *t, int32
     zxvd_buf_printf(out, ",\"error\":{\"code\":%d,\"message\":", code);
     zxvd_buf_json_str(out, msg);
     if (code == E_LIBZXV) {
-        zxvd_buf_raw(out, ",\"data\":{\"status\":", 18);
+        static const char *const CLASS[] = {"OK", "USAGE", "REFUSED", "FATAL", "SYSTEM"};
+        int32_t k = zxv_status_class(zst);
+        zxvd_buf_printf(out, ",\"data\":{\"status\":%d,\"name\":", (int) zst);
         zxvd_buf_json_str(out, zxv_status_name(zst));
-        zxvd_buf_printf(out, ",\"code\":%d}", (int) zst);
+        zxvd_buf_printf(out, ",\"class\":\"%s\"}", k >= 0 && k <= 4 ? CLASS[k] : "SYSTEM");
     }
     zxvd_buf_raw(out, "}}", 2);
 }
