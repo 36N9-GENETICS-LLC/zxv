@@ -356,13 +356,15 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        kit: [z-contract, z-ffi, adapter-matrix]
+        kit: [z-contract, z-ffi, adapter-matrix, z-audit, tri-isolate]
         os: [ubuntu-24.04]
         cc: [gcc, clang]
         include:
           - { kit: z-contract, os: macos-14, cc: clang }
           - { kit: z-ffi, os: macos-14, cc: clang }
           - { kit: adapter-matrix, os: macos-14, cc: clang }
+          - { kit: z-audit, os: macos-14, cc: clang }
+          - { kit: tri-isolate, os: macos-14, cc: clang }
     runs-on: ${{ matrix.os }}
     defaults:
       run:
@@ -388,6 +390,8 @@ jobs:
           - { kit: z-contract, seedvar: ZC_FUZZ_SEED }
           - { kit: z-ffi, seedvar: ZF_FUZZ_SEED }
           - { kit: adapter-matrix, seedvar: ZA_FUZZ_SEED }
+          - { kit: z-audit, seedvar: ZAU_FUZZ_SEED }
+          - { kit: tri-isolate, seedvar: TI_FUZZ_SEED }
     runs-on: ubuntu-24.04
     defaults:
       run:

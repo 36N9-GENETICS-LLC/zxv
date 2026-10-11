@@ -37,9 +37,11 @@ Kits are building blocks on top of the same C ABI; see
 | Kit | What it is |
 |---|---|
 | [Z-Wasm](kits/z-wasm/) | A sandbox for WebAssembly plugins: a no-float validator, fuel charged to an `rmag` budget, and a proposal queue the host must approve. |
-| [z-contract](kits/z-contract/) | Typed contracts with exact-rational bounds for plugin exports; a violation stops the plugin like a trap and is recorded in a SHA3-256 hash-chained evidence log. |
+| [z-contract](kits/z-contract/) | Typed contracts with exact-rational bounds for plugin exports; a violation stops the plugin like a trap and is recorded in a SHA3-256 hash-chained evidence log, and optionally in the ABI 1.3 quarantine log. |
 | [z-ffi](kits/z-ffi/) | Typed, capability-gated wrappers for calling C libraries, generated from a spec; float results only by exact conversion. Not a sandbox. |
 | [adapter-matrix](kits/adapter-matrix/) | JSON, MQTT and FIX adapters that parse numbers exactly and label every inbound record (accepted-unverified or refused, with reasons). |
+| [z-audit](kits/z-audit/) | A static checker for plugins, run in CI before publishing: validator, float/SIMD, import allow-list, contract declarations and bounds, and bounded checks on simple export bodies. Bounded checks, not a proof. |
+| [Tri-Isolate](kits/tri-isolate/) | Runs each plugin in its own worker process; the host keeps the fuel budget and the proposal queue, and kills the worker on fuel exhaustion or timeout. A process boundary, not a VM (POSIX; optional Linux seccomp). |
 
 ## Frameworks
 
