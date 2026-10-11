@@ -18,7 +18,7 @@ every language.
 |---|---|---|---|---|
 | C / C ABI | [`libzxv`](libzxv/) | `libzxv.so` / `.dylib` | the library itself | 3,478 checks, ASan + UBSan |
 | Java, Kotlin, Scala | [`java`](java/) | `org.zedec.zxv` | Java 22 FFM (no JNI) | 48 |
-| .NET (C#, F#, Unity) | [`dotnet`](dotnet/) | `Zxv.Sdk` | `LibraryImport` | 128 |
+| .NET (C#, F#, Unity) | [`dotnet`](dotnet/) | `Zxv.Sdk` | `LibraryImport` | 141 |
 | Python | [`python`](python/) | `zxv-sdk` | cffi, GIL released | 111, `mypy --strict` |
 | TypeScript / JavaScript | [`typescript`](typescript/) | `@zedec/zxv` | Node-API addon and WebAssembly | 102 (both backends) |
 | Solidity / EVM | [`solidity`](solidity/) | `ZxvStateChannel.sol` | verifies libzxv's state encoding | 10 |
@@ -52,6 +52,8 @@ idioms; see [`frameworks/`](frameworks/).
 |---|---|---|---|---|
 | Spring Boot 3 | [`spring-zxv`](frameworks/spring-zxv/) | `org.zedec:zxv-spring-boot-starter` | [`java`](java/) | 36 |
 | ASP.NET Core 8 | [`aspnetcore-zxv`](frameworks/aspnetcore-zxv/) | `Zxv.AspNetCore` | [`dotnet`](dotnet/) | 56 |
+| NestJS 12 | [`nest-zxv`](frameworks/nest-zxv/) | `@zedec/zxv-nestjs` | [`typescript`](typescript/) | 35 |
+| Django 5.2+ | [`django-zxv`](frameworks/django-zxv/) | `django-zxv` | [`python`](python/) | 56 |
 
 Each gives a managed context closed in ABI order, narrow capabilities
 declared in configuration (the root is never injectable), a fail-closed

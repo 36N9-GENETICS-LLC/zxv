@@ -183,6 +183,7 @@ public sealed class Capability : IDisposable
             throw new ArgumentException("An identity is exactly 21 bytes (168 bits), or empty for zeros.", nameof(identity));
         }
 
+        context.ThrowIfDisposed();
         context.ThrowIfHalted("Capability.CreateRoot");
         int rc;
         ZxvCapabilityHandle handle;

@@ -115,11 +115,11 @@ all: $(LIB) $(STATIC)
 
 $(OUT)/k/%.o: $(K)/%.c
 	@mkdir -p $(dir $@)
-	$(CC) $(KFLAGS) $(INC) -c $< -o $@
+	$(CC) $(KFLAGS) -MMD -MP $(INC) -c $< -o $@
 
 $(OUT)/%.o: src/%.c include/zxv_api.h src/zxv_internal.h src/zxv_q16.h
 	@mkdir -p $(OUT)
-	$(CC) $(CFLAGS_COMMON) -DZXV_BUILD_SHARED $(DEFS) $(INC) -c $< -o $@
+	$(CC) $(CFLAGS_COMMON) -MMD -MP -DZXV_BUILD_SHARED $(DEFS) $(INC) -c $< -o $@
 
 $(LIB): $(OBJ) $(KOBJ)
 	$(CC) $(SOFLAG) $(SAN) -o $@ $^ -lpthread -lm
@@ -127,6 +127,10 @@ $(LIB): $(OBJ) $(KOBJ)
 $(STATIC): $(OBJ) $(KOBJ)
 	@rm -f $@
 	$(AR) rcs $@ $^
+
+# Header dependencies (kernel headers included), so an incremental build
+# after a kernel merge never links stale objects.
+-include $(OBJ:.o=.d) $(KOBJ:.o=.d)
 
 TESTCC := $(CC) -std=c11 -O1 -g -Wall -Wextra -Werror -Iinclude $(SAN)
 $(OUT)/test_zxv_api: test/test_zxv_api.c include/zxv_api.h $(LIB)

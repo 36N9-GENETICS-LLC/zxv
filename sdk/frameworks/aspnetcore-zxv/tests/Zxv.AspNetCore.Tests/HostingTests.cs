@@ -265,12 +265,12 @@ public sealed class HostingTests
     {
         using IHost host = Build(TellerAuditor);
         await host.StartAsync();
-        // Children keep the native context alive (Zxv.Sdk SafeHandle
-        // ref-counting), so release them first, in ABI.md R6 order.
-        host.Services.GetRequiredKeyedService<Capability>("teller").Dispose();
-        host.Services.GetRequiredKeyedService<Capability>("auditor").Dispose();
-        host.Services.GetRequiredKeyedService<Capability>(ZxvServiceKeys.Root).Dispose();
+        // The named capabilities and the root are still alive and still hold
+        // the native context (ABI.md R6), but the platform itself reports
+        // disposed at once, so the check fails closed.
+        Capability teller = host.Services.GetRequiredKeyedService<Capability>("teller");
         host.Services.GetRequiredService<ZxvPlatform>().Dispose();
+        Assert.False(teller.GetInfo().IsRevoked);
         HealthReport down = await host.Services.GetRequiredService<HealthCheckService>().CheckHealthAsync();
         Assert.Equal(HealthStatus.Unhealthy, down.Status);
         Assert.Equal("disposed", down.Entries["zxv"].Data["state"]);

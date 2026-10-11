@@ -1,8 +1,9 @@
 # Copyright (c) 2024-2026 Michael Laurence Curzi and 36N9 Genetics, LLC
 # SPDX-License-Identifier: Apache-2.0
 #
-# Framework kits (sdk/frameworks): the Spring Boot starter over sdk/java and
-# Zxv.AspNetCore over sdk/dotnet. Each job builds libzxv itself, then the
+# Framework kits (sdk/frameworks): the Spring Boot starter over sdk/java,
+# Zxv.AspNetCore over sdk/dotnet, @zedec/zxv-nestjs over sdk/typescript and
+# django-zxv over sdk/python. Each job builds libzxv itself, then the
 # SDK it wraps, then the kit, and runs the kit's integration tests against
 # the real library.
 name: SDK frameworks
@@ -13,6 +14,8 @@ on:
       - 'sdk/frameworks/**'
       - 'sdk/java/**'
       - 'sdk/dotnet/**'
+      - 'sdk/typescript/**'
+      - 'sdk/python/**'
       - 'sdk/libzxv/**'
       - 'kernel/src/**'
       - 'kernel/third_party/**'
@@ -22,6 +25,8 @@ on:
       - 'sdk/frameworks/**'
       - 'sdk/java/**'
       - 'sdk/dotnet/**'
+      - 'sdk/typescript/**'
+      - 'sdk/python/**'
       - 'sdk/libzxv/**'
       - 'kernel/src/**'
       - 'kernel/third_party/**'
@@ -75,3 +80,56 @@ jobs:
       - name: Build (Release, warnings as errors)
         run: dotnet build Zxv.AspNetCore.sln -c Release -p:ZxvSkipNativeBuild=true
       - run: dotnet test Zxv.AspNetCore.sln -c Release --no-build
+
+  nest:
+    name: nest ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-14]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        working-directory: sdk/frameworks/nest-zxv
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - run: make -C ../../libzxv all fixtures
+      - name: Build the TypeScript SDK (@zedec/zxv, Node-API backend)
+        run: |
+          cd ../../typescript
+          npm ci
+          npm run build:ts
+      - run: npm ci
+      - name: Typecheck (strict)
+        run: npm run typecheck
+      - run: npm test
+
+  django:
+    name: django ${{ matrix.os }} py${{ matrix.py }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-14]
+        py: ['3.12', '3.13']
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        working-directory: sdk/frameworks/django-zxv
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.py }}
+      - run: make -C ../../libzxv all fixtures
+      - name: Install the Python SDK, the kit and the pinned tools
+        run: python -m pip install -e ../../python -e . -r requirements-dev.txt
+      - name: Test (Django's test runner)
+        run: python runtests.py -v 2
+      - name: Type-check (mypy --strict, django-stubs)
+        run: python -m mypy
