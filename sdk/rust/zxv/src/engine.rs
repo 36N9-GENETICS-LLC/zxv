@@ -529,8 +529,8 @@ impl<'a> Session<'a> {
     }
 
     /// Generates on a helper thread and hands `consume` an iterator over
-    /// the tokens as they arrive. Dropping the iterator early stops
-    /// generation. Returns what `consume` returned and the full result.
+    /// the tokens as they arrive. Generation proceeds in step with the
+    /// iterator, and dropping it early stops generation. Returns what `consume` returned and the full result.
     ///
     /// ```no_run
     /// # fn demo(session: &mut zxv::Session<'_>) -> zxv::Result<()> {
@@ -548,7 +548,10 @@ impl<'a> Session<'a> {
         opts: &GenerateOptions,
         consume: impl FnOnce(TokenStream) -> R,
     ) -> Result<(R, Generation)> {
-        let (tx, rx) = mpsc::sync_channel::<Token>(16);
+        // A rendezvous channel: the engine waits for each token to be taken,
+        // so dropping the iterator stops generation after at most one more
+        // token, however fast the model is.
+        let (tx, rx) = mpsc::sync_channel::<Token>(0);
         std::thread::scope(|s| {
             let worker =
                 s.spawn(move || self.generate_with(prompt, opts, move |t| tx.send(t).is_ok()));
