@@ -60,7 +60,8 @@ def _run(code: str, **env: str) -> "subprocess.CompletedProcess[str]":
 
 
 def test_search_order_env_var_and_explicit_path() -> None:
-    lib_file = str(REPO_LIB / "libzxv.so")
+    lib_name = {"darwin": "libzxv.dylib", "win32": "zxv.dll"}.get(sys.platform, "libzxv.so")
+    lib_file = str(REPO_LIB / lib_name)
     r = _run("import zxv; print(zxv.abi_version(), zxv.library_path())", ZXV_LIBRARY_PATH=lib_file)
     assert r.returncode == 0, r.stderr
     assert lib_file in r.stdout
