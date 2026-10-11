@@ -1,0 +1,89 @@
+# Copyright (c) 2024-2026 Michael Laurence Curzi and 36N9 Genetics, LLC
+# SPDX-License-Identifier: Apache-2.0
+#
+# zxvd: the daemon that joins the swarm, the model slot, the settlement
+# spine and libzxv in one process, driven end to end over its JSON-RPC
+# socket (kernel/arch/hosted/test_zxvd.py). Runs on every branch, so the
+# wiring is gated whatever a PR's base is.
+name: zxvd
+
+on:
+  push:
+    paths: ['kernel/arch/hosted/**', 'kernel/src/**', 'sdk/libzxv/**', 'api/zxvd.openrpc.json',
+            '.github/workflows/zxvd.yml']
+  pull_request:
+    paths: ['kernel/arch/hosted/**', 'kernel/src/**', 'sdk/libzxv/**', 'api/zxvd.openrpc.json',
+            '.github/workflows/zxvd.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  e2e:
+    name: zxvd ${{ matrix.os }} ${{ matrix.cc }}${{ matrix.san && ' asan+ubsan' || '' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-24.04, cc: gcc }
+          - { os: ubuntu-24.04, cc: clang }
+          - { os: ubuntu-24.04, cc: gcc, san: '1' }
+          - { os: ubuntu-24.04-arm, cc: gcc }
+          - { os: macos-14, cc: clang }
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+      - name: RPC layer unit test (stub host, real libzxv, socket)
+        env:
+          CC: ${{ matrix.cc }}
+        run: sh kernel/arch/hosted/test_zxvd_rpc.sh
+      - name: Build zxvd against libzxv
+        env:
+          CC: ${{ matrix.cc }}
+          SANITIZE: ${{ matrix.san }}
+        run: sh kernel/arch/hosted/build_zxvd.sh "$RUNNER_TEMP/zxvd"
+      - name: The method spec matches the daemon
+        run: python3 kernel/arch/hosted/check_zxvd_spec.py "$RUNNER_TEMP/zxvd/zxvd"
+      - name: End to end, no model
+        run: python3 kernel/arch/hosted/test_zxvd.py "$RUNNER_TEMP/zxvd/zxvd"
+      - name: End to end, with the tokenizer test model
+        run: |
+          ${{ matrix.cc }} -std=c11 -Wall -Wextra -Werror -Ikernel/src/tensor \
+            kernel/arch/hosted/test_write_gguf.c -o "$RUNNER_TEMP/write_gguf"
+          "$RUNNER_TEMP/write_gguf" "$RUNNER_TEMP/tiny-test.gguf"
+          python3 kernel/arch/hosted/test_zxvd.py "$RUNNER_TEMP/zxvd/zxvd" "$RUNNER_TEMP/tiny-test.gguf"
+
+  mutation:
+    # zxvd_rpc.c against its unit test; fails below the baseline in
+    # tests/harness/mutator/targets.json (ci.yml's gate only runs on PRs to main)
+    name: zxvd_rpc mutation score
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v5
+      - run: python3 tests/harness/mutator/mutate.py --config tests/harness/mutator/targets.json --only zxvd_rpc --phase after --jobs 4 --out mutation-results
+
+  real-model:
+    # Qwen2.5-1.5B-Instruct Q4_K_M (Apache-2.0), pinned by SHA-256, never in git.
+    name: zxvd with Qwen2.5-1.5B
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/cache@v4
+        with:
+          path: ~/zxv-models
+          key: qwen2.5-1.5b-instruct-q4_k_m-6a1a2eb6
+      - name: Fetch the model (checked against its pinned hash)
+        run: |
+          mkdir -p ~/zxv-models
+          F=~/zxv-models/qwen2.5-1.5b-instruct-q4_k_m.gguf
+          [ -f "$F" ] || curl -fsSL --retry 3 -o "$F" \
+            https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF/resolve/main/qwen2.5-1.5b-instruct-q4_k_m.gguf
+          echo "6a1a2eb6d15622bf3c96857206351ba97e1af16c30d7a74ee38970e434e9407e  $F" | sha256sum -c -
+      - name: Build zxvd
+        run: sh kernel/arch/hosted/build_zxvd.sh "$RUNNER_TEMP/zxvd"
+      - name: End to end, a real model answers through the daemon
+        run: python3 kernel/arch/hosted/test_zxvd.py "$RUNNER_TEMP/zxvd/zxvd" ~/zxv-models/qwen2.5-1.5b-instruct-q4_k_m.gguf
