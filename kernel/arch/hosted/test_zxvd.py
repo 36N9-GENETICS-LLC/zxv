@@ -142,17 +142,22 @@ def main(binary, gguf=None):
         s0 = c.ok('swarm.state')
         check(s0['companion']['cycle_open'] and s0['ledger_halt'] == 0 and s0['levels'] >= 1,
               'swarm.state: companion cycle open, settlement spine running')
-        time.sleep(1.5)
+        t0 = time.time()
         s1 = c.ok('swarm.state')
-        check(s1['tick'] > s0['tick'] and s1['settled'] >= s0['settled'] and
-              s1['ledger_postings'] >= s0['ledger_postings'] and s1['ledger_halt'] == 0,
-              'the swarm keeps stepping and settling while served over RPC '
-              '(tick %d -> %d, postings %d -> %d)' % (s0['tick'], s1['tick'],
-                                                      s0['ledger_postings'], s1['ledger_postings']))
-        check(s1['audit'] in ('active', 'off') and
-              (s1['audit'] == 'off' or s1['ledger_audited'] >= 1),
-              'the node self-audits its ledger postings (%s, %d)' % (s1['audit'],
-                                                                     s1['ledger_audited']))
+        while (s1['cycle'] < 2 or s1['tick'] <= s0['tick']) and time.time() - t0 < 20:
+            time.sleep(0.2)
+            s1 = c.ok('swarm.state')
+        check(s1['tick'] > s0['tick'] and s1['cycle'] >= 2,
+              'the swarm keeps stepping while served over RPC (tick %d -> %d, cycle %d)' %
+              (s0['tick'], s1['tick'], s1['cycle']))
+        check(s1['held'] == 0 and s1['settled'] == s1['cycle'] and s1['ledger_halt'] == 0 and
+              s1['ledger_synced'] == 2 * s1['cycle'],
+              'every cycle settled and reconciled with the ledger of record '
+              '(%d cycles, %d syncs)' % (s1['cycle'], s1['ledger_synced']))
+        transfers = s1['ledger_postings'] - s1['ledger_issues']
+        check(s1['audit'] == 'active' and s1['ledger_audited'] == transfers,
+              'the node self-audits every ledger transfer (%d of %d, %s)' %
+              (s1['ledger_audited'], transfers, s1['audit']))
         mi = c.ok('model.info')
         if gguf:
             check(mi['loaded'] and mi['arch'] == 'qwen2' and mi['n_vocab'] > 1000,
@@ -239,9 +244,10 @@ def main(binary, gguf=None):
         check(all(o.ok('swarm.state')['tick'] >= s1['tick'] for o in others),
               'several clients are served at once')
         big = Client(sock)
-        big.send_raw('{"jsonrpc":"2.0","id":1,"method":"swarm.ask","params":{"prompt":"' +
-                     'x' * 20000 + '"}}\n')
         try:
+            # the server may close mid-send (EPIPE on macOS): that is the expected outcome
+            big.send_raw('{"jsonrpc":"2.0","id":1,"method":"swarm.ask","params":{"prompt":"' +
+                         'x' * 20000 + '"}}\n')
             big.read()
             closed = False
         except (ConnectionError, OSError):

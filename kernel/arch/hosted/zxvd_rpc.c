@@ -602,7 +602,7 @@ static int ensure_dir(const char *path)
     *slash = 0;
     struct stat st;
     if (stat(dir, &st) != 0) {
-        if (mkdir(dir, 0700) != 0) return -1;
+        if (mkdir(dir, S_IRWXU) != 0) return -1;
         return 0;
     }
     if (!S_ISDIR(st.st_mode) || st.st_uid != geteuid()) return -1;
@@ -650,10 +650,10 @@ int zxvd_rpc_open(const char *path, const zxvd_host_ops_t *ops)
     memset(&a, 0, sizeof a);
     a.sun_family = AF_UNIX;
     memcpy(a.sun_path, path, strlen(path) + 1);
-    mode_t old = umask(0177); /* the socket file is born 0600 */
+    mode_t old = umask(S_IXUSR | S_IRWXG | S_IRWXO); /* the socket file is born 0600 */
     int b = bind(fd, (struct sockaddr *) &a, sizeof a);
     umask(old);
-    if (b != 0 || chmod(path, 0600) != 0 || listen(fd, 8) != 0) {
+    if (b != 0 || chmod(path, S_IRUSR | S_IWUSR) != 0 || listen(fd, 8) != 0) {
         fprintf(stderr, "zxvd: cannot listen on %s: %s\n", path, strerror(errno));
         close(fd);
         books_close();
