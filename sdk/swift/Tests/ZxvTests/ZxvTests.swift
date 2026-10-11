@@ -215,7 +215,11 @@ final class CapabilityLedgerTests: XCTestCase {
     }
 
     func testFatalAbortPolicyTerminatesProcess() throws {
-        #if canImport(Glibc) || canImport(Darwin)
+        #if canImport(Darwin)
+        // Darwin's SDK marks fork() unavailable in Swift; the abort path is the
+        // same C code, so the Linux run and libzxv's own tests cover it.
+        throw XCTSkip("fork() is unavailable to Swift on Darwin")
+        #elseif canImport(Glibc)
         let pid = fork()
         if pid == 0 {
             ZxvLibrary.fatalPolicy = .abort
