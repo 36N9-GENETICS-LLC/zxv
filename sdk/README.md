@@ -41,6 +41,22 @@ Kits are building blocks on top of the same C ABI; see
 | [z-ffi](kits/z-ffi/) | Typed, capability-gated wrappers for calling C libraries, generated from a spec; float results only by exact conversion. Not a sandbox. |
 | [adapter-matrix](kits/adapter-matrix/) | JSON, MQTT and FIX adapters that parse numbers exactly and label every inbound record (accepted-unverified or refused, with reasons). |
 
+## Frameworks
+
+Framework kits wire a language SDK into an enterprise framework's own
+idioms; see [`frameworks/`](frameworks/).
+
+| Framework | Folder | Package | Over | Tests |
+|---|---|---|---|---|
+| Spring Boot 3 | [`spring-zxv`](frameworks/spring-zxv/) | `org.zedec:zxv-spring-boot-starter` | [`java`](java/) | 36 |
+| ASP.NET Core 8 | [`aspnetcore-zxv`](frameworks/aspnetcore-zxv/) | `Zxv.AspNetCore` | [`dotnet`](dotnet/) | 56 |
+
+Each gives a managed context closed in ABI order, narrow capabilities
+declared in configuration (the root is never injectable), a fail-closed
+health check, exact `Rational` JSON that refuses floats, and a halted
+context that is never answered as a normal response. CI:
+[`.github/workflows/sdk-frameworks.yml`](../.github/workflows/sdk-frameworks.yml).
+
 ## What every SDK gives you
 
 | Feature | Type names | Guide |
