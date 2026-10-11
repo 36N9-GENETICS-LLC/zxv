@@ -47,6 +47,7 @@ typedef socklen_t nlen_t;
 #define REFRESH_MS  60000u
 #define DGRAM_SLACK 64u
 #define BOOK_CAP    32u
+#define SOCK_BUF    (1 << 20)            /* send and receive buffers, bytes */
 #define IMPORT_CAP  ((uint64_t) 1 << 20) /* internal rate one cycle may import */
 #define USAGE_CAP   32u
 #define LEASE_CAP   8u
@@ -331,6 +332,11 @@ int zxv_net_start(zxv_net_t *n, zxv_net_mode_t mode, const char *bind_ip, uint16
     n->s = socket(AF_INET, SOCK_DGRAM, 0);
     if (n->s == NBAD_SOCK) return fail(n, "socket failed");
     if (set_nonblocking(n->s) != 0) return fail(n, "could not make the socket non-blocking");
+    /* U3: room for whole frames. macOS caps a UDP datagram at the send
+     * buffer (9216 bytes by default), below a signed receipt; best effort. */
+    int bufsz = SOCK_BUF;
+    (void) setsockopt(n->s, SOL_SOCKET, SO_SNDBUF, (const char *) &bufsz, sizeof bufsz);
+    (void) setsockopt(n->s, SOL_SOCKET, SO_RCVBUF, (const char *) &bufsz, sizeof bufsz);
     if (bind(n->s, (struct sockaddr *) &sa, sizeof sa) != 0) return fail(n, "port is busy");
     nlen_t al = sizeof sa;
     if (getsockname(n->s, (struct sockaddr *) &sa, &al) == 0) port = ntohs(sa.sin_port);

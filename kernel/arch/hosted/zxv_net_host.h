@@ -15,7 +15,9 @@
  *      when it is readable, and zxv_net_tick on every pass (RPC timeouts,
  *      lookups, republishing). Every datagram goes to vna_node_handle, which
  *      verifies it (ML-DSA-87, PoW, replay window) before acting on it; the
- *      node's outbox is sent after each call.
+ *      node's outbox is sent after each call. Send and receive buffers are
+ *      raised to 1 MiB, since macOS limits a datagram to the send buffer
+ *      (9216 bytes by default) and a signed receipt is larger.
  *   U4 ADDRESSES. The Vinea transport address is 6 bytes: IPv4, then the
  *      port, both big-endian.
  *   U5 IDENTITY. A fresh ML-DSA-87 identity per start, seeded from the OS

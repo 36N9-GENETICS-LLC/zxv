@@ -836,9 +836,10 @@ static void state_json(buf_t *b)
          (unsigned long long) ns.share_compute, (unsigned long long) ns.share_storage, ns.wants);
     bput(b,
          ",\"peers\":%u,\"in\":%u,\"out\":%u,\"refused\":%u,\"policy_drops\":%u,"
+         "\"send_errors\":%u,"
          "\"trades\":%u,\"receipts_refused\":%u,\"imported\":%llu,\"conserved\":%s,\"error\":",
-         ns.peers, ns.datagrams_in, ns.datagrams_out, ns.refused_in, ns.policy_drops, ns.trades,
-         ns.receipts_refused, (unsigned long long) ns.imported,
+         ns.peers, ns.datagrams_in, ns.datagrams_out, ns.refused_in, ns.policy_drops,
+         ns.send_errors, ns.trades, ns.receipts_refused, (unsigned long long) ns.imported,
          (!ns.bound || ns.conserved) ? "true" : "false");
     json_str(b, ns.error);
     zxv_update_status_t us;

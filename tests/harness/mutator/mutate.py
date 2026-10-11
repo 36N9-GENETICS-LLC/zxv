@@ -308,7 +308,12 @@ def run_target(name, target, cmd, lines, ops, jobs, workers, build_code, out_dir
             path = os.path.join(w, target)
             with open(path, "w") as f:
                 f.write(apply(src, m))
-            rc, el = run_cmd(cmd, w, timeout, env)
+            # a private temp dir per worker: make recipes that write fixed
+            # paths (ZXV_TMP in kernel/Makefile) must not race each other
+            wenv = dict(env)
+            wenv["ZXV_TMP"] = os.path.join(w, ".mut_tmp")
+            os.makedirs(wenv["ZXV_TMP"], exist_ok=True)
+            rc, el = run_cmd(cmd, w, timeout, wenv)
             with open(path, "w") as f:
                 f.write(src)
         finally:

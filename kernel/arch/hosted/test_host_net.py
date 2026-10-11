@@ -240,6 +240,9 @@ def main(binary):
               'the second trade completes too (%d / %d)' % (sa['net']['trades'],
                                                             sb['net']['trades']))
         check(sa['net']['conserved'] and sb['net']['conserved'], 'both books conserved')
+        check(sa['net']['send_errors'] == 0 and sb['net']['send_errors'] == 0,
+              'every signed receipt fit in one datagram (send errors %d / %d)' %
+              (sa['net']['send_errors'], sb['net']['send_errors']))
         qa, qb = sa['quest'], sb['quest']
         pts = lambda q: sum(k['points'] for k in q['skills'])
         check(qa['contributed'] == 1 and pts(qa) > 0 and qa['refused'] == 0,

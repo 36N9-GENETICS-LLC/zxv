@@ -1656,9 +1656,9 @@ Gaps: none found.
 
 ### lpres  —  K3 paraconsistent presence attestations
 Status: WORKING (tested in verify-all)
-What it does: Four-valued logic (true, false, both, neither) for attesting presence of sources, data and evidence without contradictions "exploding", with conjoin/disjoin/negate. lpres_core.c is an older BIOS-stage table of rational magnitudes.
-Main entry points: lpres_negate, lpres_conjoin, lpres_disjoin, lpres_is_contradictory, lpres_registry_init, lpres_state_name.
-Tests: test_lpres.c (make test) and the K3 block — pass. Used by ~40 modules.
+What it does: Four-valued logic (true, false, both, neither) for attesting presence of sources, data and evidence without contradictions "exploding", with conjoin/disjoin/negate. lpres_core.c is an older BIOS-stage table of rational magnitudes. `lpres_hex.c` adds the 64-state hexagram tag on units of work: 6 bits = base (the four states) x polarity (negentropic, entropic, neutral, forbidden) x lifecycle phase (potential, emerging, manifest, dissolving, a Gray cycle). One 64-entry table gives the action (proceed, wait, refuse, escalate, roll back); forbidden overrides everything and is absorbing; the phase moves one step at a time; forbidden work goes into a hash-chained quarantine log for audit. A tag reports what a real check found (bounds checks, sanitizers, the ledger's A = L + E); it does not replace the check. Known defect in the base tables: lpres_conjoin/lpres_disjoin give Both AND Neither = Neither and Both OR Neither = Both, which breaks De Morgan for that pair (Belnap's tables give False and True); the owner decides whether to switch.
+Main entry points: lpres_negate, lpres_conjoin, lpres_disjoin, lpres_is_contradictory, lpres_registry_init, lpres_state_name; lpx_make, lpx_action, lpx_advance, lpx_polarity, lpx_and/or/not, lpx_qlog_append/verify.
+Tests: test_lpres.c (make test) and the K3 block — pass; test_lpres_hex.c (`make test-lpres-hex`, 76 checks, mutation 87.2%, in the CI mutation gate). Used by ~40 modules.
 Gaps: lpres_core.* and test lack SPDX.
 
 ### macgyver  —  tri-space build registry (MCG0)
