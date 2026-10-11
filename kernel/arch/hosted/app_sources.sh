@@ -49,7 +49,7 @@ update() {
 case "${1:-srcs}" in
     srcs)
         for f in zxv_host zxv_http_guard zxv_model_host zxv_budget_gate zxv_net_host \
-                 zxv_update_host zx_notify_host; do
+                 zxv_update_host zx_notify_host zxv_answer_tag; do
             echo "arch/hosted/$f.c"
         done
         echo src/social/zx_notify.c
@@ -57,6 +57,9 @@ case "${1:-srcs}" in
         for f in src/tensor/zt*.c; do echo "$f"; done
         # the settlement spine: swarm money on the ledger of record
         echo src/settle/settle.c
+        # the 64-state tag on each answer and its quarantine log
+        echo src/lpres/lpres.c
+        echo src/lpres/lpres_hex.c
         # the node's self-audit of every posting (peer_audit layer 1)
         echo src/peer_audit/peer_audit.c
         echo src/peer_audit/pa_runtime.c
@@ -69,7 +72,7 @@ case "${1:-srcs}" in
         ;;
     incs)
         # the last five are kernel/Makefile's CPATH
-        for d in arch/hosted src/swarm src/tensor src/settle src/peer_audit src/quest src/pay src/zcapital src/social src/vinea src/lpres \
+        for d in arch/hosted src/swarm src/tensor src/settle src/peer_audit src/quest src/pay src/zcapital src/social src/vinea src/lpres src/robin_debanks \
                  src/edp_risk src/update src/ipfs_node src/pqsec src/mlkem include src/modbind \
                  src/e8 src/event_space src/surplus; do
             echo "$d"

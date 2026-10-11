@@ -81,6 +81,18 @@ int32_t zxv_zt_generate(const zt_gguf_t *g, const zt_tok_t *tok, const int32_t *
 int32_t zxv_zt_generate_n(const zt_gguf_t *g, const zt_tok_t *tok, const int32_t *ids,
                           uint64_t n_ids, uint32_t max_new, char *out, size_t cap, char *err,
                           size_t err_cap);
+/* What the last zxv_zt_generate(_n) call saw (zxv_zt_glue.c G5): margins
+ * are top-1 minus runner-up logit (Q16) summed over the first n_first and
+ * the last n_second generated tokens; n_sat counts logits on the Q16 rails;
+ * forward_error is set when eval or decode failed. All zero before the first
+ * call and after a call refused before the forward pass. */
+typedef struct {
+    uint32_t n_gen, n_first, n_second;
+    uint64_t margin_first, margin_second;
+    uint32_t n_sat;
+    bool forward_error;
+} zxv_zt_verdict_t;
+void zxv_zt_last_verdict(zxv_zt_verdict_t *out);
 /* 1 when the engine can load this file's weights (architecture, shapes and
  * weight types supported), else 0. Reads metadata only. */
 int zxv_zt_can_run(const zt_gguf_t *g);

@@ -47,7 +47,11 @@ typedef socklen_t nlen_t;
 #define REFRESH_MS  60000u
 #define DGRAM_SLACK 64u
 #define BOOK_CAP    32u
+#define SOCK_BUF    (1 << 20)            /* send and receive buffers, bytes */
 #define IMPORT_CAP  ((uint64_t) 1 << 20) /* internal rate one cycle may import */
+#define USAGE_CAP   32u
+#define LEASE_CAP   8u
+#define QUOTA_MS    3600000u /* per-peer quota period of the owner's agreement */
 
 struct zxv_net {
     zxv_net_mode_t mode;
@@ -75,6 +79,13 @@ struct zxv_net {
     vna_link_t link;
     vna_link_done_fn trade_fn; /* U7 */
     void *trade_ctx;
+    /* U8: the owner's sharing agreement (kept across restarts as numbers;
+     * rebuilt for each start's identity) and its usage table */
+    uint64_t share_compute, share_storage;
+    vna_agreement_t agr;
+    vna_usage_t us;
+    vna_usage_ent_t ue[USAGE_CAP];
+    vna_lease_t le[LEASE_CAP];
 };
 
 uint64_t zxv_net_wall_ms(void)
@@ -205,6 +216,32 @@ static void drain_link(zxv_net_t *n, uint64_t now_ms)
         (void) vna_node_send_rcpt(&n->node, &dst, b, len, now_ms, &n->ob);
 }
 
+/* U8: the agreement the owner's numbers describe, or NULL (share nothing). */
+static const vna_agreement_t *build_agreement(zxv_net_t *n)
+{
+    if (!n->share_compute && !n->share_storage) return NULL;
+    vna_agree_default(&n->agr, &n->idn.id);
+    n->agr.degree = n->share_compute ? VNA_DEG_COMPUTE : VNA_DEG_STORE;
+    n->agr.audience = VNA_AUD_EVERYONE; /* U2 still limits who can reach the node */
+    n->agr.compute_per_cycle = n->agr.q_compute = n->share_compute;
+    n->agr.storage_bytes = n->agr.q_storage = n->share_storage;
+    n->agr.quota_period_ms = QUOTA_MS;
+    return &n->agr;
+}
+
+/* Register `id` in the book from the key the node verified (keycache), if
+ * the book does not know it yet. Not a commons member (the owner admits
+ * members). */
+static bool book_learn(zxv_net_t *n, const vna_id_t *id)
+{
+    if (vna_book_find(&n->book, id)) return true;
+    const vna_keycache_t *kc = &n->node.kc;
+    const vna_keycache_ent_t *e = NULL;
+    for (uint32_t i = 0; i < kc->cap && !e; i++)
+        if (kc->e[i].used && vna_id_eq(&kc->e[i].id, id)) e = &kc->e[i];
+    return e && vna_book_add_peer(&n->book, id, e->pk, e->pow_nonce, e->pow_bits, false) == VNA_OK;
+}
+
 /* U6: a receipt from a peer. The node verified the message (signature, PoW,
  * replay); a peer the book does not know yet is registered from the key the
  * node verified, not a commons member (the owner admits members). */
@@ -212,15 +249,7 @@ static vna_status_t on_rcpt(void *ctx, const vna_id_t *from, const uint8_t *r, u
                             uint64_t now)
 {
     zxv_net_t *n = (zxv_net_t *) ctx;
-    if (!vna_book_find(&n->book, from)) {
-        const vna_keycache_t *kc = &n->node.kc;
-        const vna_keycache_ent_t *e = NULL;
-        for (uint32_t i = 0; i < kc->cap && !e; i++)
-            if (kc->e[i].used && vna_id_eq(&kc->e[i].id, from)) e = &kc->e[i];
-        if (!e ||
-            vna_book_add_peer(&n->book, from, e->pk, e->pow_nonce, e->pow_bits, false) != VNA_OK)
-            return VNA_ERR_DENIED;
-    }
+    if (!book_learn(n, from)) return VNA_ERR_DENIED;
     return vna_link_on_rcpt(&n->link, from, r, len, now);
 }
 
@@ -279,9 +308,10 @@ int zxv_net_start(zxv_net_t *n, zxv_net_mode_t mode, const char *bind_ip, uint16
     if (st != VNA_OK) return fail(n, "node init failed");
     vna_node_set_agreement(&n->node, NULL, NULL, NULL, NULL);
 
-    /* U6: the book, the owner gate and the trade loop. No agreement is
-     * attached, so this node sells nothing (fail closed) and wants nothing
-     * until its owner says so; the loop still runs every cycle. */
+    /* U6: the book, the owner gate and the trade loop. Until the owner
+     * shares something (U8) no agreement is attached, so this node sells
+     * nothing (fail closed) and wants nothing; the loop still runs every
+     * cycle. */
     uint8_t lseed[32];
     if (zxv_os_random(n->owner_secret, sizeof n->owner_secret) != 0 ||
         zxv_os_random(lseed, sizeof lseed) != 0)
@@ -289,7 +319,8 @@ int zxv_net_start(zxv_net_t *n, zxv_net_mode_t mode, const char *bind_ip, uint16
     vna_book_init(&n->book, &n->idn, n->acct, BOOK_CAP);
     vna_gate_init(&n->gate, n->owner_secret, 0, IMPORT_CAP, 4);
     if (vna_gate_begin_cycle(&n->gate, n->owner_secret) != VNA_OK) return fail(n, "gate failed");
-    vna_link_init(&n->link, &n->book, NULL, NULL, lseed, 1000, 8);
+    vna_usage_init(&n->us, n->ue, USAGE_CAP, n->le, LEASE_CAP);
+    vna_link_init(&n->link, &n->book, build_agreement(n), &n->us, lseed, 1000, 8);
     memset(lseed, 0, sizeof lseed);
     vna_link_on_done(&n->link, n->trade_fn, n->trade_ctx);
     vna_node_set_rcpt_handler(&n->node, on_rcpt, n);
@@ -301,6 +332,11 @@ int zxv_net_start(zxv_net_t *n, zxv_net_mode_t mode, const char *bind_ip, uint16
     n->s = socket(AF_INET, SOCK_DGRAM, 0);
     if (n->s == NBAD_SOCK) return fail(n, "socket failed");
     if (set_nonblocking(n->s) != 0) return fail(n, "could not make the socket non-blocking");
+    /* U3: room for whole frames. macOS caps a UDP datagram at the send
+     * buffer (9216 bytes by default), below a signed receipt; best effort. */
+    int bufsz = SOCK_BUF;
+    (void) setsockopt(n->s, SOL_SOCKET, SO_SNDBUF, (const char *) &bufsz, sizeof bufsz);
+    (void) setsockopt(n->s, SOL_SOCKET, SO_RCVBUF, (const char *) &bufsz, sizeof bufsz);
     if (bind(n->s, (struct sockaddr *) &sa, sizeof sa) != 0) return fail(n, "port is busy");
     nlen_t al = sizeof sa;
     if (getsockname(n->s, (struct sockaddr *) &sa, &al) == 0) port = ntohs(sa.sin_port);
@@ -450,6 +486,8 @@ int zxv_net_econ_cycle(zxv_net_t *n, swarm_budget_t *sb, uint64_t base_rate, uin
     if (imported) *imported = 0;
     if (!n || !sb) return -1;
     if (n->s == NBAD_SOCK) return 0; /* U1: off, nothing to close */
+    vna_usage_new_cycle(&n->us);     /* U8: the per-cycle compute cap starts again */
+    (void) vna_usage_expire(&n->us, now_ms);
     vna_status_t st =
         vna_link_cycle(&n->link, &n->gate, n->owner_secret, sb, base_rate, now_ms, imported);
     drain_link(n, now_ms);
@@ -463,6 +501,43 @@ void zxv_net_on_trade(zxv_net_t *n, vna_link_done_fn fn, void *ctx)
     n->trade_fn = fn;
     n->trade_ctx = fn ? ctx : NULL;
     vna_link_on_done(&n->link, fn, ctx);
+}
+
+int zxv_net_share(zxv_net_t *n, uint64_t compute_per_cycle, uint64_t storage_bytes)
+{
+    if (!n) return -1;
+    n->share_compute = compute_per_cycle;
+    n->share_storage = storage_bytes;
+    if (n->s != NBAD_SOCK) n->link.agr = build_agreement(n);
+    return 0;
+}
+
+static bool tradable(uint8_t resource)
+{
+    return resource == VNA_RES_COMPUTE || resource == VNA_RES_STORAGE;
+}
+
+int32_t zxv_net_want(zxv_net_t *n, uint8_t resource, uint64_t units, uint64_t max_price)
+{
+    if (!n || n->s == NBAD_SOCK || !tradable(resource) || units == 0) return -1;
+    return vna_link_want(&n->link, resource, SWARM_CAP_SYSTEM, units, max_price);
+}
+
+int zxv_net_sell(zxv_net_t *n, const uint8_t buyer[32], uint8_t resource, uint64_t units,
+                 uint64_t price, uint64_t now_ms)
+{
+    if (!n || n->s == NBAD_SOCK || !buyer || !tradable(resource) || units == 0) return -1;
+    vna_id_t b;
+    memcpy(b.b, buyer, sizeof b.b);
+    if (!book_learn(n, &b)) return -1; /* never heard from: no verified key */
+    char hk[64];
+    snprintf(hk, sizeof hk, "offer(%s, units: 1)",
+             resource == VNA_RES_COMPUTE ? "compute" : "storage");
+    vna_status_t st = vna_link_sell(&n->link, &b, VNA_TR_CREDIT, SWARM_CAP_SYSTEM, resource, units,
+                                    price, hk, now_ms);
+    drain_link(n, now_ms);
+    flush(n);
+    return st == VNA_OK ? 0 : -1;
 }
 
 void zxv_net_status(const zxv_net_t *n, zxv_net_status_t *st)
@@ -490,6 +565,15 @@ void zxv_net_status(const zxv_net_t *n, zxv_net_status_t *st)
         st->node_id[2 * i + 1] = hex[n->idn.id.b[i] & 15];
     }
     st->node_id[16] = 0;
+    for (int i = 0; i < 32; i++) {
+        st->node_id_full[2 * i] = hex[n->idn.id.b[i] >> 4];
+        st->node_id_full[2 * i + 1] = hex[n->idn.id.b[i] & 15];
+    }
+    st->node_id_full[64] = 0;
+    st->share_compute = n->share_compute;
+    st->share_storage = n->share_storage;
+    st->wants = 0;
+    for (uint32_t i = 0; i < VNA_LINK_WANTS; i++) st->wants += n->link.want[i].used;
     static vna_contact_t c[POOL_CAP];
     st->peers = vna_node_contacts(&n->node, c, POOL_CAP);
 }

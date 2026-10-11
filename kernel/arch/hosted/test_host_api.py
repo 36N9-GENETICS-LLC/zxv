@@ -144,9 +144,11 @@ def main(binary, gguf=None):
         check(s['levied'] == s['fees'] - s['bounties_returned'] and s['bounties_returned'] <= s['fees'],
               'the fee loop: %d levied = %d fees - %d bounties returned' %
               (s['levied'], s['fees'], s['bounties_returned']))
-        check(s['audit'] == 'active' and s['audit_records'] > 0 and s['audit_events'] == 0,
-              'the node self-audits and signs every ledger posting (%d records, state %s)' %
-              (s['audit_records'], s['audit']))
+        transfers = s['ledger_postings'] - s['ledger_issues']
+        check(s['audit'] == 'active' and s['audit_events'] == 0 and
+              s['ledger_audited'] == transfers and s['audit_records'] >= transfers,
+              'the node self-audits and signs every ledger transfer (%d of %d, state %s)' %
+              (s['ledger_audited'], transfers, s['audit']))
         q = s['quest']
         check(len(q['skills']) == 8 and q['refused'] == 0 and
               all(k['level'] == 0 and k['points'] == 0 for k in q['skills']),
@@ -178,6 +180,18 @@ def main(binary, gguf=None):
             st, _, ans = raw(port, 'POST', '/api/ask', [host, same, auth], b'hello there, swarm')
             check(st == 200 and (b'tokens' in ans or m['can_generate']),
                   'ask goes through the model slot: %s' % ans[:120].decode('utf-8', 'replace'))
+            if m['can_generate']:
+                st, _, body = raw(port, 'GET', '/api/state', [host, auth, ('Sec-Fetch-Site', 'same-origin')])
+                c = json.loads(body)['companion']
+                t = c.get('last_tag', {})
+                check(t.get('base') == 'true' and t.get('phase') == 'manifest' and
+                      t.get('polarity') in ('negentropic', 'neutral', 'entropic') and
+                      t.get('action') in ('proceed', 'wait') and t.get('saturated') == 0 and
+                      t.get('tokens', 0) > 0 and t.get('code') == (48 | ({'entropic': 0,
+                      'neutral': 1, 'negentropic': 3}[t['polarity']] << 2) | 3),
+                      'the answer carries its 64-state tag: %s' % t)
+                check(c.get('quarantined') == 0 and c.get('quarantine_ok') is True,
+                      'a clean answer is not quarantined, and the empty log verifies')
         else:
             check(not s['model']['loaded'], 'no model is a normal state')
 

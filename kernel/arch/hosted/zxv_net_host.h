@@ -15,7 +15,9 @@
  *      when it is readable, and zxv_net_tick on every pass (RPC timeouts,
  *      lookups, republishing). Every datagram goes to vna_node_handle, which
  *      verifies it (ML-DSA-87, PoW, replay window) before acting on it; the
- *      node's outbox is sent after each call.
+ *      node's outbox is sent after each call. Send and receive buffers are
+ *      raised to 1 MiB, since macOS limits a datagram to the send buffer
+ *      (9216 bytes by default) and a signed receipt is larger.
  *   U4 ADDRESSES. The Vinea transport address is 6 bytes: IPv4, then the
  *      port, both big-endian.
  *   U5 IDENTITY. A fresh ML-DSA-87 identity per start, seeded from the OS
@@ -35,6 +37,16 @@
  *   U7 TRADES. zxv_net_on_trade hands every applied trade (vna_link.h L5) to
  *      the app, which credits the owner's verified contributions (quest.h).
  *      The hook survives restarts of the node.
+ *
+ *   U8 OWNER TRADING. Only the owner, through the app's token-guarded API,
+ *      shares or trades; nothing is shared by default. zxv_net_share sets
+ *      what the owner shares (compute tokens per cycle, storage bytes): a
+ *      sharing agreement (vna_agree.h) to everyone the node can reach (U2
+ *      still applies), per-peer quota equal to the whole amount, rebuilt
+ *      for each start's identity. zxv_net_want states a want (T2);
+ *      zxv_net_sell offers a named peer the node has heard from (its key
+ *      was verified) a trade on CREDIT (T1). Wants do not survive a
+ *      restart. The node itself stays at degree ROUTE for DHT requests.
  * HONEST LIMITS: no LAN multicast discovery yet (vna_lan.h needs a multicast
  * socket; peers are added by address with --peer or POST /api/net), no NAT
  * traversal, no IPv6, frames up to about 17.6 KB rely on IP fragmentation off
@@ -68,6 +80,10 @@ typedef struct {
     uint32_t receipts_refused; /* by the node or the trade loop */
     uint64_t imported;         /* internal rate added from verified remote compute */
     bool conserved;            /* the book's conservation check */
+    /* U8 */
+    char node_id_full[65]; /* the whole NodeID, hex; "" when off */
+    uint64_t share_compute, share_storage;
+    uint32_t wants; /* open wants */
 } zxv_net_status_t;
 
 /* A new, stopped (OFF) host; NULL if out of memory. */
@@ -125,5 +141,17 @@ uint64_t zxv_net_wall_ms(void);
 
 /* U7: hear every trade this node applies (NULL clears). */
 void zxv_net_on_trade(zxv_net_t *n, vna_link_done_fn fn, void *ctx);
+
+/* U8: what the owner shares: compute tokens per cycle and storage bytes
+ * (both 0: share nothing). Kept across restarts. 0, or -1. */
+int zxv_net_share(zxv_net_t *n, uint64_t compute_per_cycle, uint64_t storage_bytes);
+/* U8: want `units` of VNA_RES_COMPUTE or VNA_RES_STORAGE, at most
+ * `max_price` per receipt. The want slot (>= 0), or -1 (off, full, bad). */
+int32_t zxv_net_want(zxv_net_t *n, uint8_t resource, uint64_t units, uint64_t max_price);
+/* U8: offer `units` of compute or storage to the peer with this NodeID for
+ * `price` on credit. 0 when offered (the trade completes when the buyer
+ * accepts), -1 when off, unknown peer, or refused (agreement, L1). */
+int zxv_net_sell(zxv_net_t *n, const uint8_t buyer[32], uint8_t resource, uint64_t units,
+                 uint64_t price, uint64_t now_ms);
 
 #endif /* ZXV_NET_HOST_H */

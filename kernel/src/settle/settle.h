@@ -122,6 +122,9 @@ typedef struct {
     uint32_t n;
     uint64_t issued; /* total SWC issued (== the issuer's CREDIT) */
     uint64_t seq;    /* postings made by the spine */
+    /* endowment issues among them (settle_join); the audit hook sees the
+     * transfers only, so audited == seq - issues while the hook is set */
+    uint64_t issues;
     uint64_t cycles; /* successful syncs */
     settle_audit_fn audit;
     void *audit_ctx;

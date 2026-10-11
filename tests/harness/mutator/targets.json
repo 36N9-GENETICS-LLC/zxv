@@ -40,6 +40,9 @@
     {"name": "settle", "target": "kernel/src/settle/settle.c",
      "before": null, "before_note": "new module: the settlement spine (A1 in docs/GAP_AUDIT.md)",
      "after": "make -C kernel --no-print-directory test-settle"},
+    {"name": "lpres_hex", "target": "kernel/src/lpres/lpres_hex.c",
+     "before": null, "before_note": "new module: the 64-state hexagram tag on lpres",
+     "after": "make -C kernel --no-print-directory test-lpres-hex"},
     {"name": "zxv_engine", "target": "kernel/src/engine/zxv_engine.c",
      "before": null, "before_note": "new module: the libzxv facade (A2 in docs/GAP_AUDIT.md)",
      "after": "make -C kernel --no-print-directory test-engine"},
@@ -48,8 +51,8 @@
      "after": "make -C kernel --no-print-directory test-vinea"}
   ],
   "ci": {
-    "targets": ["rmag_core", "fs_malloc", "settle", "zxv_engine"],
-    "baseline_note": "measured 'after' scores on p10-integrate (tests/MUTATION_REPORT.md), rounded down to 4 places: rmag_core 86/90 (after the F-RMAG-OVF fix and its tests), fs_malloc 30/36, settle 175/197 (the 22 survivors are equivalent: array sizes, ties in the payer/payee pick, a loose loop bound, a dead NULL branch); zxv_engine 334/377 measured locally but 323/377 on the ubuntu-22.04 runner (twice, same count): the extra local kills are mutants that read uninitialized stack (a 31-byte seed copy, an out-of-range bucket index) or defensive re-checks of the abacus output, whose outcome depends on the machine, so the baseline is the runner's measurement",
-    "baseline": {"rmag_core": 0.9555, "fs_malloc": 0.8333, "settle": 0.8883, "zxv_engine": 0.8567}
+    "targets": ["rmag_core", "fs_malloc", "settle", "zxv_engine", "lpres_hex"],
+    "baseline_note": "measured 'after' scores on p10-integrate (tests/MUTATION_REPORT.md), rounded down to 4 places: rmag_core 86/90 (after the F-RMAG-OVF fix and its tests), fs_malloc 30/36, settle 175/197 (the 22 survivors are equivalent: array sizes, ties in the payer/payee pick, a loose loop bound, a dead NULL branch); zxv_engine 334/377 measured locally but 323/377 on the ubuntu-22.04 runner (twice, same count): the extra local kills are mutants that read uninitialized stack (a 31-byte seed copy, an out-of-range bucket index) or defensive re-checks of the abacus output, whose outcome depends on the machine, so the baseline is the runner's measurement; lpres_hex 184/211 (the 27 survivors are equivalent: array sizes, masks of already-masked values, ties between equal ranks, a hash buffer larger than needed, seq shifts that only differ past 127 records). Workers now get their own ZXV_TMP, so make-driven targets no longer race on /tmp paths",
+    "baseline": {"rmag_core": 0.9555, "fs_malloc": 0.8333, "settle": 0.8883, "zxv_engine": 0.8567, "lpres_hex": 0.8720}
   }
 }
