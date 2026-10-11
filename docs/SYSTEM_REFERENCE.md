@@ -1677,9 +1677,9 @@ Gaps: test lacks SPDX.
 
 ### market  —  P2P commerce state machine
 Status: WORKING (tested in verify-all, under ASan+UBSan)
-What it does: Signed storefronts and listings, carts, orders through one table-driven state machine, per-order escrow with exact conservation, the 0.08889% assurance fee from pay (charged once per sale), refunds exact to the minor unit, operator tax rates, disputes, reviews, ISF-ranked discovery and agent shopping with user confirmation tokens. Money only moves through a settle hook.
-Main entry points: mk_init, mk_ccy_register, mk_listing_publish, mk_cart_add, mk_checkout, mk_dispute_open/rule, mk_discover, mk_mandate_grant, mk_invoice_issue.
-Tests: market/test_market.c — passes. Used by: nothing outside tests. Hosted only.
+What it does: Signed storefronts and listings, carts, orders through one table-driven state machine, per-order escrow with exact conservation, the 0.08889% assurance fee from pay (charged once per sale), refunds exact to the minor unit, operator tax rates, disputes, reviews, ISF-ranked discovery and agent shopping with user confirmation tokens. Money only moves through a settle hook. `mk_pay.c` is that hook on the ledger of record: each settlement becomes one atomic `pay_ledger_post` (one line per account with a nonzero net, escrow balancing captures, releases, refunds and rulings; invoices must net to zero), so a ledger refusal (funds, freeze, balance) leaves the market unchanged. Identifiers are SHA-256(seed || tag || n).
+Main entry points: mk_init, mk_ccy_register, mk_listing_publish, mk_cart_add, mk_checkout, mk_dispute_open/rule, mk_discover, mk_mandate_grant, mk_invoice_issue; mk_pay_init, mk_pay_bind, mk_pay_settle.
+Tests: market/test_market.c (`make test-market`) — passes; every flow also posts to a real pay_ledger through mk_pay and the two books are compared after each settlement (866 postings, 0 mismatches); mk_pay mutation 91.5%, in the CI gate. Used by: nothing outside tests yet (the app does not open a market). Hosted only.
 Gaps: not linked into a kernel.
 
 ### mbcomp  —  component (circuit-element) vocabulary
@@ -2310,6 +2310,14 @@ Main entry points: vena_init, vena_register_contract, vena_execute_contract, ven
 Tests: none.
 Used by: vena_init is called from arch/arm64 and arch/arm kernel_main, identity_fabric, financial_fabric and boot_modules. vena_register_contract and vena_execute_contract have no callers. Compiled into both kernels.
 Gaps: contract code is stored as a C string (char code[1024]). Real ZAB contains 0x00 bytes, so it is truncated and the ZAB path is effectively unreachable. Unbounded string copies were FIXED. No test.
+
+### vhub — V-Bill hub demo: fiat A to V-Bill to fiat B with signed exact pegs and rule plug-ins
+Status: WORKING (tested in verify-all, under ASan+UBSan). A demo, not a deployment.
+What it does: each registered currency has an issuer, a hub pool account and a V-Bill float account on one pay_ledger. An issuer sets its peg as an exact fraction (num/den V-Bills per unit) by signing "zxv/vhub-peg/v1" || ccy || num || den || epoch; the hub checks the signature through a caller-supplied verifier and only accepts a newer epoch. A swap converts amount -> V-Bills -> output with integer arithmetic and refuses any amount that does not convert exactly (vhub_quote gives the smallest exact step), so no rounding is ever posted. Both currencies' rule plug-ins judge the swap as lpres_hex tags; the worst wins (forbidden > refused > escalate > wait), a forbidden swap is written to the quarantine log and the hub halts when that log is full. An allowed swap is one atomic six-line pay_ledger_post (sender, pool A, float A, float B, pool B, receiver), so a ledger refusal (funds, freeze, bounds) moves nothing. vhub_rule_limit is a sample capital-control plug-in: a per-sender outflow cap per epoch. An exact peg removes rounding only; it does not remove FX risk and holds only while the issuer backs it.
+Main entry points: vhub_init, vhub_add_ccy, vhub_peg_msg, vhub_set_peg, vhub_add_rule, vhub_quote, vhub_swap; vhub_rule_limit, vhub_limit_commit.
+Tests: vhub/test_vhub.c (`make test-vhub`) — 101 checks pass: three test currencies, a round trip, a triangular cross rate, a brute-force check of vhub_quote (19649 cases), a stale or forged peg, the limit plug-in, ledger backing, every rule outcome, quarantine and halt; mutation 94.9%, in the CI gate.
+Used by: nothing outside tests yet. Hosted only.
+Gaps: no real issuer keys (the test verifier is a hash mock; ML-DSA plugs into the same verify hook); no UI; V-Bills are likely securities, so any real use needs legal review.
 
 ### vfs — mount table over FAT32
 Status: PARTIAL
