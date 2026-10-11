@@ -211,7 +211,7 @@ int main(void)
     zxv_msg_add_entry(m, 1500075, 2, ZXV_CRDT, ZXV_STS_BOOK);
     zxv_msg_add_entry(m, 250050, 2, ZXV_DBIT, ZXV_STS_BOOK);
     zxv_msg_set_amount(m, ZXV_AMT_CLOSING, 1250000, 2);
-    CHECK(zxv_msg_render(m, xml, sizeof xml, &len) == ZXV_E_INVARIANT, "closing must reconcile");
+    CHECK(zxv_msg_render(m, xml, sizeof xml, &len) == ZXV_E_FIELD, "closing must reconcile");
     zxv_msg_set_amount(m, ZXV_AMT_CLOSING, 1250025, 2);
     CHECK(zxv_msg_render(m, xml, sizeof xml, &len) == ZXV_OK, "camt053 render");
     CHECK(strstr(xml, "camt.053.001.08") && strstr(xml, "12500.25"), "camt053 content");

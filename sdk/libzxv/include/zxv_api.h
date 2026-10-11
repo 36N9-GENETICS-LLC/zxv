@@ -82,7 +82,7 @@ extern "C" {
 /* ===== Version ===== */
 #define ZXV_ABI_VERSION_MAJOR 1
 #define ZXV_ABI_VERSION_MINOR 1
-#define ZXV_ABI_VERSION_PATCH 0
+#define ZXV_ABI_VERSION_PATCH 1
 
 /* ===== Status codes (stable; never renumbered) ===== */
 #define ZXV_OK            0
@@ -385,7 +385,9 @@ ZXV_API int32_t zxv_msg_add_entry(zxv_msg *msg, int64_t units, uint8_t frac_digi
                                   int32_t cdt_dbt, int32_t status);
 
 /* Serialize to XML (R4 two-call pattern). Validates that every mandatory
- * field is set (ZXV_E_FIELD) and the currency (ZXV_E_CURRENCY). */
+ * field is set (ZXV_E_FIELD) and the currency (ZXV_E_CURRENCY). A camt053
+ * whose OPBD + booked entries != CLBD is caller data, not a broken ledger:
+ * ZXV_E_FIELD (USAGE), and the context is not halted (ABI 1.1.1). */
 ZXV_API int32_t zxv_msg_render(zxv_msg *msg, char *buf, size_t cap, size_t *out_len);
 
 /* ===== Netting cycles (kernel/src/cbank — pending) ===== */

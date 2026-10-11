@@ -1323,7 +1323,7 @@ static int32_t msg_validate(zxv_msg *m)
             run += c->entries[i].cdt_dbt == ISO_CRDT ? c->entries[i].units : -c->entries[i].units;
     }
     if (run != c->closing_units)
-        return zxvi_fail(ZXV_E_INVARIANT, "OPBD %lld + booked entries = %lld, but CLBD is %lld",
+        return zxvi_fail(ZXV_E_FIELD, "OPBD %lld + booked entries = %lld, but CLBD is %lld",
                     (long long) c->opening_units, (long long) run, (long long) c->closing_units);
     return ZXV_OK;
 }

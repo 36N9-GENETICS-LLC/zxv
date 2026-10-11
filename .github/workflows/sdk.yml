@@ -55,3 +55,24 @@ jobs:
       - uses: actions/checkout@v5
       - name: ASan + UBSan
         run: make -C sdk/libzxv CC=gcc SANITIZE=1 test
+
+  python:
+    name: python ${{ matrix.os }} ${{ matrix.py }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-14]
+        py: ['3.10', '3.13']
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        working-directory: sdk/python
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.py }}
+      - run: make -C ../libzxv all fixtures
+      - run: pip install -e '.[test]' mypy
+      - run: python -m pytest -q
+      - run: python -m mypy
