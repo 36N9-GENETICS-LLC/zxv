@@ -51,6 +51,8 @@ every language.
   behaviour every SDK shares.
 - [The C ABI](docs/ABI.md): the rules R1-R11 with examples, for binding
   authors.
+- [ABI stability policy](docs/STABILITY.md): the never-break promise for
+  binding maintainers, and the CI check that enforces it.
 - [Security model and honest limits](docs/SECURITY.md): what is protected,
   and where protection stops.
 

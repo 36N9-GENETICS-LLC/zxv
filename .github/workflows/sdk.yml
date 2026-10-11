@@ -36,6 +36,14 @@ jobs:
         run: |
           make -C sdk/libzxv CC=${{ matrix.cc }} vectors
           git diff --exit-code sdk/conformance/vectors.json
+      - name: ABI unchanged against every released baseline (add-only)
+        env:
+          CC: ${{ matrix.cc }}
+        run: |
+          lib=sdk/libzxv/build/libzxv.so; [ "$RUNNER_OS" = macOS ] && lib=sdk/libzxv/build/libzxv.dylib
+          for base in sdk/libzxv/abi/libzxv-*.json; do
+            python3 sdk/libzxv/tools/abi_check.py check sdk/libzxv/include/zxv_api.h "$base" "$lib"
+          done
       - name: Minimal build (no PQC, no engine)
         run: |
           make -C sdk/libzxv clean
