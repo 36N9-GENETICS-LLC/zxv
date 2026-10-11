@@ -29,6 +29,13 @@ every language.
 | C++ | [`cpp`](cpp/) | header-only `zxv.hpp` (C++20) | direct C ABI, RAII | 409 checks, ASan + UBSan + TSan |
 | Swift | [`swift`](swift/) | SwiftPM `Zxv` | C module map | 20 |
 
+## Kits
+
+Kits are building blocks on top of the same C ABI; see
+[`kits/`](kits/). The first is [Z-Wasm](kits/z-wasm/), a sandbox for
+WebAssembly plugins: a no-float validator, fuel charged to an `rmag`
+budget, and a proposal queue the host must approve.
+
 ## What every SDK gives you
 
 | Feature | Type names | Guide |

@@ -286,3 +286,62 @@ jobs:
       - run: make -C sdk/libzxv all fixtures
       - run: swift --version && swift test
         working-directory: sdk/swift
+
+  # Z-Wasm plugin kit (sdk/kits/z-wasm): validator, fuel meter, wasm3 host
+  # and the S0 proposal queue. The example plugins are compiled to wasm32
+  # with zig at test time (no .wasm is committed).
+  z-wasm:
+    name: z-wasm ${{ matrix.os }} ${{ matrix.cc }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-24.04, cc: gcc }
+          - { os: ubuntu-24.04, cc: clang }
+          - { os: macos-14, cc: clang }
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        working-directory: sdk/kits/z-wasm
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: python -m pip install ziglang==0.17.0
+      - run: make -C ../../libzxv all
+      - name: Unit, host and example-plugin tests, fuzz smoke, R11 and third-party checks
+        run: make CC=${{ matrix.cc }} PYTHON=python test
+      - name: Metered modules re-validated by V8 (node)
+        run: make CC=${{ matrix.cc }} PYTHON=python test-node
+      - name: Host demo
+        run: make CC=${{ matrix.cc }} PYTHON=python demo
+
+  z-wasm-sanitize:
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: sdk/kits/z-wasm
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - run: python -m pip install ziglang==0.17.0
+      - run: make -C ../../libzxv all
+      - name: ASan + UBSan (kit, wasm3 and tests)
+        env:
+          ASAN_OPTIONS: detect_leaks=1
+        run: make CC=gcc SANITIZE=1 OUT=build/san PYTHON=python test
+      - name: Mutation fuzzer under ASan + UBSan (4 x 250k mutants)
+        env:
+          ASAN_OPTIONS: detect_leaks=1
+        run: |
+          for seed in 1 2 3 4; do
+            ZW_FUZZ_SEED=$seed make CC=gcc SANITIZE=1 OUT=build/san PYTHON=python fuzz FUZZ_ITERS=250000
+          done
+      - name: libFuzzer, 60 s (skipped if this clang has no libFuzzer runtime)
+        run: make PYTHON=python fuzz-libfuzzer
