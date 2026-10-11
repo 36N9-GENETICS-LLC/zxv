@@ -738,9 +738,8 @@ static void test_socket(void)
     CHECK(read_line(cs[3], line, sizeof line) && !strcmp(line, OK("13", "{\"tick\":7}")),
           "a line of exactly the limit is served");
     edge_line[ZXVD_RPC_MAX_LINE] = ' ';
-    edge_line[ZXVD_RPC_MAX_LINE + 1] = '\n';
-    send(cs[4], edge_line, ZXVD_RPC_MAX_LINE + 2, 0);
-    CHECK(closed_by_server(cs[4]), "one byte over the limit: client closed");
+    send(cs[4], edge_line, ZXVD_RPC_MAX_LINE + 1, 0); /* no LF yet: the buffer is full */
+    CHECK(closed_by_server(cs[4]), "one byte over the limit: client closed at once");
     /* a client that closes is dropped, freeing its slot */
     close(cs[2]);
     pump(3);
