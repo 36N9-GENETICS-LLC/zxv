@@ -439,11 +439,12 @@ func (st *Stream) Close() {
 }
 
 // GenerateStream starts a generation whose tokens arrive on Stream.Tokens.
+// The channel is unbuffered, so generation runs in step with the reader.
 // Cancel ctx or call Stream.Close to stop early. Do not use the session
 // until Wait returns.
 func (s *Session) GenerateStream(ctx context.Context, prompt string, opts GenerateOptions) *Stream {
 	cctx, cancel := context.WithCancel(ctx)
-	st := &Stream{tokens: make(chan Token, 16), done: make(chan struct{}), cancel: cancel}
+	st := &Stream{tokens: make(chan Token), done: make(chan struct{}), cancel: cancel}
 	go func() {
 		defer close(st.done)
 		defer cancel()
