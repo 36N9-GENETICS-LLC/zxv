@@ -5,9 +5,9 @@
  *
  * Author: 36N9 Genetics, LLC
  * Copyright (c) 2024-2026 Michael Laurence Curzi and 36N9 Genetics, LLC
- * SPDX-License-Identifier: LicenseRef-OPL-1.1 AND CC-BY-SA-4.0
- * Licensed under OPL-1.1, SEL-3.3, the Royal Writ of the Sicilian Crown,
- * and CC BY-SA 4.0. See LICENSE at the repository root.
+ * SPDX-License-Identifier: Apache-2.0
+ * Licensed under the Apache License, Version 2.0. See LICENSE at
+ * the repository root.
  */
 #include "sdk_bridge.h"
 #include "lpres.h"
@@ -27,21 +27,6 @@ static void sb_mem_set(void *dst, int val, uint32_t len) {
 static void sb_mem_copy(void *dst, const void *src, uint32_t len) {
     uint8_t *d = dst; const uint8_t *s = src;
     for (uint32_t i = 0; i < len; i++) d[i] = s[i];
-}
-
-static int sb_str_cmp(const char *a, const char *b) {
-    while (*a && *a == *b) { a++; b++; }
-    return (int)(unsigned char)*a - (int)(unsigned char)*b;
-}
-
-static uint32_t sb_str_len(const char *s) {
-    uint32_t n = 0; while (s[n]) n++; return n;
-}
-
-static void sb_str_copy(char *dst, const char *src, uint32_t max) {
-    uint32_t i = 0;
-    while (i < max - 1 && src[i]) { dst[i] = src[i]; i++; }
-    dst[i] = 0;
 }
 
 /* ============================================================================
@@ -66,6 +51,8 @@ static surplus_real_t sb_compute_coverage(const m5_coords_t *m5) {
  * ============================================================================ */
 
 lpres_state_t sb_attest(sdk_bridge_t *bridge, sb_context_t *ctx, uint32_t op_id, void *args, int32_t result) {
+    (void) op_id;
+    (void) args;
     if (!bridge || !ctx) return LPRES_STATE_NEITHER;
     
     lpres_state_t result_att = (result >= 0) ? LPRES_STATE_TRUE : LPRES_STATE_FALSE;
@@ -465,17 +452,32 @@ void sb_destroy_context(sdk_bridge_t *bridge, sb_context_t *ctx) {
     ctx->initialized = false;
 }
 
+static sb_capability_desc_t *sb_find_desc(sdk_bridge_t *bridge, sb_capability_t cap)
+{
+    if (cap <= 0 || cap >= SB_CAP_MAX) return NULL;
+    for (uint32_t i = 0; i < bridge->num_capabilities && i < SB_MAX_CAPABILITIES; i++)
+        if (bridge->capabilities[i].id == cap) return &bridge->capabilities[i];
+    return NULL;
+}
+
 sb_result_t sb_grant_capability(sdk_bridge_t *bridge, sb_context_t *ctx, sb_capability_t cap) {
     if (!bridge || !ctx) return (sb_result_t){.code = -1, .attestation = LPRES_STATE_FALSE};
-    if (cap >= SB_CAP_MAX) return (sb_result_t){.code = -1, .attestation = LPRES_STATE_FALSE};
-    
-    sb_capability_desc_t *cap_desc = &bridge->capabilities[cap];
-    
+    /* the descriptor registered for this id (descriptors are stored in
+     * registration order, not indexed by id); unregistered ids are refused */
+    sb_capability_desc_t *cap_desc = sb_find_desc(bridge, cap);
+    if (!cap_desc) return (sb_result_t){.code = -1, .attestation = LPRES_STATE_FALSE};
+    if (sb_has_capability(ctx, cap))
+        return (sb_result_t){.code = 0, .attestation = LPRES_STATE_TRUE};
+
     /* Check requirements */
     if (SR_CMP(ctx->coverage_ratio, cap_desc->min_coverage) < 0) {
         return (sb_result_t){.code = -1, .attestation = LPRES_STATE_FALSE};
     }
-    if ((int)ctx->process_attestation < (int)cap_desc->min_attestation) {
+    /* lpres numbers its states NEITHER 0, TRUE 1, FALSE 2, BOTH 3, so a
+     * numeric comparison let FALSE and BOTH through a TRUE requirement: the
+     * process must be attested TRUE, or exactly what the capability asks */
+    if (ctx->process_attestation != LPRES_STATE_TRUE &&
+        ctx->process_attestation != cap_desc->min_attestation) {
         return (sb_result_t){.code = -1, .attestation = LPRES_STATE_FALSE};
     }
     if (cap_desc->requires_hsm && !ctx->sandboxed) {
@@ -547,11 +549,9 @@ sb_result_t sb_self_audit_context(sdk_bridge_t *bridge, sb_context_t *ctx) {
     /* Check capabilities */
     for (uint32_t i = 0; i < ctx->num_capabilities; i++) {
         sb_capability_t cap = ctx->capabilities[i];
-        if (cap < SB_CAP_MAX) {
-            sb_capability_desc_t *cap_desc = &bridge->capabilities[cap];
-            if (SR_CMP(ctx->coverage_ratio, cap_desc->min_coverage) < 0) {
-                audit_passed = false;
-            }
+        sb_capability_desc_t *cap_desc = sb_find_desc(bridge, cap);
+        if (!cap_desc || SR_CMP(ctx->coverage_ratio, cap_desc->min_coverage) < 0) {
+            audit_passed = false;
         }
     }
     

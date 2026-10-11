@@ -38,9 +38,9 @@
  *
  * Author: 36N9 Genetics, LLC
  * Copyright (c) 2024-2026 Michael Laurence Curzi and 36N9 Genetics, LLC
- * SPDX-License-Identifier: LicenseRef-OPL-1.1 AND CC-BY-SA-4.0
- * Licensed under OPL-1.1, SEL-3.3, the Royal Writ of the Sicilian Crown,
- * and CC BY-SA 4.0. See LICENSE at the repository root.
+ * SPDX-License-Identifier: Apache-2.0
+ * Licensed under the Apache License, Version 2.0. See LICENSE at
+ * the repository root.
  */
 #ifndef SDK_BRIDGE_H
 #define SDK_BRIDGE_H
@@ -73,29 +73,32 @@
  * ============================================================================ */
 
 typedef enum {
-    SB_CAP_CAPITAL_TRANSFER      = 1,
-    SB_CAP_DERIVATIVES_TRADE     = 2,
-    SB_CAP_ASSURANCE_CREATE      = 3,
-    SB_CAP_TREATY_TOKENIZE       = 4,
-    SB_CAP_NETWORK_MESH          = 5,
-    SB_CAP_STORAGE_PERSIST       = 6,
-    SB_CAP_MEDIA_STREAM          = 7,
-    SB_CAP_GOVERNANCE_VOTE       = 8,
-    SB_CAP_IDENTITY_CREDENTIAL   = 9,
-    SB_CAP_COMPUTE_SCHEDULE      = 10,
-    SB_CAP_CRYPTO_SIGN           = 11,
-    SB_CAP_CRYPTO_ENCRYPT        = 12,
-    SB_CAP_CRYPTO_ZK_PROVE       = 13,
-    SB_CAP_CRYPTO_KEM            = 14,
-    SB_CAP_HSM_OPERATION         = 15,
-    SB_CAP_TELECOM_SIGNAL        = 16,
-    SB_CAP_TELECOM_GLARE_DETECT  = 17,
-    SB_CAP_AI_INFERENCE          = 17,
-    SB_CAP_AI_TRAINING           = 18,
-    SB_CAP_QUANTUM_OPERATION     = 18,
-    SB_CAP_HOLOGRAPHIC_RENDER    = 19,
-    SB_CAP_TRIPARTITE_FILE       = 20,
-    SB_CAP_CIVILIZATIONAL_APP    = 21,
+    SB_CAP_CAPITAL_TRANSFER = 1,
+    SB_CAP_DERIVATIVES_TRADE = 2,
+    SB_CAP_ASSURANCE_CREATE = 3,
+    SB_CAP_TREATY_TOKENIZE = 4,
+    SB_CAP_NETWORK_MESH = 5,
+    SB_CAP_STORAGE_PERSIST = 6,
+    SB_CAP_MEDIA_STREAM = 7,
+    SB_CAP_GOVERNANCE_VOTE = 8,
+    SB_CAP_IDENTITY_CREDENTIAL = 9,
+    SB_CAP_COMPUTE_SCHEDULE = 10,
+    SB_CAP_CRYPTO_SIGN = 11,
+    SB_CAP_CRYPTO_ENCRYPT = 12,
+    SB_CAP_CRYPTO_ZK_PROVE = 13,
+    SB_CAP_CRYPTO_KEM = 14,
+    SB_CAP_HSM_OPERATION = 15,
+    SB_CAP_TELECOM_SIGNAL = 16,
+    SB_CAP_TELECOM_GLARE_DETECT = 17,
+    /* Each capability has its own value: 17 and 18 were once shared, so
+     * granting one granted the other. The order matches
+     * sb_capability_name(). */
+    SB_CAP_AI_INFERENCE = 18,
+    SB_CAP_AI_TRAINING = 19,
+    SB_CAP_QUANTUM_OPERATION = 20,
+    SB_CAP_HOLOGRAPHIC_RENDER = 21,
+    SB_CAP_TRIPARTITE_FILE = 22,
+    SB_CAP_CIVILIZATIONAL_APP = 23,
     SB_CAP_MAX
 } sb_capability_t;
 
