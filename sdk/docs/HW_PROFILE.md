@@ -47,9 +47,18 @@ node (repeated `node count` times)
   4  4  class
   8  2  cap count (<= 16)
  10  2  state length (<= 256)
- 12  .. cap count x { u16 key, u64 value }
+ 12  2  extension length (<= 256)
+ 14  2  reserved = 0
+ 16  .. cap count x { u16 key, u64 value }
  ..  .. state bytes
+ ..  .. extension bytes
 ```
+
+The **extension** is an opaque blob an implementer may attach to any node
+(`zxv_hw_profile_ext_set`). It is part of the encoding, so the profile
+digest covers it, but its format is never specified here and readers must
+not interpret it. It is the place for whatever a vendor needs to keep with
+the node without making it part of the public standard.
 
 ### Canonical rules
 
@@ -65,25 +74,33 @@ A decoder must refuse anything that breaks P1-P3.
 
 ## Component classes
 
-| Value | Class | Value | Class |
-|---|---|---|---|
-| 1 | machine (may nest) | 14 | storage |
-| 2 | cpu-cluster | 15 | network |
-| 3 | cpu-core | 16 | radio |
-| 4 | cache | 17 | sensor |
-| 5 | memory | 18 | actuator |
-| 6 | interconnect | 19 | clock (deterministic phase-tick source) |
-| 7 | matrix-unit (integer MAC arrays) | 20 | power |
-| 8 | vector-unit | 21 | secure-element |
-| 9 | ternary-unit (trit logic) | 22 | display |
-| 10 | hash-unit | 23 | audio |
-| 11 | crypto-unit | 24 | wire (UBH-168 harmonic-wire port) |
-| 12 | codec-unit | 25 | gpu |
-| 13 | reconf-fabric | ≥ 0x80000000 | private (implementer-defined) |
+Each class has a number (used on the wire) and a dotted name (used in
+reports and tools).
 
-A `machine` node can appear below another node. A soft core loaded into a
+| Value | Name | Value | Name |
+|---|---|---|---|
+| 1 | device (a whole machine; may nest) | 18 | actuator |
+| 2 | cluster | 19 | clock (deterministic phase-tick source) |
+| 3 | core | 20 | power |
+| 4 | mem.cache | 21 | secure.element |
+| 5 | mem | 22 | io.display |
+| 6 | interconnect | 23 | io.audio |
+| 7 | engine.tensor.int (integer MAC arrays) | 24 | io.wire (UBH-168 harmonic-wire port) |
+| 8 | engine.vector | 25 | engine.gpu |
+| 9 | engine.ternary (trit logic) | 26 | package (grouping, like device) |
+| 10 | engine.hash | 27 | lane |
+| 11 | engine.crypto | 28 | engine.logic64 (64-lane four-valued logic) |
+| 12 | engine.codec | 29 | engine.ntt |
+| 13 | fabric.reconfig | 30 | engine.frame.ubh168 |
+| 14 | io.storage | 31 | engine.gcd |
+| 15 | io.network | 32 | mem.channel |
+| 16 | radio | 33 | secure.island (attest, seal and update-verify only) |
+| 17 | sensor | 34 | io |
+| | | ≥ 0x80000000 | private (implementer-defined) |
+
+A `device` node can appear below another node. A soft core loaded into a
 reconfigurable region, or a peer on the mesh, is described as a nested
-machine with the same format: the description is self-similar at every
+device with the same format: the description is self-similar at every
 scale.
 
 ## Capability keys
@@ -115,6 +132,16 @@ bits 12-0   id; 0x1000-0x1FFF are private
 | 0x4010 | HASH_ALGS | bit 0 SHA-256, 1 SHA-3 (MASK) |
 | 0x2011 | WIRE_BITS | frame width, 168 for UBH-168 (EXACT) |
 | 0x6012 | PEAK_OPS_MHZ | peak integer ops per microsecond, for utilisation reports (INFO) |
+| 0x2013 | CONTRACT_ID | the standard engine contract the node implements, a function id such as SHA256 `0x5A450001` (EXACT) |
+| 0x0014 | CONTRACT_VER | the golden-vector version it passes (MIN) |
+| 0x6015 | KIND | what serves it: 0 HARD, 1 FABRIC, 2 MICRO, 3 PEER, 4 SOFT, 5 REMOTE (INFO) |
+| 0x0016 | CAPACITY_CLASS | coarse capacity, 0..15 (MIN) |
+| 0x0017 | PERF_BUCKET | coarse performance, 0..15 (MIN) |
+| 0x6018 | POWER_BUCKET | power class: 1 ≤10 mW, 2 ≤100 mW, 3 ≤1 W, 4 ≤10 W, 5 ≤100 W, 6 above, 0 unknown (INFO) |
+
+Capacity, performance and power are deliberately coarse buckets. A profile
+says which contract a component meets and roughly how big it is, never how
+it is built or how it performs cycle by cycle.
 
 **Critical caps.** A requirement whose critical cap the reader does not
 know cannot be satisfied. A host component that carries a critical cap the
@@ -129,32 +156,46 @@ A **target** profile describes the machine software is written for; a
 id order, the first unused host node of the same class whose capabilities
 satisfy every non-INFO requirement is paired with it (**native**).
 Unpaired target nodes are **emulated** by the matrix, and the report says
-which capability fell short. `machine` nodes are grouping only. The result
+which capability fell short. `device` and `package` nodes are grouping
+only. The result
 is deterministic: the same two profiles always pair the same way.
 
-## The reference machine R1
+## The reference machine R1 (VULPINE-class)
 
 R1 is the default target and the public contract hardware can be built
-to. It asks for minimums only:
+to. It asks for minimums only, and the engine nodes name the standard
+engine contract they must pass:
 
-| Node | Class | Requirements |
-|---|---|---|
-| 1 | machine | |
-| 2 | cpu-cluster | WORD_BITS ≥ 64, COUNT ≥ 1 |
-| 3 | memory | BYTES ≥ 64 MiB |
-| 4 | vector-unit | INT_WIDTHS ⊇ {int8, int16, int32} |
-| 5 | matrix-unit | INT_WIDTHS ⊇ {int8, int32}, MACS_PER_CYCLE ≥ 64 |
-| 6 | ternary-unit | RADIX = 3 |
-| 7 | hash-unit | HASH_ALGS ⊇ {SHA-256, SHA-3} |
-| 8 | crypto-unit | PQ_ALGS ⊇ {ML-KEM, ML-DSA} |
-| 9 | reconf-fabric | REGIONS ≥ 1 |
-| 10 | clock | (any deterministic tick source) |
-| 11 | secure-element | |
-| 12 | wire | WIRE_BITS = 168 |
+| Node | Parent | Class | Requirements |
+|---|---|---|---|
+| 1 | | device | |
+| 2 | 1 | package | |
+| 3 | 2 | cluster | WORD_BITS ≥ 64, COUNT ≥ 1 |
+| 4 | 2 | mem | BYTES ≥ 64 MiB |
+| 5 | 2 | engine.vector | INT_WIDTHS ⊇ {int8, int16, int32} |
+| 6 | 2 | engine.tensor.int | INT_WIDTHS ⊇ {int8, int32}, MACS_PER_CYCLE ≥ 64, contract TENSOR v1 |
+| 7 | 2 | engine.logic64 | contract LOGIC64 v1 |
+| 8 | 2 | engine.ternary | RADIX = 3 |
+| 9 | 2 | engine.hash | HASH_ALGS ⊇ {SHA-256}, contract SHA256 v1 |
+| 10 | 2 | engine.hash | HASH_ALGS ⊇ {SHA-3}, contract KECCAK v1 |
+| 11 | 2 | engine.gcd | contract GCD v1 |
+| 12 | 2 | engine.crypto | PQ_ALGS ⊇ {ML-KEM, ML-DSA, SLH-DSA}, contract MAC v1 |
+| 13 | 2 | fabric.reconfig | REGIONS ≥ 1 |
+| 14 | 2 | clock | (any deterministic tick source) |
+| 15 | 2 | secure.island | |
+| 16 | 2 | io.wire | WIRE_BITS = 168 |
 
-A commodity laptop satisfies nodes 2-4 natively and emulates 5-12. A
-machine whose own profile satisfies all of R1 runs ZXV software with
-nothing emulated, and needs no change to that software.
+A commodity laptop satisfies the cluster, memory and vector nodes natively
+and emulates the rest. A machine whose own profile satisfies all of R1 runs
+ZXV software with nothing emulated, and needs no change to that software.
+
+### Presenting R1 on any host
+
+`zxv_hw_profile_present(host, target)` returns a copy of the target with a
+KIND cap on every non-grouping node: HARD where the host has a matching
+component, SOFT where the matrix emulates it. This is the default view ZXV
+gives software: a VULPINE-class machine, each component filled by the best
+implementation available here.
 
 ## Host detection
 
