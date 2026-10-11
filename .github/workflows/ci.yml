@@ -280,14 +280,14 @@ jobs:
     runs-on: ubuntu-24.04
     defaults:
       run:
-        working-directory: bindings/dotnet
+        working-directory: sdk/dotnet
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-dotnet@v5
         with:
           dotnet-version: '8.0.x'
-      - name: Native shim (C ABI) and its conformance test
-        run: make -C native test
+      - name: libzxv (the C ABI) and its conformance tests
+        run: make -C ../libzxv test
       - name: Build (Release, warnings as errors)
         run: dotnet build Zxv.sln -c Release -p:ZxvSkipNativeBuild=true
       - name: Test
@@ -296,7 +296,7 @@ jobs:
         if: always()
         with:
           name: dotnet-test-results
-          path: bindings/dotnet/tests/**/TestResults/*.trx
+          path: sdk/dotnet/tests/**/TestResults/*.trx
 
   # Machine-checked models in proofs/ (see proofs/README.md): TLC on the
   # TLA+ ledger models, Lean 4 on the headroom and rational proofs. These are

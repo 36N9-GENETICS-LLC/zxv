@@ -1,6 +1,6 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <!-- xUnit tests of Zxv.Sdk. They P/Invoke the real native library built in
-       bindings/dotnet/native (copied to the output by Zxv.Native). -->
+       sdk/libzxv (copied to the output by Zxv.Native). -->
   <PropertyGroup>
     <IsPackable>false</IsPackable>
     <IsTestProject>true</IsTestProject>

@@ -30,7 +30,7 @@ asynchronous or batch operation.
 ## Layout
 
 ```
-bindings/dotnet/
+sdk/dotnet/
   Zxv.sln
   Directory.Build.props        shared settings (net8.0, nullable, analyzers, warnings as errors)
   Directory.Packages.props     every NuGet version, in one place
@@ -66,7 +66,7 @@ Requirements:
 Build and test:
 
 ```sh
-cd bindings/dotnet
+cd sdk/dotnet
 make -C native            # builds native/build/libzxv.so and checks the C ABI with `make -C native test`
 dotnet build Zxv.sln -c Release
 dotnet test  Zxv.sln -c Release
@@ -337,7 +337,7 @@ API and the gateway contract stay the same.
 ## The operator gateway sample
 
 ```sh
-cd bindings/dotnet
+cd sdk/dotnet
 ASPNETCORE_ENVIRONMENT=Development dotnet run --project samples/Zxv.Gateway
 # http://localhost:5080/openapi/v1.json   generated OpenAPI 3.0
 # http://localhost:5080/swagger           Swagger UI (Development only)
@@ -395,7 +395,7 @@ production gateway persists receipts in its own store.
 
 ## The native C ABI
 
-`bindings/dotnet/native/zxv_api.h` is usable from any language with a C FFI
+`sdk/libzxv/include/zxv_api.h` is usable from any language with a C FFI
 (Java/Panama, Python ctypes, Go cgo, Rust). Its rules, in short:
 
 - opaque handles only (`zxv_ctx`, `zxv_msg`, `zxv_netting`); no kernel struct
@@ -456,7 +456,7 @@ solution with warnings as errors, and runs every .NET test:
     runs-on: ubuntu-24.04
     defaults:
       run:
-        working-directory: bindings/dotnet
+        working-directory: sdk/dotnet
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-dotnet@v4
@@ -472,5 +472,5 @@ solution with warnings as errors, and runs every .NET test:
         if: always()
         with:
           name: dotnet-test-results
-          path: bindings/dotnet/tests/**/TestResults/*.trx
+          path: sdk/dotnet/tests/**/TestResults/*.trx
 ```

@@ -1,5 +1,5 @@
 <Project Sdk="Microsoft.NET.Sdk">
-  <!-- Zxv.Native: P/Invoke surface over bindings/dotnet/native/zxv_api.h.
+  <!-- Zxv.Native: P/Invoke surface over sdk/libzxv/include/zxv_api.h.
        Source-generated marshalling (LibraryImport), SafeHandle ownership.
        Everything except the handles, the status enum and the feature flags
        is internal; Zxv.Sdk is the supported API. -->

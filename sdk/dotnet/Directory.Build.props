@@ -1,5 +1,5 @@
 <Project>
-  <!-- Shared settings for every project in bindings/dotnet. -->
+  <!-- Shared settings for every project in sdk/dotnet. -->
   <PropertyGroup>
     <TargetFramework>net8.0</TargetFramework>
     <LangVersion>12.0</LangVersion>
@@ -16,9 +16,9 @@
     <Version>1.0.0-preview.1</Version>
   </PropertyGroup>
 
-  <!-- Location of the native shim (bindings/dotnet/native). -->
+  <!-- Location of libzxv, the one C ABI every SDK wraps (sdk/libzxv). -->
   <PropertyGroup>
-    <ZxvNativeDir>$(MSBuildThisFileDirectory)native/</ZxvNativeDir>
+    <ZxvNativeDir>$(MSBuildThisFileDirectory)../libzxv/</ZxvNativeDir>
     <ZxvNativeFile Condition="$([MSBuild]::IsOSPlatform('OSX'))">libzxv.dylib</ZxvNativeFile>
     <ZxvNativeFile Condition="$([MSBuild]::IsOSPlatform('Windows'))">zxv.dll</ZxvNativeFile>
     <ZxvNativeFile Condition="'$(ZxvNativeFile)' == ''">libzxv.so</ZxvNativeFile>

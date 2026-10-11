@@ -7,7 +7,7 @@ using System.Runtime.InteropServices;
 namespace Zxv.Interop;
 
 /// <summary>
-/// One-to-one P/Invoke declarations for <c>bindings/dotnet/native/zxv_api.h</c>.
+/// One-to-one P/Invoke declarations for <c>sdk/libzxv/include/zxv_api.h</c>.
 /// Source-generated (<see cref="LibraryImportAttribute"/>): no runtime IL stubs,
 /// AOT and trimming safe. Strings in are UTF-8; text out uses caller-owned
 /// buffers with the two-call pattern (see <see cref="NativeText"/>).
