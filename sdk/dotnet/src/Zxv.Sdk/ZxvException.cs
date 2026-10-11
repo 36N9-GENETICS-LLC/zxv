@@ -12,6 +12,15 @@ namespace Zxv;
 /// library and is not a stable contract.
 /// </summary>
 /// <remarks>
+/// <para>
+/// Every native failure is raised as a subclass chosen by its
+/// <see cref="ZxvStatusClass"/>: <see cref="ZxvUsageException"/> (a caller
+/// bug), <see cref="ZxvRefusedException"/> (handle it; a retry may succeed
+/// later), <see cref="ZxvSystemException"/> (environment). The fourth class,
+/// a halted context, is <see cref="ZxvFatalException"/>, which deliberately
+/// does not derive from this type, so <c>catch (ZxvException)</c> never
+/// swallows it.
+/// </para>
 /// The SDK uses exceptions for every refused operation and for faults. The one
 /// business outcome that is not an exception is a card decline, which is
 /// returned as an <see cref="Cards.AuthorizationResult"/>.
@@ -71,7 +80,13 @@ public class ZxvException : Exception
     /// <summary>Gets the stable symbolic code, e.g. <c>ZXV_E_FUNDS</c>, suitable for logs and problem details.</summary>
     public string Code => NativeText.StatusName((int)Status);
 
-    private static string FormatMessage(ZxvStatus status, string operation, string detail)
+    /// <summary>Gets the symbolic status name, e.g. <c>ZXV_E_FUNDS</c> (the cross-SDK name for <see cref="Code"/>).</summary>
+    public string StatusName => Code;
+
+    /// <summary>Gets the class of <see cref="Status"/>, as <c>zxv_status_class</c> reports it.</summary>
+    public ZxvStatusClass StatusClass => ZxvLibrary.ClassOf(Status);
+
+    internal static string FormatMessage(ZxvStatus status, string operation, string detail)
     {
         string code = NativeText.StatusName((int)status);
         return string.IsNullOrEmpty(detail) ? $"{operation} failed: {code}." : $"{operation} failed: {code}: {detail}";
@@ -83,7 +98,8 @@ public class ZxvException : Exception
 /// native library yet (<see cref="ZxvStatus.NotImplemented"/>). Check
 /// <see cref="ZxvPlatform.Features"/> to avoid it.
 /// </summary>
-public sealed class ZxvFeatureNotAvailableException : ZxvException
+/// <remarks>This is the .NET name of the cross-SDK <c>NotImplementedException</c> (a REFUSED status).</remarks>
+public sealed class ZxvFeatureNotAvailableException : ZxvRefusedException
 {
     /// <summary>Initializes a new instance.</summary>
     public ZxvFeatureNotAvailableException()

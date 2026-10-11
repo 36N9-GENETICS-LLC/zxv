@@ -58,7 +58,7 @@ public sealed class GatewayTests : IClassFixture<DevelopmentGatewayFactory>
     public async Task Platform_reports_features()
     {
         JsonElement p = await _http.GetFromJsonAsync<JsonElement>("/v1/platform");
-        Assert.Equal("1.0.0", p.GetProperty("abiVersion").GetString());
+        Assert.StartsWith("1.", p.GetProperty("abiVersion").GetString(), System.StringComparison.Ordinal);
         Assert.Contains("Pacs008", p.GetProperty("features").EnumerateArray().Select(f => f.GetString()));
     }
 

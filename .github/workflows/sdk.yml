@@ -97,3 +97,23 @@ jobs:
           cache: maven
       - run: make -C ../libzxv all fixtures
       - run: mvn -B clean verify
+
+  dotnet:
+    name: dotnet ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-14]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        working-directory: sdk/dotnet
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: '8.0.x'
+      - run: make -C ../libzxv all fixtures
+      - name: Build (Release, warnings as errors)
+        run: dotnet build Zxv.sln -c Release -p:ZxvSkipNativeBuild=true
+      - run: dotnet test Zxv.sln -c Release --no-build

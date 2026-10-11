@@ -75,5 +75,5 @@ public sealed class PendingFeatureTests : IDisposable
 
     [Fact]
     public void Check_digit_input_is_validated() =>
-        Assert.Equal(ZxvStatus.InvalidArgument, Assert.Throws<ZxvException>(() => CardService.IsCheckDigitValid(CardNetwork.Dragon, "4111-1111")).Status);
+        Assert.Equal(ZxvStatus.InvalidArgument, Assert.ThrowsAny<ZxvException>(() => CardService.IsCheckDigitValid(CardNetwork.Dragon, "4111-1111")).Status);
 }

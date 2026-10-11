@@ -70,3 +70,133 @@ public sealed class ZxvNettingHandle : SafeHandle
         return true;
     }
 }
+
+/// <summary>
+/// Base of the ABI 1.1 handles. Besides owning one native object, it keeps a
+/// reference on every handle the native object depends on (its context, the
+/// parent capability, the model of a session, the budget bound to a session),
+/// so the native rule "a child is destroyed before its parent" (R6) holds no
+/// matter in which order managed code disposes or finalizes them.
+/// </summary>
+public abstract class ZxvDependentHandle : SafeHandle
+{
+    private readonly object _gate = new();
+    private SafeHandle[] _dependencies = Array.Empty<SafeHandle>();
+
+    /// <summary>Initializes an invalid handle; the marshaller fills it in.</summary>
+    protected ZxvDependentHandle()
+        : base(IntPtr.Zero, ownsHandle: true)
+    {
+    }
+
+    /// <inheritdoc/>
+    public override bool IsInvalid => handle == IntPtr.Zero;
+
+    /// <summary>Keeps <paramref name="dependency"/> alive until this handle is released.</summary>
+    /// <param name="dependency">A handle the native object refers to.</param>
+    internal void AddDependency(SafeHandle dependency)
+    {
+        bool added = false;
+        dependency.DangerousAddRef(ref added);
+        lock (_gate)
+        {
+            var next = new SafeHandle[_dependencies.Length + 1];
+            _dependencies.CopyTo(next, 0);
+            next[^1] = dependency;
+            _dependencies = next;
+        }
+    }
+
+    /// <summary>Drops one reference taken by <see cref="AddDependency"/>.</summary>
+    /// <param name="dependency">The handle to let go of.</param>
+    internal void RemoveDependency(SafeHandle dependency)
+    {
+        lock (_gate)
+        {
+            int i = Array.IndexOf(_dependencies, dependency);
+            if (i < 0)
+            {
+                return;
+            }
+
+            var next = new SafeHandle[_dependencies.Length - 1];
+            Array.Copy(_dependencies, 0, next, 0, i);
+            Array.Copy(_dependencies, i + 1, next, i, _dependencies.Length - i - 1);
+            _dependencies = next;
+        }
+
+        dependency.DangerousRelease();
+    }
+
+    /// <summary>Destroys the native object.</summary>
+    /// <param name="native">The native pointer.</param>
+    private protected abstract void Destroy(IntPtr native);
+
+    /// <inheritdoc/>
+    protected sealed override bool ReleaseHandle()
+    {
+        Destroy(handle);
+        SafeHandle[] deps;
+        lock (_gate)
+        {
+            deps = _dependencies;
+            _dependencies = Array.Empty<SafeHandle>();
+        }
+
+        // Release in reverse order of acquisition.
+        for (int i = deps.Length - 1; i >= 0; i--)
+        {
+            deps[i].DangerousRelease();
+        }
+
+        return true;
+    }
+}
+
+/// <summary>Owns a native <c>zxv_cap*</c> (a capability). Released with <c>zxv_cap_destroy</c>.</summary>
+public sealed class ZxvCapabilityHandle : ZxvDependentHandle
+{
+    private protected override void Destroy(IntPtr native) => NativeMethods.CapDestroy(native);
+}
+
+/// <summary>Owns a native <c>zxv_lpres*</c> (an attestation registry).</summary>
+public sealed class ZxvAttestationsHandle : ZxvDependentHandle
+{
+    private protected override void Destroy(IntPtr native) => NativeMethods.LpresDestroy(native);
+}
+
+/// <summary>Owns a native <c>zxv_rmag*</c> (a set of rational resource budgets).</summary>
+public sealed class ZxvBudgetsHandle : ZxvDependentHandle
+{
+    private protected override void Destroy(IntPtr native) => NativeMethods.RmagDestroy(native);
+}
+
+/// <summary>Owns a native <c>zxv_phase*</c> (a phase coordinator clock).</summary>
+public sealed class ZxvPhaseHandle : ZxvDependentHandle
+{
+    private protected override void Destroy(IntPtr native) => NativeMethods.PhaseDestroy(native);
+}
+
+/// <summary>Owns a native <c>zxv_swarm*</c> (a swarm token economy).</summary>
+public sealed class ZxvSwarmHandle : ZxvDependentHandle
+{
+    private protected override void Destroy(IntPtr native) => NativeMethods.SwarmDestroy(native);
+}
+
+/// <summary>Owns a native <c>zxv_model*</c> (a loaded GGUF model).</summary>
+public sealed class ZxvModelHandle : ZxvDependentHandle
+{
+    private protected override void Destroy(IntPtr native) => NativeMethods.ModelDestroy(native);
+}
+
+/// <summary>Owns a native <c>zxv_session*</c> (a KV cache over a model).</summary>
+public sealed class ZxvSessionHandle : ZxvDependentHandle
+{
+    private protected override void Destroy(IntPtr native) => NativeMethods.SessionDestroy(native);
+}
+
+/// <summary>Owns a native <c>zxv_lora*</c> (a LoRA adapter; not built yet).</summary>
+public sealed class ZxvLoraHandle : ZxvDependentHandle
+{
+    private protected override void Destroy(IntPtr native) => NativeMethods.LoraDestroy(native);
+}

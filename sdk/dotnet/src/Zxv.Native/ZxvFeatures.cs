@@ -56,4 +56,46 @@ public enum ZxvFeatures : uint
 
     /// <summary>VSS conformance checks.</summary>
     Conformance = 0x0000_1000,
+
+    /// <summary>Exact rationals (ABI 1.1).</summary>
+    Rational = 0x0000_2000,
+
+    /// <summary>Four-valued logic and attestations (ABI 1.1).</summary>
+    FourValuedLogic = 0x0000_4000,
+
+    /// <summary>Capability handles (ABI 1.1).</summary>
+    Capabilities = 0x0000_8000,
+
+    /// <summary>Rational resource budgets, rmag (ABI 1.1).</summary>
+    Budgets = 0x0001_0000,
+
+    /// <summary>Phase coordinator ticks (ABI 1.1).</summary>
+    Phase = 0x0002_0000,
+
+    /// <summary>UBH-168 harmonic wire frames (ABI 1.1).</summary>
+    Wire = 0x0004_0000,
+
+    /// <summary>Fibonacci and emotional swarm token economy (ABI 1.1).</summary>
+    Swarm = 0x0008_0000,
+
+    /// <summary>SHA3-256, SHAKE256 and Keccak-256 (ABI 1.1).</summary>
+    Hash = 0x0010_0000,
+
+    /// <summary>FIPS 203 ML-KEM-1024 (ABI 1.1).</summary>
+    MlKem1024 = 0x0020_0000,
+
+    /// <summary>FIPS 204 ML-DSA-87 (ABI 1.1).</summary>
+    MlDsa87 = 0x0040_0000,
+
+    /// <summary>RFC 8032 Ed25519 (ABI 1.1).</summary>
+    Ed25519 = 0x0080_0000,
+
+    /// <summary>Integer GGUF inference engine (ABI 1.1).</summary>
+    Tensor = 0x0100_0000,
+
+    /// <summary>LoRA adapters. Declared but not built yet: never set today (ABI 1.1).</summary>
+    Lora = 0x0200_0000,
+
+    /// <summary>EVM state-channel encoding (ABI 1.1).</summary>
+    Evm = 0x0400_0000,
 }

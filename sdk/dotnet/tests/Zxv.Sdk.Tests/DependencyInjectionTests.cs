@@ -52,6 +52,6 @@ public class DependencyInjectionTests
         var services = new ServiceCollection();
         services.AddZxv(o => o.Currencies.Add("QQQ"));
         using ServiceProvider sp = services.BuildServiceProvider();
-        Assert.Equal(Interop.ZxvStatus.InvalidCurrency, Assert.Throws<ZxvException>(() => sp.GetRequiredService<ZxvPlatform>()).Status);
+        Assert.Equal(Interop.ZxvStatus.InvalidCurrency, Assert.ThrowsAny<ZxvException>(() => sp.GetRequiredService<ZxvPlatform>()).Status);
     }
 }

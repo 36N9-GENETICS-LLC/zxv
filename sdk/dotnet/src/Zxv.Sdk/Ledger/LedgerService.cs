@@ -93,8 +93,12 @@ public sealed class LedgerService
             _ctx, transfer.From.Value, transfer.To.Value, transfer.Amount.MinorUnits, transfer.Amount.Currency, transfer.Reference, out ulong entryId);
         if (rc != (int)ZxvStatus.Ok)
         {
-            ZxvException ex = NativeCall.Create(rc, "Ledger.Post");
-            Log.PostRefused(_logger, transfer.Reference, ex.Code, ex.Detail);
+            Exception ex = NativeCall.Create(rc, "Ledger.Post");
+            if (ex is ZxvException zx)
+            {
+                Log.PostRefused(_logger, transfer.Reference, zx.Code, zx.Detail);
+            }
+
             throw ex;
         }
 
@@ -177,7 +181,7 @@ public sealed class LedgerService
     /// balance, no holder is negative, and the exact minor-unit shadow equals the
     /// kernel triple-ledger financial axis.
     /// </summary>
-    /// <exception cref="ZxvException">An invariant failed (<see cref="ZxvStatus.InvariantViolated"/>).</exception>
+    /// <exception cref="ZxvFatalException">An invariant failed (<see cref="ZxvStatus.InvariantViolated"/>): the context is now halted.</exception>
     public void Verify() => NativeCall.Check(NativeMethods.LedgerCheck(_ctx), "Ledger.Verify");
 
     /// <summary>Returns whether the ledger invariants hold, without throwing.</summary>
@@ -190,5 +194,22 @@ public sealed class LedgerService
         return rc == (int)ZxvStatus.Ok;
     }
 
-    private byte ScaleOf(string currency) => _currencies.GetEnabled(currency).MinorUnits ?? 0;
+    /// <summary>
+    /// Returns the ledger seen through <paramref name="capability"/>: every
+    /// call presents it and the native library checks it.
+    /// </summary>
+    /// <param name="capability">A capability of the same platform.</param>
+    /// <returns>The capability-checked ledger.</returns>
+    public CapabilityLedger WithCapability(Capability capability)
+    {
+        ArgumentNullException.ThrowIfNull(capability);
+        if (!ReferenceEquals(capability.Context.Handle, _ctx))
+        {
+            throw new ArgumentException("The capability belongs to a different platform.", nameof(capability));
+        }
+
+        return new CapabilityLedger(this, capability);
+    }
+
+    internal byte ScaleOf(string currency) => _currencies.GetEnabled(currency).MinorUnits ?? 0;
 }

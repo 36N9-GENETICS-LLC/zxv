@@ -46,23 +46,23 @@ public sealed class MessagingTests : IDisposable
     public void Private_unit_never_goes_on_the_wire()
     {
         Money vfv = Money.FromMinorUnits(100, _p.Currencies.GetEnabled("VFV"));
-        Assert.Equal(ZxvStatus.InvalidCurrency, Assert.Throws<ZxvException>(() => _p.Messages.BuildPacs008(Pacs(vfv))).Status);
+        Assert.Equal(ZxvStatus.InvalidCurrency, Assert.ThrowsAny<ZxvException>(() => _p.Messages.BuildPacs008(Pacs(vfv))).Status);
     }
 
     [Fact]
     public void Scale_must_match_iso4217()
     {
         var wrong = new Money(250_050, "NGN", 3);
-        Assert.Equal(ZxvStatus.InvalidCurrency, Assert.Throws<ZxvException>(() => _p.Messages.BuildPacs008(Pacs(wrong))).Status);
+        Assert.Equal(ZxvStatus.InvalidCurrency, Assert.ThrowsAny<ZxvException>(() => _p.Messages.BuildPacs008(Pacs(wrong))).Status);
     }
 
     [Fact]
     public void Field_limits_are_enforced()
     {
         Money m = Money.FromMinorUnits(1, _p.Currencies.GetEnabled("NGN"));
-        Assert.Equal(ZxvStatus.TooLong, Assert.Throws<ZxvException>(() => _p.Messages.BuildPacs008(Pacs(m) with { MessageId = new string('M', 36) })).Status);
-        Assert.Equal(ZxvStatus.TooLong, Assert.Throws<ZxvException>(() => _p.Messages.BuildPacs008(Pacs(m, new string('n', 71)))).Status);
-        Assert.Equal(ZxvStatus.AmountOutOfRange, Assert.Throws<ZxvException>(() => _p.Messages.BuildPacs008(Pacs(m with { MinorUnits = 0 }))).Status);
+        Assert.Equal(ZxvStatus.TooLong, Assert.ThrowsAny<ZxvException>(() => _p.Messages.BuildPacs008(Pacs(m) with { MessageId = new string('M', 36) })).Status);
+        Assert.Equal(ZxvStatus.TooLong, Assert.ThrowsAny<ZxvException>(() => _p.Messages.BuildPacs008(Pacs(m, new string('n', 71)))).Status);
+        Assert.Equal(ZxvStatus.AmountOutOfRange, Assert.ThrowsAny<ZxvException>(() => _p.Messages.BuildPacs008(Pacs(m with { MinorUnits = 0 }))).Status);
         Assert.Throws<ArgumentException>(() => _p.Messages.BuildPacs008(Pacs(m) with { EndToEndId = string.Empty }));
     }
 
@@ -73,7 +73,8 @@ public sealed class MessagingTests : IDisposable
         Money M(long v) => Money.FromMinorUnits(v, ghs);
         var entries = new[] { new StatementEntry(M(10_000)), new StatementEntry(M(-2_550)), new StatementEntry(M(999), EntryStatus.Pending) };
         var bad = new Camt053Message("STMT-1", At, "GH0002", M(0), M(10_000), entries);
-        Assert.Equal(ZxvStatus.InvariantViolated, Assert.Throws<ZxvException>(() => _p.Messages.BuildCamt053(bad)).Status);
+        // libzxv 1.1.1: an unreconciled statement is caller data (ZXV_E_FIELD, USAGE), not a halted context.
+        Assert.Equal(ZxvStatus.InvalidField, Assert.ThrowsAny<ZxvUsageException>(() => _p.Messages.BuildCamt053(bad)).Status);
 
         MxDocument doc = _p.Messages.BuildCamt053(bad with { Closing = M(7_450) });
         XDocument x = XDocument.Parse(doc.Xml);

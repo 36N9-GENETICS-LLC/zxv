@@ -73,7 +73,7 @@ public sealed class MessageService
     /// <summary>Builds a camt.053.001.08 document.</summary>
     /// <param name="message">The content.</param>
     /// <returns>The serialized document.</returns>
-    /// <exception cref="ZxvException">Includes <see cref="ZxvStatus.InvariantViolated"/> when opening plus booked entries is not the closing balance.</exception>
+    /// <exception cref="ZxvUsageException">Includes <see cref="ZxvStatus.InvalidField"/> when opening plus booked entries is not the closing balance (libzxv 1.1.1; 1.1.0 reported <see cref="ZxvStatus.InvariantViolated"/>, which the SDK also maps to a usage error because the context does not halt).</exception>
     public MxDocument BuildCamt053(Camt053Message message)
     {
         ArgumentNullException.ThrowIfNull(message);
@@ -138,7 +138,15 @@ public sealed class MessageService
             using (msg)
             {
                 fill(msg);
-                string xml = NativeCall.ReadText((byte* b, nuint c, out nuint l) => NativeMethods.MsgRender(msg, b, c, out l), "Messages.Render(" + kind + ")");
+                int rc = NativeText.TryRead((byte* b, nuint c, out nuint l) => NativeMethods.MsgRender(msg, b, c, out l), out string xml);
+                if (rc != (int)ZxvStatus.Ok)
+                {
+                    // libzxv 1.1.0 reported an unreconciled statement as
+                    // ZXV_E_INVARIANT without halting the context; passing the
+                    // context lets NativeCall confirm that and keep it a usage error.
+                    throw NativeCall.Create(rc, "Messages.Render(" + kind + ")", _ctx);
+                }
+
                 Log.MessageBuilt(_logger, kind.ToString(), messageId, xml.Length);
                 return new MxDocument(kind, messageId, xml);
             }

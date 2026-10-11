@@ -6,10 +6,13 @@
     <IsTestProject>true</IsTestProject>
     <!-- Test method names use underscores; xUnit requires public test classes. -->
     <NoWarn>$(NoWarn);CA1707;CA1515;CA2007</NoWarn>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
   </PropertyGroup>
 
   <ItemGroup>
     <ProjectReference Include="../../src/Zxv.Sdk/Zxv.Sdk.csproj" />
+    <!-- Built first (not referenced) so FatalPolicyTests can run it as a child process. -->
+    <ProjectReference Include="../../samples/Zxv.Samples.Agent/Zxv.Samples.Agent.csproj" ReferenceOutputAssembly="false" />
   </ItemGroup>
 
   <ItemGroup>
@@ -21,6 +24,13 @@
     </PackageReference>
     <PackageReference Include="Microsoft.Extensions.Hosting" />
     <PackageReference Include="Microsoft.Extensions.TimeProvider.Testing" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <AssemblyAttribute Include="System.Reflection.AssemblyMetadataAttribute">
+      <_Parameter1>ZxvConfiguration</_Parameter1>
+      <_Parameter2>$(Configuration)</_Parameter2>
+    </AssemblyAttribute>
   </ItemGroup>
 
   <ItemGroup>

@@ -66,7 +66,7 @@ public sealed class PaymentAndStatementTests
         using ZxvPlatform p = TestPlatform.Create();
         (_, Account a) = TestPlatform.Funded(p, "VFV", 1000);
         Account b = p.Ledger.OpenAccount("B", "VFV");
-        var ex = await Assert.ThrowsAsync<ZxvException>(() => p.Payments.SubmitAsync(new PaymentRequest(a.Id, b.Id, Money.FromMinorUnits(10, p.Currencies.GetEnabled("VFV")))));
+        var ex = await Assert.ThrowsAnyAsync<ZxvException>(() => p.Payments.SubmitAsync(new PaymentRequest(a.Id, b.Id, Money.FromMinorUnits(10, p.Currencies.GetEnabled("VFV")))));
         Assert.Equal(ZxvStatus.InvalidCurrency, ex.Status);
         Assert.Equal(1000, p.Ledger.GetAvailable(a.Id).MinorUnits);
     }

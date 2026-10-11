@@ -44,7 +44,7 @@ public sealed class LedgerTests : IDisposable
     {
         (_, Account ada) = TestPlatform.Funded(_p, "NGN", 100);
         Account b = _p.Ledger.OpenAccount("B", "NGN");
-        ZxvException ex = Assert.Throws<ZxvException>(() => _p.Ledger.Post(new Transfer(ada.Id, b.Id, Ngn(101), "OVR-1")));
+        ZxvException ex = Assert.ThrowsAny<ZxvException>(() => _p.Ledger.Post(new Transfer(ada.Id, b.Id, Ngn(101), "OVR-1")));
         Assert.Equal(ZxvStatus.InsufficientFunds, ex.Status);
         Assert.Equal(100, _p.Ledger.GetAvailable(ada.Id).MinorUnits); // nothing written
     }
@@ -55,7 +55,7 @@ public sealed class LedgerTests : IDisposable
         (_, Account ada) = TestPlatform.Funded(_p, "NGN", 1000);
         Account b = _p.Ledger.OpenAccount("B", "NGN");
         _p.Ledger.Post(new Transfer(ada.Id, b.Id, Ngn(1), "DUP-1"));
-        Assert.Equal(ZxvStatus.Duplicate, Assert.Throws<ZxvException>(() => _p.Ledger.Post(new Transfer(ada.Id, b.Id, Ngn(1), "DUP-1"))).Status);
+        Assert.Equal(ZxvStatus.Duplicate, Assert.ThrowsAny<ZxvException>(() => _p.Ledger.Post(new Transfer(ada.Id, b.Id, Ngn(1), "DUP-1"))).Status);
     }
 
     [Fact]
@@ -63,7 +63,7 @@ public sealed class LedgerTests : IDisposable
     {
         (_, Account ada) = TestPlatform.Funded(_p, "NGN", 1000);
         Account gh = _p.Ledger.OpenAccount("Accra", "GHS");
-        Assert.Equal(ZxvStatus.InvalidCurrency, Assert.Throws<ZxvException>(() => _p.Ledger.Post(new Transfer(ada.Id, gh.Id, Ngn(1), "FX-1"))).Status);
+        Assert.Equal(ZxvStatus.InvalidCurrency, Assert.ThrowsAny<ZxvException>(() => _p.Ledger.Post(new Transfer(ada.Id, gh.Id, Ngn(1), "FX-1"))).Status);
     }
 
     [Theory]
@@ -74,7 +74,7 @@ public sealed class LedgerTests : IDisposable
     {
         (_, Account ada) = TestPlatform.Funded(_p, "NGN", 1000);
         Account b = _p.Ledger.OpenAccount("B", "NGN");
-        Assert.Equal(ZxvStatus.AmountOutOfRange, Assert.Throws<ZxvException>(() => _p.Ledger.Post(new Transfer(ada.Id, b.Id, Ngn(minor), "RNG-" + minor))).Status);
+        Assert.Equal(ZxvStatus.AmountOutOfRange, Assert.ThrowsAny<ZxvException>(() => _p.Ledger.Post(new Transfer(ada.Id, b.Id, Ngn(minor), "RNG-" + minor))).Status);
     }
 
     [Theory]
@@ -91,7 +91,7 @@ public sealed class LedgerTests : IDisposable
     [Fact]
     public void Name_length_is_measured_in_utf8_bytes()
     {
-        Assert.Equal(ZxvStatus.TooLong, Assert.Throws<ZxvException>(() => _p.Ledger.OpenAccount(new string('é', 32), "NGN")).Status); // 64 bytes
+        Assert.Equal(ZxvStatus.TooLong, Assert.ThrowsAny<ZxvException>(() => _p.Ledger.OpenAccount(new string('é', 32), "NGN")).Status); // 64 bytes
         _p.Ledger.OpenAccount(new string('a', 63), "NGN");
     }
 
@@ -155,6 +155,6 @@ public sealed class LedgerTests : IDisposable
     [Fact]
     public void Unknown_account()
     {
-        Assert.Equal(ZxvStatus.NotFound, Assert.Throws<ZxvException>(() => _p.Ledger.GetBalances(new AccountId(9999))).Status);
+        Assert.Equal(ZxvStatus.NotFound, Assert.ThrowsAny<ZxvException>(() => _p.Ledger.GetBalances(new AccountId(9999))).Status);
     }
 }

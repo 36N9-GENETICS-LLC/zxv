@@ -63,6 +63,53 @@ public enum ZxvStatus
     /// <summary>A message field is not valid for the message kind, or a mandatory field is unset (<c>ZXV_E_FIELD</c>).</summary>
     InvalidField = -16,
 
+    /// <summary>The capability handle lacks the right, is revoked, or its attestation is not TRUE (<c>ZXV_E_CAP</c>, ABI 1.1).</summary>
+    CapabilityDenied = -17,
+
+    /// <summary>The context halted after a broken invariant; terminal (<c>ZXV_E_POISONED</c>, ABI 1.1).</summary>
+    Poisoned = -18,
+
+    /// <summary>An rmag or swarm budget is exhausted (<c>ZXV_E_BUDGET</c>, ABI 1.1).</summary>
+    BudgetExhausted = -19,
+
+    /// <summary>A malformed or overflowing rational amount; never retry the same value (<c>ZXV_E_RMAG_INVALID</c>, ABI 1.1).</summary>
+    BudgetAmountInvalid = -20,
+
+    /// <summary>A signature or tag did not verify; not a fault (<c>ZXV_E_VERIFY</c>, ABI 1.1).</summary>
+    VerificationFailed = -21,
+
+    /// <summary>Malformed input: number text, GGUF file, frame (<c>ZXV_E_FORMAT</c>, ABI 1.1).</summary>
+    InvalidFormat = -22,
+
+    /// <summary>A file could not be opened or read (<c>ZXV_E_IO</c>, ABI 1.1).</summary>
+    IOError = -23,
+
+    /// <summary>NaN or infinity refused at the float boundary (<c>ZXV_E_FLOAT</c>, ABI 1.1).</summary>
+    FloatRejected = -24,
+
     /// <summary>Unexpected kernel status (<c>ZXV_E_INTERNAL</c>).</summary>
     Internal = -99,
+}
+
+/// <summary>
+/// The class of a status (<c>zxv_status_class</c>, ABI 1.1). Every ZXV SDK maps
+/// failures to exceptions by class, so the same failure has the same shape in
+/// every language.
+/// </summary>
+public enum ZxvStatusClass
+{
+    /// <summary>Success.</summary>
+    Ok = 0,
+
+    /// <summary>A caller bug: fix the arguments; retrying the same call fails again.</summary>
+    Usage = 1,
+
+    /// <summary>A well-formed request the platform declined (funds, capability, budget, signature). A retry may succeed after the situation changes.</summary>
+    Refused = 2,
+
+    /// <summary>The context is halted and rolled back; never retry.</summary>
+    Fatal = 3,
+
+    /// <summary>Out of memory, I/O or an internal fault.</summary>
+    System = 4,
 }

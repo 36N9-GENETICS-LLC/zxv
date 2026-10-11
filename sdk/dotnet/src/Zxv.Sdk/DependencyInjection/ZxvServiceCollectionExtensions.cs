@@ -53,4 +53,23 @@ public static class ZxvServiceCollectionExtensions
         builder.Bind(section);
         return builder;
     }
+
+    /// <summary>
+    /// Registers a singleton <see cref="Capability"/> created from the
+    /// platform's root and holding only <paramref name="rights"/>, so services
+    /// can take a <see cref="Capability"/> constructor parameter. Grant the
+    /// narrowest rights the application needs; parts of the program that need
+    /// less should <see cref="Capability.Attenuate(CapabilityRights)"/> it further.
+    /// Call <see cref="AddZxv(IServiceCollection, Action{ZxvOptions}?)"/> first.
+    /// </summary>
+    /// <param name="services">The service collection.</param>
+    /// <param name="rights">The rights of the registered capability.</param>
+    /// <param name="processId">The process id recorded in it.</param>
+    /// <returns>The service collection.</returns>
+    public static IServiceCollection AddZxvCapability(this IServiceCollection services, CapabilityRights rights, uint processId = 0)
+    {
+        ArgumentNullException.ThrowIfNull(services);
+        services.TryAddSingleton(sp => sp.GetRequiredService<ZxvPlatform>().CreateRootCapability(rights, processId));
+        return services;
+    }
 }

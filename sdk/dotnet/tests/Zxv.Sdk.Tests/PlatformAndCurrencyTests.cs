@@ -55,7 +55,7 @@ public sealed class PlatformAndCurrencyTests : IDisposable
 
         foreach (int n in new[] { 555, 777, 888 })
         {
-            ZxvException ex = Assert.Throws<ZxvException>(() => _p.Currencies.GetIsoByNumeric(n));
+            ZxvException ex = Assert.ThrowsAny<ZxvException>(() => _p.Currencies.GetIsoByNumeric(n));
             Assert.Equal(ZxvStatus.NotFound, ex.Status);
         }
 
@@ -77,7 +77,7 @@ public sealed class PlatformAndCurrencyTests : IDisposable
         Assert.False(vfv.IsIso4217);
         Assert.False(vfv.IsWireCurrency);
         Assert.Null(vfv.Numeric);
-        ZxvException ex = Assert.Throws<ZxvException>(() => _p.Currencies.RegisterPrivateUnit("NGN", 2));
+        ZxvException ex = Assert.ThrowsAny<ZxvException>(() => _p.Currencies.RegisterPrivateUnit("NGN", 2));
         Assert.Equal(ZxvStatus.InvalidCurrency, ex.Status);
     }
 
@@ -108,9 +108,9 @@ public sealed class PlatformAndCurrencyTests : IDisposable
         Assert.Equal(TestPlatform.Currencies.Length + 1, _p.Currencies.ListEnabled().Count);
         Assert.True(_p.Currencies.IsEnabled("XOF"));
         Assert.False(_p.Currencies.IsEnabled("USD"));
-        Assert.Equal(ZxvStatus.InvalidCurrency, Assert.Throws<ZxvException>(() => _p.Currencies.Enable("XXX")).Status);
-        Assert.Equal(ZxvStatus.InvalidCurrency, Assert.Throws<ZxvException>(() => _p.Currencies.Enable("NGN", 3)).Status);
-        Assert.Equal(ZxvStatus.InvalidCurrency, Assert.Throws<ZxvException>(() => _p.Currencies.Enable("ngn")).Status);
+        Assert.Equal(ZxvStatus.InvalidCurrency, Assert.ThrowsAny<ZxvException>(() => _p.Currencies.Enable("XXX")).Status);
+        Assert.Equal(ZxvStatus.InvalidCurrency, Assert.ThrowsAny<ZxvException>(() => _p.Currencies.Enable("NGN", 3)).Status);
+        Assert.Equal(ZxvStatus.InvalidCurrency, Assert.ThrowsAny<ZxvException>(() => _p.Currencies.Enable("ngn")).Status);
         Assert.Equal((byte)2, _p.Currencies.Enable("USD").MinorUnits);
     }
 
@@ -126,7 +126,7 @@ public sealed class PlatformAndCurrencyTests : IDisposable
     [Fact]
     public void Exceptions_carry_stable_code_and_detail()
     {
-        ZxvException ex = Assert.Throws<ZxvException>(() => _p.Currencies.GetIso("QQQ"));
+        ZxvException ex = Assert.ThrowsAny<ZxvException>(() => _p.Currencies.GetIso("QQQ"));
         Assert.Equal("ZXV_E_NOT_FOUND", ex.Code);
         Assert.Equal("Currencies.GetIso", ex.Operation);
         Assert.Contains("QQQ", ex.Detail, StringComparison.Ordinal);

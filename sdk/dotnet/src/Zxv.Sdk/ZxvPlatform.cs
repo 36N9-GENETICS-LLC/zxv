@@ -37,6 +37,7 @@ namespace Zxv;
 public sealed class ZxvPlatform : IDisposable
 {
     private readonly ZxvContextHandle _ctx;
+    private readonly ContextRef _context;
     private readonly ILogger _logger;
 
     /// <summary>Initializes a new platform from options (the DI constructor).</summary>
@@ -57,17 +58,11 @@ public sealed class ZxvPlatform : IDisposable
         _logger = (ILogger?)logger ?? NullLogger.Instance;
         TimeProvider time = timeProvider ?? TimeProvider.System;
 
-        NativeCall.Check(NativeMethods.Version(out uint major, out uint minor, out uint patch), "Platform.Version");
-        if (major != SupportedAbiMajor)
-        {
-            throw new ZxvException($"libzxv ABI {major}.{minor}.{patch} is not supported; this SDK needs {SupportedAbiMajor}.x.");
-        }
-
-        AbiVersion = new Version((int)major, (int)minor, (int)patch);
-        NativeCall.Check(NativeMethods.Features(out uint mask), "Platform.Features");
-        Features = (ZxvFeatures)mask;
+        AbiVersion = ZxvLibrary.AbiVersion;
+        Features = ZxvLibrary.Features;
 
         NativeCall.Check(NativeMethods.CtxCreate(out _ctx), "Platform.Create");
+        _context = new ContextRef(_ctx);
         try
         {
             var ids = new IdGenerator(o.IdentifierPrefix, time);
@@ -91,7 +86,7 @@ public sealed class ZxvPlatform : IDisposable
     }
 
     /// <summary>The major version of the C ABI this SDK was written against.</summary>
-    public const int SupportedAbiMajor = 1;
+    public const int SupportedAbiMajor = ZxvLibrary.SupportedAbiMajor;
 
     /// <summary>Gets the version of the loaded native C ABI.</summary>
     public Version AbiVersion { get; }
@@ -140,6 +135,76 @@ public sealed class ZxvPlatform : IDisposable
     /// <returns><see langword="true"/> when all are available.</returns>
     public bool Supports(ZxvFeatures features) => (Features & features) == features;
 
+    /// <summary>
+    /// Gets a value indicating whether the context has halted (a broken
+    /// invariant was rolled back, or <see cref="Halt(string)"/> was called).
+    /// A halted platform refuses every call with <see cref="ZxvFatalException"/>.
+    /// </summary>
+    public bool IsHalted
+    {
+        get
+        {
+            if (_context.IsHalted)
+            {
+                return true;
+            }
+
+            ObjectDisposedException.ThrowIf(_ctx.IsClosed, this);
+            NativeCall.Check(NativeMethods.CtxIsPoisoned(_ctx, out int poisoned), "Platform.IsHalted");
+            return poisoned != 0;
+        }
+    }
+
+    /// <summary>The internal context reference shared with ABI 1.1 objects.</summary>
+    internal ContextRef Context => _context;
+
+    /// <summary>
+    /// Halts the context on purpose: an operator kill switch. Afterwards it
+    /// behaves exactly like a context that broke an invariant: every call
+    /// raises <see cref="ZxvFatalException"/> and it can only be disposed.
+    /// </summary>
+    /// <param name="reason">Why (at most 150 bytes of UTF-8; longer text is cut).</param>
+    public void Halt(string reason)
+    {
+        Guard.Text(reason, nameof(reason), allowEmpty: true);
+        NativeCall.Check(NativeMethods.CtxHalt(_ctx, reason), "Platform.Halt");
+        _context.MarkHalted();
+    }
+
+    /// <summary>
+    /// Creates a root capability for this platform. Hand narrower ones
+    /// (<see cref="Capability.Attenuate(CapabilityRights)"/>) to the parts of a
+    /// program that need less. Dispose it after every object that uses it.
+    /// </summary>
+    /// <param name="rights">The rights to hold; default every right.</param>
+    /// <param name="processId">The process id recorded in the capability.</param>
+    /// <param name="identity">A 21-byte (168-bit) identity, or empty for zeros.</param>
+    /// <returns>The capability, with attestation <see cref="Truth.True"/>.</returns>
+    public Capability CreateRootCapability(CapabilityRights rights = CapabilityRights.All, uint processId = 0, ReadOnlySpan<byte> identity = default) =>
+        Capability.CreateRoot(_context, rights, processId, identity);
+
+    /// <summary>Creates an attestation registry (<c>lpres</c>) that attests through <paramref name="capability"/>.</summary>
+    /// <param name="capability">A capability of this platform; attesting needs <see cref="CapabilityRights.Attest"/>.</param>
+    /// <returns>The registry; dispose it when done.</returns>
+    public Attestations CreateAttestations(Capability capability) => new(RequireOwn(capability));
+
+    /// <summary>Creates a set of exact rational resource budgets (<c>rmag</c>).</summary>
+    /// <param name="capability">A capability of this platform; budget calls need <see cref="CapabilityRights.Budget"/>.</param>
+    /// <returns>The budgets; dispose them when done.</returns>
+    public Budgets CreateBudgets(Capability capability) => new(RequireOwn(capability));
+
+    /// <summary>Creates a phase coordinator clock starting at tick 0.</summary>
+    /// <param name="capability">A capability of this platform; advancing, admitting and deferring need <see cref="CapabilityRights.Phase"/>.</param>
+    /// <returns>The clock; dispose it when done.</returns>
+    public PhaseClock CreatePhaseClock(Capability capability) => new(RequireOwn(capability));
+
+    /// <summary>Creates a swarm token economy.</summary>
+    /// <param name="capability">A capability of this platform; swarm calls need <see cref="CapabilityRights.Swarm"/>.</param>
+    /// <param name="levels">Number of Fibonacci levels (level d holds at most F(d+2) models).</param>
+    /// <param name="tokensPerCycle">Tokens shared out each cycle.</param>
+    /// <returns>The swarm; dispose it when done.</returns>
+    public Swarm CreateSwarm(Capability capability, int levels, ulong tokensPerCycle) => new(RequireOwn(capability), levels, tokensPerCycle);
+
     /// <inheritdoc/>
     public void Dispose()
     {
@@ -148,6 +213,17 @@ public sealed class ZxvPlatform : IDisposable
             _ctx.Dispose();
             Log.PlatformDisposed(_logger);
         }
+    }
+
+    private Capability RequireOwn(Capability capability)
+    {
+        ArgumentNullException.ThrowIfNull(capability);
+        if (!ReferenceEquals(capability.Context, _context))
+        {
+            throw new ArgumentException("The capability belongs to a different platform.", nameof(capability));
+        }
+
+        return capability;
     }
 
     private void Configure(ZxvOptions o)
