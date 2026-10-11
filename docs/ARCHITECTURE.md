@@ -5,14 +5,16 @@
 ZEDEC XERO VULPINE (ZXV) / VOVINA SHAKINA. Registered to 36N9 Genetics LLC, Michael Laurence Curzi.
 Code licence Apache-2.0.
 
-Version 4, **2026-10-10, 12:45 UTC**. This is the full architecture: everything specified so far,
-how the parts fit together, and the state of each one. It replaces versions 1–3 of this file.
+Version 4.1, **2026-10-11, 01:30 UTC**. This is the full architecture: everything specified so far,
+how the parts fit together, and the state of each one. It replaces earlier versions of this file.
+New in 4.1: integration gap A4 is done (the fee loop and the trade loop are in the app), and the
+full-model low-bit weight results are in.
 
 Sources: the repository (draft PR #1, branch `claude/project-thread-j44rs9`, last pushed commit
-`b92bd8c`, all 21 GitHub checks green), the gap audit ([GAP_AUDIT.md](GAP_AUDIT.md)),
+`94fbd0d`, all 21 GitHub checks green), the gap audit ([GAP_AUDIT.md](GAP_AUDIT.md)),
 the per-module reference ([SYSTEM_REFERENCE.md](SYSTEM_REFERENCE.md)), the audit
 ([AUDIT_REPORT.md](AUDIT_REPORT.md)), project memory, the build thread "Plan adaptive local AI
-architecture" and the "Real model test" thread.
+architecture" and the "Real model test" thread (report in draft PR #4).
 
 ---
 
@@ -67,11 +69,11 @@ economy with adapters to the outside financial world.
 | Measure | Now |
 |---|---|
 | Code | ~300,000 lines of protocol C in 202 live modules; 12 dead modules archived |
-| GitHub second opinion | 21 of 21 checks green on `b92bd8c`, including CodeQL, the mutation gate, fail-closed boots of five CPU targets, and the TLA+/Lean proofs |
+| GitHub second opinion | 21 of 21 checks green on `94fbd0d`, including CodeQL, the mutation gate, fail-closed boots of five CPU targets, and the TLA+/Lean proofs |
 | Local verify | 4,515 checks, 5 image builds, 2 boots, all passing |
 | Real AI model | **Runs.** Qwen2.5-1.5B on the ZXV integer engine: perplexity 9.371 vs llama.cpp 9.362, same answers on all 8 test prompts, bit-identical on x86 and arm64. Slower: ~11 vs 15–18 tokens/s |
 | Ledger fuzzing | 222 million netting operations across 4 ledgers, all clean |
-| Test strength | Mutation scores: settlement spine 89%, libzxv engine 86%, quota maths 96% |
+| Test strength | Mutation scores: settlement spine 89.6%, libzxv engine 86–89% (GitHub runner vs local), trade loop 86%, quota maths 96% |
 | Test-to-code ratio | **0.36:1** against a 13:1 target |
 
 ### How far along
@@ -82,7 +84,7 @@ My judgement from the code, tests and gap audit.
 |---|---|
 | Build the parts | ~80% of what was specified up to this morning. Much more has been specified since (sections 12 and 14), so as a share of the whole plan it is lower, about 50% |
 | Harden them | ~80% |
-| Join them (integration pass A1–A6) | 2 of 6 done (A1 ledger of record, A2 libzxv engine); A4 in progress |
+| Join them (integration pass A1–A6) | 3 of 6 done (A1 ledger of record, A2 libzxv engine, A4 fee and trade loops); A3 next |
 | Real model | First run done and measured |
 | Tests at 13:1 | 0.36:1 |
 | Ship and release | Not yet |
@@ -167,13 +169,15 @@ These rules came from you or were agreed with you. Every module is held to them.
 | A2 transport → trust | Every datagram verified (ML-DSA-65, proof-of-work, replay window) | ✅ In the app |
 | A3 trust → logic | Verified records become four-valued verdicts; peers replay them | 🧩 Peer audit not in the app |
 | A4 logic → AI | The swarm budget gates every generated token | ✅ In the app |
-| A5 AI → settlement | Each swarm cycle settles on the ledger of record, with A = L + E reconciled every cycle | ✅ **New (gap A1).** Mesh trade receipts feeding the next cycle's budget: 🔧 gap A4 |
+| A5 AI → settlement | Each swarm cycle settles on the ledger of record, with A = L + E reconciled every cycle | ✅ In the app (gaps A1 and A4). Compute that peers deliver, proven by signed receipts, raises the next cycle's budget; trading is off until the owner turns it on |
 | A6 settlement → adapters | Ledger entries become ISO 20022 and statements | 🧩 Both sides exist; not chained |
 | A7 adapters → outside | Wallet UI, gateways, statements | 💭 |
 | A8 outside → kernel | Signed updates and model hashes in the app; custodian receipts queued | 🟡 |
 
-**The "ouroboros" closes at gap A4:** fees feed the reserve, the dividend and node bounties, and
-bounties feed the next cycle's compute budget.
+**The "ouroboros" closed with gap A4:** every cycle the 0.08889% fee comes off the swarm's pot into
+the reserve, dividend, node-bounty and regenerative buckets, and last cycle's bounties go back into
+the next cycle's compute budget. The reserve, dividend and regenerative buckets only accumulate for
+now; spending them belongs to the reserve and V-Bill work (C2–C5).
 
 ### Loop B: quality (self-audit feeds the tests)
 
@@ -270,10 +274,10 @@ Small, pure building blocks that every stratum may use.
 | Accuracy | Perplexity 9.371 vs llama.cpp 9.362 (0.1% worse) on WikiText-2 |
 | Answers | Same tokens as llama.cpp on all 8 prompts, all correct |
 | Determinism | Bit-identical across C, AVX2, AVX-512 and arm64 NEON. llama.cpp changed 5% of next-token picks when only its batch size changed |
-| Speed | ~11 tokens/s vs 15–18; prompt reading ~5× slower. Main thing to improve |
-| Defect | First token of a text diverges sharply (KL 4.5); on the fix list |
+| Speed | ~11 tokens/s vs 15–18; prompt reading ~5× slower. Main thing to improve; matrix-matrix prefill work started 2026-10-11 |
+| Defect | First token of a text diverges sharply (KL 4.5); being investigated since 2026-10-11 |
 | Golden-ratio parts | Phi scales: small harm (9.40). Lossless holographic coding: identical output but 8.12 vs 7.31 bits per weight. Lossy holographic decode: destroys the model (perplexity 332,000), so weights always decode all 10 shells |
-| Low-bit weights | On MLP output weights, E8 at 1.875 bits: 13.97; plain 4-level (2-bit): 20.5. Full-model runs in progress |
+| Low-bit weights | On MLP output weights alone, E8 at 1.875 bits: 13.97; plain 4-level (2-bit): 20.5. On every matrix, both break the model: E8 7,698, 2-bit 52,602. E8 is the better of the two, and the only golden-ratio part that beats the conventional method it replaces. Low-bit weights need a model trained for them |
 
 ### Queued
 
@@ -294,7 +298,8 @@ Small, pure building blocks that every stratum may use.
 |---|---|---|
 | Ledger of record (`pay_ledger`) + settlement spine (`settle`) | ✅ in the app | Swarm books reconciled against it every cycle. Nine other balance-keeping modules still to post through it (gap A1 continues) |
 | libzxv engine: compress / route / decompress with the fee | ✅ `libzxv-econ` | |
-| 0.08889% assurance fee, 50 / 25 / 15 / 10, exact remainders | ✅ | One fee for all; no staker discounts |
+| 0.08889% assurance fee, 50 / 25 / 15 / 10, exact remainders | ✅ in the app | Levied once per swarm cycle on the pot and recorded in both books; one fee for all, no staker discounts |
+| Trade loop: peers' delivered compute, proven by signed receipts, raises the next cycle's budget | ✅ in the app | Off until the owner turns it on |
 | Rails 555 / 777 / 888, class 811; triple ledger; Vino; central-bank toolkit; cards; equity markets; capacity, provider and commerce markets | 🧩 | |
 | Multilateral cycle netting | 🧩 in `cbank` | 222M fuzz operations clean |
 
@@ -401,7 +406,7 @@ Apache repo unless you relicense it.
 | Measure | Value |
 |---|---|
 | Ratio of test code to protocol code | **0.36:1** (target 13:1, which at today's size is roughly 3.9 million lines) |
-| Mutation scores | Settlement spine 89%, engine 86%, quota maths 96%; gated in CI |
+| Mutation scores | Settlement spine 89.6%, engine 86–89%, trade loop 86%, quota maths 96%; gated in CI |
 | Fuzzing | 13 parser harnesses; 222M netting operations; COBOL copybooks 10M |
 | Proofs | TLA+ and Lean models; found two real arithmetic bugs |
 | Shipped code in no test (gap B2) | 20.5k lines (`emu`, `net`, `modbind`, `desktop`, `sdk_bridge`, `panopticon` and smaller) |
@@ -429,7 +434,7 @@ a signed RepairProof; hard invariants stay fail-closed; never auto-patch state.
 
 ## 16. Order of work
 
-1. **Integration pass** (in progress): A1 ✅, A2 ✅, A4 🔧, then A3 one PQ session layer, A5
+1. **Integration pass** (in progress): A1 ✅, A2 ✅, A4 ✅, A3 🔧 one PQ session layer, then A5
    connect or archive the 16 uncalled modules, A6 the end-to-end harness on a seeded simulated
    network, and B1–B7 (layering check, untested code, duplicates, self-healing framework, i18n).
 2. **Integration phases 2–4:** sockets and the two-laptop demo; `zxvd` and the five-view UI;
