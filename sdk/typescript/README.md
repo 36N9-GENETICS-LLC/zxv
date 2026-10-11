@@ -24,7 +24,7 @@ cd sdk/typescript
 npm install            # also builds the addon with node-gyp (a failure falls back to wasm)
 npm run build:wasm     # needs `python3 -m pip install ziglang` (zig ships wasi-libc), or ZXV_WASM_CC
 npm run build:ts
-npm test               # 83 tests, both backends
+npm test               # 102 tests, both backends
 ```
 
 `sdk/libzxv/build/libzxv.so` must exist (built by `make -C sdk/libzxv`).
@@ -32,7 +32,7 @@ The addon finds the library in the order of SDK_DESIGN.md §1: the
 `libraryPath` you pass, `ZXV_LIBRARY_PATH`, the bundled copy (the
 repository build `../libzxv/build` when run from this tree, otherwise `lib/`
 of the published package, staged by `npm pack`), then the system loader. A library whose ABI major is not 1, or whose minor
-is below 2, is refused (the SDK calls the `_cap` functions added in ABI 1.2).
+is below 3, is refused (the SDK calls the `zxv_hex_*` functions added in ABI 1.3 and the `_cap` functions added in 1.2).
 
 In a published package, `import '@zedec/zxv'` resolves to the Node entry
 (`node` condition) or the browser entry (`browser` condition, wasm only, no
@@ -154,6 +154,41 @@ from `onToken` takes effect exactly after that token, as on wasm.
 DataView with the fixed little/big/little/big/little word order), checked
 byte for byte against `vectors.json` and the C library; `zxv.wire.resolve`
 runs the C W5 resolver.
+
+## The hexagram tag (ABI 1.3)
+
+A `Hexagram` tags one unit of work with a four-valued base, the polarity
+of its evidence (entropic, neutral, forbidden, negentropic) and its phase
+(potential -> emerging -> manifest -> dissolving), packed into one byte
+0..63. Its action is proceed, wait, refuse, escalate or rollback. Every rule
+comes from libzxv and is tested against `vectors.json` key `hex`.
+Forbidden is absorbing, a phase moves one step at a time, and the base is
+**not** numbered like `Truth` (TRUE is base 3 but Truth 1): convert only
+with the explicit `toTruth()` / `Hexagram.fromTruth(...)`. Combining BOTH with NEITHER follows
+the `Truth` tables (AND gives NEITHER, OR gives BOTH); those two results
+are pending an owner decision. A `QuarantineLog` (needs the ATTEST
+capability) records forbidden work in a SHA-256 hash chain; when it is
+full, append is refused with `ZXV_E_CAPACITY` and you must halt the
+context. See [ABI.md, Changes in 1.3](../docs/ABI.md#changes-in-13).
+
+```ts
+import { Hexagram, HexBase, HexPolarity, HexPhase, HexAction, QuarantineLog } from '@zedec/zxv';
+
+let h = Hexagram.of(HexBase.TRUE, HexPolarity.NEGENTROPIC, HexPhase.POTENTIAL);
+h.action === HexAction.PROCEED;           // true
+h = h.advance();                          // EMERGING
+h.step(HexPhase.DISSOLVING);              // ZxvRefusedError (ZXV_E_STATE): a jump
+const bad = h.forbid();                   // ROLLBACK, forever
+using log = QuarantineLog.create(cap, 1024);   // needs Cap.ATTEST
+const seq = log.append(bad, 7, 42, digest32);  // bigint
+log.verify();
+```
+
+`Hexagram` is pure TypeScript (the 64 frozen values in `Hexagram.all`), so
+it also works in the browser before the wasm module loads; its tests
+compare every result with `zxv_hex_*` on both backends. `valueOf()` throws,
+so `h + 1` or `h < g` never coerce silently. `QuarantineLog` uses the
+native or wasm backend.
 
 ## API overview
 

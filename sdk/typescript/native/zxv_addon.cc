@@ -417,6 +417,13 @@ Napi::Value Load(const Napi::CallbackInfo &info)
     FN(zxv_ledger_account_kind_cap); FN(zxv_ledger_account_count_cap); FN(zxv_ledger_entry_count_cap);
     FN(zxv_ledger_entry_at_cap); FN(zxv_msg_create_cap); FN(zxv_rmag_create_cap);
     FN(zxv_phase_create_cap); FN(zxv_lpres_create_cap); FN(zxv_swarm_create_cap);
+    // ABI 1.3: the hexagram tag and the quarantine log
+    FN(zxv_hex_pack); FN(zxv_hex_unpack); FN(zxv_hex_action); FN(zxv_hex_phase_next);
+    FN(zxv_hex_step); FN(zxv_hex_set); FN(zxv_hex_forbid); FN(zxv_hex_and); FN(zxv_hex_or);
+    FN(zxv_hex_not); FN(zxv_hex_polarity); FN(zxv_hex_from_lp); FN(zxv_hex_to_lp);
+    FN(zxv_hex_name); FN(zxv_hex_action_name); FN(zxv_hexlog_create); FN(zxv_hexlog_destroy);
+    FN(zxv_hexlog_append); FN(zxv_hexlog_count); FN(zxv_hexlog_head); FN(zxv_hexlog_at);
+    FN(zxv_hexlog_verify);
 
     g_generate = reinterpret_cast<decltype(g_generate)>(find_symbol(g_lib, "zxv_generate"));
     g_last_error = reinterpret_cast<decltype(g_last_error)>(find_symbol(g_lib, "zxv_last_error"));

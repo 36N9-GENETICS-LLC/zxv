@@ -4,7 +4,7 @@
 # ZXV Go SDK
 
 Package `zxv` is a cgo binding to `libzxv`, the stable C ABI of the ZXV
-platform (`sdk/libzxv/include/zxv_api.h`, ABI 1.2).
+platform (`sdk/libzxv/include/zxv_api.h`, ABI 1.3).
 
 ```
 import "github.com/sykomiked/ZEDEC-XERO-VULPINE-V1.0.0/sdk/go/zxv"
@@ -144,6 +144,37 @@ the library re-checks it on every call. The 1.0 forms
 `ctx.EnableCurrency`, `EnableCurrencyWithMinor`, `RegisterPrivateCurrency`
 and `ctx.NewMessage` still work but are marked `// Deprecated:`.
 
+## The hexagram tag (ABI 1.3)
+
+A `Hexagram` tags one unit of work with a four-valued base, the polarity
+of its evidence (entropic, neutral, forbidden, negentropic) and its phase
+(potential -> emerging -> manifest -> dissolving), packed into one byte
+0..63. Its action is proceed, wait, refuse, escalate or rollback. Every rule
+comes from libzxv and is tested against `vectors.json` key `hex`.
+Forbidden is absorbing, a phase moves one step at a time, and the base is
+**not** numbered like `Truth` (TRUE is base 3 but Truth 1): convert only
+with the explicit `ToTruth()` / `HexagramFromTruth(...)`. Combining BOTH with NEITHER follows
+the `Truth` tables (AND gives NEITHER, OR gives BOTH); those two results
+are pending an owner decision. A `QuarantineLog` (needs the ATTEST
+capability) records forbidden work in a SHA-256 hash chain; when it is
+full, append is refused with `ZXV_E_CAPACITY` and you must halt the
+context. See [ABI.md, Changes in 1.3](../docs/ABI.md#changes-in-13).
+
+```go
+h, _ := zxv.NewHexagram(zxv.HexBaseTrue, zxv.HexNegentropic, zxv.HexPotential)
+_ = h.Action()                           // zxv.HexProceed
+h = h.Advance()                          // HexEmerging
+_, err := h.Step(zxv.HexDissolving)      // errors.Is(err, zxv.ErrRefused): a jump
+bad := h.Forbid()                        // HexRollback, forever
+log, err := zxv.NewQuarantineLog(cap, 1024) // needs CapAttest
+defer log.Close()
+seq, err := log.Append(bad, 7, 42, digest32)
+err = log.Verify()
+```
+
+`Hexagram` is a comparable value; its zero value is tag 0
+(false/entropic/potential).
+
 ## API overview
 
 | Area | Types | Key calls |
@@ -181,7 +212,10 @@ go vet ./...
 go test ./...          # add -race to check the concurrency claims
 ```
 
-`conformance_test.go` checks every key of `sdk/conformance/vectors.json`
+`hexagram_test.go` checks the `hex` key (ABI 1.3): every tag, the logic, step and
+set tables, the Truth mapping and the quarantine chain.
+
+`conformance_test.go` checks every other key of `sdk/conformance/vectors.json`
 (status names and classes, rationals, the IEEE-754 boundary, Q16, the lpres
 tables, UBH-168 frames byte for byte in pure Go and in C, hashes, Ed25519,
 ML-DSA-87 and ML-KEM-1024 digests, swarm allotments, greedy and seeded

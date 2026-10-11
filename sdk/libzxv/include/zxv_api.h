@@ -43,6 +43,7 @@
  *         an attenuated zxv_cap  before its parent zxv_cap;
  *         zxv_cap, zxv_rmag, zxv_phase, zxv_lpres, zxv_swarm  before the
  *                      zxv_ctx they belong to.
+ *         zxv_hexlog  before the zxv_ctx it belongs to (ABI 1.3).
  *       A zxv_model holds no context and may outlive the cap that opened
  *       it. The destroy functions themselves never touch the context.
  *   R7  LAST-ERROR DETAIL. When a call fails, a human-readable reason is kept
@@ -178,6 +179,8 @@ extern "C" {
 #define ZXV_FEAT_TENSOR      0x01000000u /* integer GGUF inference engine       */
 #define ZXV_FEAT_LORA        0x02000000u /* LoRA adapters (NOT built yet)       */
 #define ZXV_FEAT_EVM         0x04000000u /* EVM state-channel encoding          */
+/* ABI 1.3 */
+#define ZXV_FEAT_HEX         0x08000000u /* 64-state hexagram tags + quarantine */
 
 /* ===== Opaque handles ===== */
 typedef struct zxv_ctx zxv_ctx;         /* one platform instance (ledger, config) */
@@ -1045,6 +1048,150 @@ ZXV_API int32_t zxv_evm_ledger_state(const zxv_cap *cap, const uint8_t channel_i
                                      uint64_t nonce, const char *ccy, const uint32_t *accounts,
                                      const uint8_t *addresses, uint32_t count, uint8_t *buf,
                                      size_t cap_bytes, size_t *out_len, uint8_t digest[32]);
+
+/* ===================================================================== */
+/* ABI 1.3: the 64-state hexagram tag (kernel/src/lpres/lpres_hex.h)     */
+/* ===================================================================== */
+/* A tag is one byte 0..63 holding three 2-bit fields, read like an I Ching
+ * hexagram from the top line down:
+ *
+ *   bits 5-4  BASE      the four-valued state of the work
+ *   bits 3-2  POLARITY  how its evidence is moving
+ *   bits 1-0  PHASE     the work's lifecycle, a Gray cycle
+ *
+ * tag = (base << 4) | (polarity << 2) | phase.
+ *
+ * THE BASE IS NOT NUMBERED LIKE ZXV_LP_*. The hexagram codes are the line
+ * patterns True 11, False 00, Both 10, Neither 01, so
+ *
+ *   ZXV_HEX_BASE_FALSE 0 = ZXV_LP_FALSE 2      ZXV_HEX_BASE_BOTH 2 = ZXV_LP_BOTH 3
+ *   ZXV_HEX_BASE_NEITHER 1 = ZXV_LP_NEITHER 0  ZXV_HEX_BASE_TRUE 3 = ZXV_LP_TRUE 1
+ *
+ * Convert only with zxv_hex_from_lp / zxv_hex_to_lp; never cast.
+ *
+ * Rules (the kernel's X1-X6):
+ *   ONE TABLE. zxv_hex_action is one lookup in a fixed 64-entry table:
+ *     polarity FORBIDDEN -> ROLLBACK (and quarantine), whatever else;
+ *     TRUE -> PROCEED, or WAIT when entropic (a weakening truth);
+ *     FALSE -> REFUSE; BOTH -> WAIT when negentropic, else ESCALATE;
+ *     NEITHER -> WAIT. The phase never changes the action.
+ *   ONE STEP AT A TIME. The phase moves potential -> emerging -> manifest
+ *     -> dissolving -> potential (one bit flip per step). zxv_hex_step
+ *     refuses a jump with ZXV_E_STATE.
+ *   FORBIDDEN IS ABSORBING. No call takes a forbidden tag out of the
+ *     forbidden polarity (zxv_hex_set gives ZXV_E_STATE); only a fresh tag
+ *     (new work) starts clean.
+ *   COMBINING. and / or / not use the ZXV_LP_* tables (zxv_lp_and,
+ *     zxv_lp_or, zxv_lp_not) on the base, the worst polarity (forbidden >
+ *     entropic > neutral > negentropic) and the least advanced phase
+ *     (potential < emerging < manifest < dissolving). not keeps polarity
+ *     and phase.
+ * All zxv_hex_* functions are pure (no capability, R10) and refuse a tag
+ * above 63, or a field above 3, with ZXV_E_ARG. */
+#define ZXV_HEX_STATES 64u
+
+#define ZXV_HEX_BASE_FALSE   0 /* 00 */
+#define ZXV_HEX_BASE_NEITHER 1 /* 01 */
+#define ZXV_HEX_BASE_BOTH    2 /* 10 */
+#define ZXV_HEX_BASE_TRUE    3 /* 11 */
+
+#define ZXV_HEX_POL_ENTROPIC    0 /* 00 diverging or stale evidence */
+#define ZXV_HEX_POL_NEUTRAL     1 /* 01 steady                      */
+#define ZXV_HEX_POL_FORBIDDEN   2 /* 10 a wall: absorbing           */
+#define ZXV_HEX_POL_NEGENTROPIC 3 /* 11 converging evidence         */
+
+#define ZXV_HEX_PHASE_POTENTIAL  0 /* 00 */
+#define ZXV_HEX_PHASE_EMERGING   1 /* 01 */
+#define ZXV_HEX_PHASE_DISSOLVING 2 /* 10 */
+#define ZXV_HEX_PHASE_MANIFEST   3 /* 11 */
+
+#define ZXV_HEX_ACT_PROCEED  0
+#define ZXV_HEX_ACT_WAIT     1
+#define ZXV_HEX_ACT_REFUSE   2
+#define ZXV_HEX_ACT_ESCALATE 3
+#define ZXV_HEX_ACT_ROLLBACK 4 /* and quarantine (zxv_hexlog_append) */
+
+/* Build a tag from its fields (each 0..3). */
+ZXV_API int32_t zxv_hex_pack(uint8_t base, uint8_t polarity, uint8_t phase, uint8_t *out_tag);
+/* Split a tag. Any out pointer may be NULL. */
+ZXV_API int32_t zxv_hex_unpack(uint8_t tag, uint8_t *out_base, uint8_t *out_polarity,
+                               uint8_t *out_phase);
+/* What happens next: a ZXV_HEX_ACT_* value. */
+ZXV_API int32_t zxv_hex_action(uint8_t tag, int32_t *out_action);
+/* The phase after `phase` on the Gray cycle. */
+ZXV_API int32_t zxv_hex_phase_next(uint8_t phase, uint8_t *out_phase);
+/* Move `tag` to `phase`: the same phase or the next one only, else
+ * ZXV_E_STATE. Base and polarity are kept (a forbidden tag stays forbidden
+ * but may still move through its lifecycle). */
+ZXV_API int32_t zxv_hex_step(uint8_t tag, uint8_t phase, uint8_t *out_tag);
+/* Replace base and polarity, keeping the phase. A forbidden tag stays
+ * forbidden: asking it for another polarity is ZXV_E_STATE; passing
+ * ZXV_HEX_POL_FORBIDDEN updates its base (for the audit record). */
+ZXV_API int32_t zxv_hex_set(uint8_t tag, uint8_t base, uint8_t polarity, uint8_t *out_tag);
+/* The same tag with polarity FORBIDDEN. */
+ZXV_API int32_t zxv_hex_forbid(uint8_t tag, uint8_t *out_tag);
+ZXV_API int32_t zxv_hex_and(uint8_t a, uint8_t b, uint8_t *out_tag);
+ZXV_API int32_t zxv_hex_or(uint8_t a, uint8_t b, uint8_t *out_tag);
+ZXV_API int32_t zxv_hex_not(uint8_t a, uint8_t *out_tag);
+/* Polarity from evidence counts before (pos0, neg0) and after (pos1, neg1)
+ * and whether the newest evidence is stale (the caller's freshness limit;
+ * non-zero = stale). Stale -> ENTROPIC; else the margin |pos - neg|
+ * growing -> NEGENTROPIC, shrinking -> ENTROPIC, unchanged -> NEUTRAL.
+ * Never FORBIDDEN. */
+ZXV_API int32_t zxv_hex_polarity(uint32_t pos0, uint32_t neg0, uint32_t pos1, uint32_t neg1,
+                                 int32_t stale, uint8_t *out_polarity);
+/* The four-valued bridge: a ZXV_LP_* value <-> a ZXV_HEX_BASE_* code (see
+ * the table above). Anything else is ZXV_E_ARG. */
+ZXV_API int32_t zxv_hex_from_lp(int32_t lp_state, uint8_t *out_base);
+ZXV_API int32_t zxv_hex_to_lp(uint8_t base, int32_t *out_lp_state);
+/* Static, never-NULL text "base/polarity/phase", lower case, e.g.
+ * "true/negentropic/manifest"; "INVALID" for a tag above 63. */
+ZXV_API const char *zxv_hex_name(uint8_t tag);
+/* Static name of a ZXV_HEX_ACT_* value ("rollback"); "INVALID" else. */
+ZXV_API const char *zxv_hex_action_name(int32_t action);
+
+/* ===== The quarantine log (lpres_hex X6) =====
+ * An append-only, hash-chained log of forbidden work: the tag, who
+ * submitted it, a 32-byte digest of the work and a caller reason code. It
+ * is read for audit, never replayed. Record k's hash is
+ *   SHA-256("zxv/lpx-qlog/v1" || seq (u64 LE) || tag || reason ||
+ *           submitter (u32 LE) || subject[32] || prev[32])
+ * with prev = the previous record's hash (32 zeros for the first), and the
+ * head is the last record's hash (32 zeros when empty), so a host can
+ * recompute the chain from zxv_hexlog_at. The hash is SHA-256 (FIPS 180-4),
+ * as in the kernel, not SHA3-256. Signing the head is the caller's job.
+ * Creating and appending need ZXV_CAP_ATTEST: a quarantine record is an
+ * attestation about refused work (any work, not only ledger postings).
+ * Reading needs no capability. Every call fails closed (ZXV_E_POISONED)
+ * once the context halted. A zxv_hexlog is internally serialized. */
+typedef struct zxv_hexlog zxv_hexlog;
+
+#define ZXV_HEXLOG_HASH_BYTES    32u
+#define ZXV_HEXLOG_SUBJECT_BYTES 32u
+#define ZXV_HEXLOG_MAX_RECORDS   65536u
+
+/* A log of at most `capacity` records (1..ZXV_HEXLOG_MAX_RECORDS). Needs
+ * ATTEST; the log belongs to the cap's context. */
+ZXV_API int32_t zxv_hexlog_create(const zxv_cap *cap, uint32_t capacity, zxv_hexlog **out_log);
+ZXV_API void zxv_hexlog_destroy(zxv_hexlog *log);
+/* Quarantine one record. Needs ATTEST (and the cap's context must be the
+ * log's, else ZXV_E_CAP). Only forbidden tags are quarantined: any other
+ * tag is ZXV_E_ARG. A full log is ZXV_E_CAPACITY and records nothing: the
+ * caller must then halt (zxv_ctx_halt), because forbidden work it cannot
+ * record must not continue. *out_seq (may be NULL) is the record's index. */
+ZXV_API int32_t zxv_hexlog_append(const zxv_cap *cap, zxv_hexlog *log, uint8_t tag, uint8_t reason,
+                                  uint32_t submitter, const uint8_t subject[32], uint64_t *out_seq);
+ZXV_API int32_t zxv_hexlog_count(zxv_hexlog *log, uint32_t *out_count);
+/* The chain head (32 zeros when empty). */
+ZXV_API int32_t zxv_hexlog_head(zxv_hexlog *log, uint8_t out_head[32]);
+/* One record, oldest first. Any out pointer may be NULL. */
+ZXV_API int32_t zxv_hexlog_at(zxv_hexlog *log, uint32_t index, uint64_t *out_seq, uint8_t *out_tag,
+                              uint8_t *out_reason, uint32_t *out_submitter,
+                              uint8_t out_subject[32], uint8_t out_prev[32], uint8_t out_hash[32]);
+/* Recompute every link. ZXV_OK, or ZXV_E_INVARIANT if any record or the
+ * head no longer matches; that poisons the context (fail closed), since
+ * only a memory fault inside this process can alter the log. */
+ZXV_API int32_t zxv_hexlog_verify(zxv_hexlog *log);
 
 /* ===================================================================== */
 /* ABI 1.4: hardware emulation and hardware updates (kernel/src/hwemu).  */

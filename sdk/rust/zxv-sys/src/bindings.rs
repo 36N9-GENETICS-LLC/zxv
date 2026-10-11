@@ -6,7 +6,7 @@
 // Regenerate: cargo build -p zxv-sys --features regenerate
 
 pub const ZXV_ABI_VERSION_MAJOR: u32 = 1;
-pub const ZXV_ABI_VERSION_MINOR: u32 = 2;
+pub const ZXV_ABI_VERSION_MINOR: u32 = 3;
 pub const ZXV_ABI_VERSION_PATCH: u32 = 0;
 pub const ZXV_OK: i32 = 0;
 pub const ZXV_E_ARG: i32 = -1;
@@ -66,6 +66,7 @@ pub const ZXV_FEAT_ED25519: u32 = 8388608;
 pub const ZXV_FEAT_TENSOR: u32 = 16777216;
 pub const ZXV_FEAT_LORA: u32 = 33554432;
 pub const ZXV_FEAT_EVM: u32 = 67108864;
+pub const ZXV_FEAT_HEX: u32 = 134217728;
 pub const ZXV_CCYF_FUND: u32 = 1;
 pub const ZXV_CCYF_MINOR_NA: u32 = 2;
 pub const ZXV_CCYF_NOCTRY: u32 = 4;
@@ -135,6 +136,27 @@ pub const ZXV_STOP_STR: i32 = 3;
 pub const ZXV_STOP_CALLBACK: i32 = 4;
 pub const ZXV_STOP_CTX: i32 = 5;
 pub const ZXV_STOP_BUDGET: i32 = 6;
+pub const ZXV_HEX_STATES: u32 = 64;
+pub const ZXV_HEX_BASE_FALSE: i32 = 0;
+pub const ZXV_HEX_BASE_NEITHER: i32 = 1;
+pub const ZXV_HEX_BASE_BOTH: i32 = 2;
+pub const ZXV_HEX_BASE_TRUE: i32 = 3;
+pub const ZXV_HEX_POL_ENTROPIC: i32 = 0;
+pub const ZXV_HEX_POL_NEUTRAL: i32 = 1;
+pub const ZXV_HEX_POL_FORBIDDEN: i32 = 2;
+pub const ZXV_HEX_POL_NEGENTROPIC: i32 = 3;
+pub const ZXV_HEX_PHASE_POTENTIAL: i32 = 0;
+pub const ZXV_HEX_PHASE_EMERGING: i32 = 1;
+pub const ZXV_HEX_PHASE_DISSOLVING: i32 = 2;
+pub const ZXV_HEX_PHASE_MANIFEST: i32 = 3;
+pub const ZXV_HEX_ACT_PROCEED: i32 = 0;
+pub const ZXV_HEX_ACT_WAIT: i32 = 1;
+pub const ZXV_HEX_ACT_REFUSE: i32 = 2;
+pub const ZXV_HEX_ACT_ESCALATE: i32 = 3;
+pub const ZXV_HEX_ACT_ROLLBACK: i32 = 4;
+pub const ZXV_HEXLOG_HASH_BYTES: u32 = 32;
+pub const ZXV_HEXLOG_SUBJECT_BYTES: u32 = 32;
+pub const ZXV_HEXLOG_MAX_RECORDS: u32 = 65536;
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
 pub struct zxv_ctx {
@@ -1346,4 +1368,109 @@ unsafe extern "C" {
         out_len: *mut usize,
         digest: *mut u8,
     ) -> i32;
+}
+unsafe extern "C" {
+    pub fn zxv_hex_pack(base: u8, polarity: u8, phase: u8, out_tag: *mut u8) -> i32;
+}
+unsafe extern "C" {
+    pub fn zxv_hex_unpack(
+        tag: u8,
+        out_base: *mut u8,
+        out_polarity: *mut u8,
+        out_phase: *mut u8,
+    ) -> i32;
+}
+unsafe extern "C" {
+    pub fn zxv_hex_action(tag: u8, out_action: *mut i32) -> i32;
+}
+unsafe extern "C" {
+    pub fn zxv_hex_phase_next(phase: u8, out_phase: *mut u8) -> i32;
+}
+unsafe extern "C" {
+    pub fn zxv_hex_step(tag: u8, phase: u8, out_tag: *mut u8) -> i32;
+}
+unsafe extern "C" {
+    pub fn zxv_hex_set(tag: u8, base: u8, polarity: u8, out_tag: *mut u8) -> i32;
+}
+unsafe extern "C" {
+    pub fn zxv_hex_forbid(tag: u8, out_tag: *mut u8) -> i32;
+}
+unsafe extern "C" {
+    pub fn zxv_hex_and(a: u8, b: u8, out_tag: *mut u8) -> i32;
+}
+unsafe extern "C" {
+    pub fn zxv_hex_or(a: u8, b: u8, out_tag: *mut u8) -> i32;
+}
+unsafe extern "C" {
+    pub fn zxv_hex_not(a: u8, out_tag: *mut u8) -> i32;
+}
+unsafe extern "C" {
+    pub fn zxv_hex_polarity(
+        pos0: u32,
+        neg0: u32,
+        pos1: u32,
+        neg1: u32,
+        stale: i32,
+        out_polarity: *mut u8,
+    ) -> i32;
+}
+unsafe extern "C" {
+    pub fn zxv_hex_from_lp(lp_state: i32, out_base: *mut u8) -> i32;
+}
+unsafe extern "C" {
+    pub fn zxv_hex_to_lp(base: u8, out_lp_state: *mut i32) -> i32;
+}
+unsafe extern "C" {
+    pub fn zxv_hex_name(tag: u8) -> *const ::core::ffi::c_char;
+}
+unsafe extern "C" {
+    pub fn zxv_hex_action_name(action: i32) -> *const ::core::ffi::c_char;
+}
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct zxv_hexlog {
+    _unused: [u8; 0],
+}
+unsafe extern "C" {
+    pub fn zxv_hexlog_create(
+        cap: *const zxv_cap,
+        capacity: u32,
+        out_log: *mut *mut zxv_hexlog,
+    ) -> i32;
+}
+unsafe extern "C" {
+    pub fn zxv_hexlog_destroy(log: *mut zxv_hexlog);
+}
+unsafe extern "C" {
+    pub fn zxv_hexlog_append(
+        cap: *const zxv_cap,
+        log: *mut zxv_hexlog,
+        tag: u8,
+        reason: u8,
+        submitter: u32,
+        subject: *const u8,
+        out_seq: *mut u64,
+    ) -> i32;
+}
+unsafe extern "C" {
+    pub fn zxv_hexlog_count(log: *mut zxv_hexlog, out_count: *mut u32) -> i32;
+}
+unsafe extern "C" {
+    pub fn zxv_hexlog_head(log: *mut zxv_hexlog, out_head: *mut u8) -> i32;
+}
+unsafe extern "C" {
+    pub fn zxv_hexlog_at(
+        log: *mut zxv_hexlog,
+        index: u32,
+        out_seq: *mut u64,
+        out_tag: *mut u8,
+        out_reason: *mut u8,
+        out_submitter: *mut u32,
+        out_subject: *mut u8,
+        out_prev: *mut u8,
+        out_hash: *mut u8,
+    ) -> i32;
+}
+unsafe extern "C" {
+    pub fn zxv_hexlog_verify(log: *mut zxv_hexlog) -> i32;
 }

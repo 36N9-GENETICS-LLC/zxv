@@ -42,6 +42,15 @@ export interface Vectors {
       seed: number; tokens: number[] } };
   evm_state: { channel_id: string; nonce: number; addresses: string[]; balances: number[]; encoding: string; digest: string };
   phase_cycle: number;
+  hex: {
+    base_names: string[]; polarity_names: string[]; phase_names: string[]; action_names: string[];
+    lp_to_base: number[]; base_to_lp: number[]; phase_next: number[];
+    tags: { tag: number; name: string; base: number; polarity: number; phase: number; action: number }[];
+    not: number[]; and: number[][]; or: number[][]; step: number[][]; set: number[][];
+    polarity: { pos0: number; neg0: number; pos1: number; neg1: number; stale: boolean; polarity: number }[];
+    qlog: { domain: string; head: string;
+      records: { seq: number; tag: number; reason: number; submitter: number; subject: string; prev: string; hash: string }[] };
+  };
 }
 
 // JSON.parse would round integers above 2^53 (998244359987710471 is one):

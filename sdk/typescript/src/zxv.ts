@@ -47,6 +47,8 @@ export const Feature = Object.freeze({
   /** LoRA adapters: NOT built yet (never set). */
   LORA: 0x02000000,
   EVM: 0x04000000,
+  /** The 64-state hexagram tag and quarantine log (ABI 1.3). */
+  HEX: 0x08000000,
 } as const);
 /** A Feature name. */
 export type FeatureName = keyof typeof Feature;
@@ -330,8 +332,8 @@ export class Zxv {
     const pat = new Uint32Array(1);
     core.call(core, 'zxv_version', maj, min, pat);
     this.version = Object.freeze({ major: maj[0] ?? 0, minor: min[0] ?? 0, patch: pat[0] ?? 0 });
-    if (this.version.major !== 1 || this.version.minor < 2) {
-      throw usage(`libzxv ABI ${this.version.major}.${this.version.minor} is not supported (need 1.2+): ${backend.origin}`);
+    if (this.version.major !== 1 || this.version.minor < 3) {
+      throw usage(`libzxv ABI ${this.version.major}.${this.version.minor} is not supported (need 1.3+): ${backend.origin}`);
     }
     const f = new Uint32Array(1);
     core.call(core, 'zxv_features', f);

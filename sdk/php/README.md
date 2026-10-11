@@ -4,7 +4,7 @@
 # zedec/zxv: the PHP SDK for ZXV
 
 A small PHP 8.1+ wrapper of `libzxv`, the one C library every ZXV SDK shares
-(`sdk/libzxv/include/zxv_api.h`, ABI 1.2), over PHP's FFI extension. It
+(`sdk/libzxv/include/zxv_api.h`, ABI 1.3), over PHP's FFI extension. It
 follows `sdk/docs/SDK_DESIGN.md`, so its nouns match every other ZXV SDK.
 Every file uses `declare(strict_types=1)`.
 
@@ -22,8 +22,8 @@ require "/path/to/sdk/php/autoload.php";
 The library is found, in order: `Zxv::loadLibrary($path)`,
 `ZXV_LIBRARY_PATH`, a copy in this package's `lib/` directory, the
 in-repository build `sdk/libzxv/build/`, then the system loader path. A
-library whose ABI is not 1.x (x >= 2) is refused (the SDK calls the `_cap`
-functions added in ABI 1.2).
+library whose ABI is not 1.x (x >= 3) is refused (the SDK calls the
+`zxv_hex_*` functions added in ABI 1.3 and the `_cap` functions added in 1.2).
 
 Tests run with plain PHP (no PHPUnit needed), against the real library and
 `sdk/conformance/vectors.json`:
@@ -148,6 +148,36 @@ libzxv yet (`ZXV_FEAT_LORA` is off).
 frame in pure PHP (`toBytes()`, `fromBytes()`), so a service can frame
 without the native library; `nativeBytes()` cross-checks against C and
 `resolve()` runs the C correlation resolver.
+
+## The hexagram tag (ABI 1.3)
+
+A `Hexagram` tags one unit of work with a four-valued base, the polarity
+of its evidence (entropic, neutral, forbidden, negentropic) and its phase
+(potential -> emerging -> manifest -> dissolving), packed into one byte
+0..63. Its action is proceed, wait, refuse, escalate or rollback. Every rule
+comes from libzxv and is tested against `vectors.json` key `hex`.
+Forbidden is absorbing, a phase moves one step at a time, and the base is
+**not** numbered like `Truth` (TRUE is base 3 but Truth 1): convert only
+with the explicit `toTruth()` / `Hexagram::fromTruth(...)`. Combining BOTH with NEITHER follows
+the `Truth` tables (AND gives NEITHER, OR gives BOTH); those two results
+are pending an owner decision. A `QuarantineLog` (needs the ATTEST
+capability) records forbidden work in a SHA-256 hash chain; when it is
+full, append is refused with `ZXV_E_CAPACITY` and you must halt the
+context. See [ABI.md, Changes in 1.3](../docs/ABI.md#changes-in-13).
+
+```php
+$h = Hexagram::of(HexBase::True, HexPolarity::Negentropic, HexPhase::Potential);
+$h->action();                            // HexAction::Proceed
+$h = $h->advance();                      // Emerging
+$h->step(HexPhase::Dissolving);          // ZxvRefusedException (ZXV_E_STATE): a jump
+$bad = $h->forbid();                     // Rollback, forever
+$log = new QuarantineLog($cap, 1024);    // needs Capability::ATTEST
+$seq = $log->append($bad, 7, 42, $digest32);
+$log->verify();
+```
+
+The four field types are backed enums; tags are interned (compare with
+`===`). Every PHP object is truthy, so never write `if ($h)`.
 
 ## API overview
 

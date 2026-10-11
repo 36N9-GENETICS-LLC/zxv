@@ -1,6 +1,6 @@
 # Copyright (c) 2024-2026 Michael Laurence Curzi and 36N9 Genetics, LLC
 # SPDX-License-Identifier: Apache-2.0
-"""The cffi declarations of ``sdk/libzxv/include/zxv_api.h`` (ABI 1.2).
+"""The cffi declarations of ``sdk/libzxv/include/zxv_api.h`` (ABI 1.3).
 
 This is the ONE place the SDK describes the C ABI. ``tests/test_cdef_drift.py``
 parses the header and fails if any ``ZXV_API`` function is missing here or
@@ -23,6 +23,7 @@ typedef struct zxv_swarm zxv_swarm;
 typedef struct zxv_model zxv_model;
 typedef struct zxv_session zxv_session;
 typedef struct zxv_lora zxv_lora;
+typedef struct zxv_hexlog zxv_hexlog;
 typedef void (*zxv_rmag_listener)(void *user, uint32_t budget, int32_t event);
 typedef int32_t (*zxv_token_fn)(void *user, int32_t token, const uint8_t *piece, size_t len);
 
@@ -199,4 +200,26 @@ int32_t zxv_lpres_create_cap(const zxv_cap *cap, zxv_lpres **out_reg);
 int32_t zxv_rmag_create_cap(const zxv_cap *cap, zxv_rmag **out_rmag);
 int32_t zxv_phase_create_cap(const zxv_cap *cap, zxv_phase **out_phase);
 int32_t zxv_swarm_create_cap(const zxv_cap *cap, uint32_t num_levels, uint64_t tokens_per_cycle, zxv_swarm **out_swarm);
+int32_t zxv_hex_pack(uint8_t base, uint8_t polarity, uint8_t phase, uint8_t *out_tag);
+int32_t zxv_hex_unpack(uint8_t tag, uint8_t *out_base, uint8_t *out_polarity, uint8_t *out_phase);
+int32_t zxv_hex_action(uint8_t tag, int32_t *out_action);
+int32_t zxv_hex_phase_next(uint8_t phase, uint8_t *out_phase);
+int32_t zxv_hex_step(uint8_t tag, uint8_t phase, uint8_t *out_tag);
+int32_t zxv_hex_set(uint8_t tag, uint8_t base, uint8_t polarity, uint8_t *out_tag);
+int32_t zxv_hex_forbid(uint8_t tag, uint8_t *out_tag);
+int32_t zxv_hex_and(uint8_t a, uint8_t b, uint8_t *out_tag);
+int32_t zxv_hex_or(uint8_t a, uint8_t b, uint8_t *out_tag);
+int32_t zxv_hex_not(uint8_t a, uint8_t *out_tag);
+int32_t zxv_hex_polarity(uint32_t pos0, uint32_t neg0, uint32_t pos1, uint32_t neg1, int32_t stale, uint8_t *out_polarity);
+int32_t zxv_hex_from_lp(int32_t lp_state, uint8_t *out_base);
+int32_t zxv_hex_to_lp(uint8_t base, int32_t *out_lp_state);
+const char *zxv_hex_name(uint8_t tag);
+const char *zxv_hex_action_name(int32_t action);
+int32_t zxv_hexlog_create(const zxv_cap *cap, uint32_t capacity, zxv_hexlog **out_log);
+void zxv_hexlog_destroy(zxv_hexlog *log);
+int32_t zxv_hexlog_append(const zxv_cap *cap, zxv_hexlog *log, uint8_t tag, uint8_t reason, uint32_t submitter, const uint8_t subject[32], uint64_t *out_seq);
+int32_t zxv_hexlog_count(zxv_hexlog *log, uint32_t *out_count);
+int32_t zxv_hexlog_head(zxv_hexlog *log, uint8_t out_head[32]);
+int32_t zxv_hexlog_at(zxv_hexlog *log, uint32_t index, uint64_t *out_seq, uint8_t *out_tag, uint8_t *out_reason, uint32_t *out_submitter, uint8_t out_subject[32], uint8_t out_prev[32], uint8_t out_hash[32]);
+int32_t zxv_hexlog_verify(zxv_hexlog *log);
 """

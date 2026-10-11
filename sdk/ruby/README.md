@@ -4,7 +4,7 @@
 # zxv: the Ruby SDK for ZXV
 
 A small, idiomatic Ruby wrapper of `libzxv`, the one C library every ZXV SDK
-shares (`sdk/libzxv/include/zxv_api.h`, ABI 1.2). It follows the cross-SDK
+shares (`sdk/libzxv/include/zxv_api.h`, ABI 1.3). It follows the cross-SDK
 rules in `sdk/docs/SDK_DESIGN.md`, so the nouns are the same as in every
 other ZXV SDK.
 
@@ -22,8 +22,8 @@ gem build zxv.gemspec && gem install zxv-1.1.0.gem
 The library is found, in order: the path passed to `Zxv.load_library(path)`,
 `ZXV_LIBRARY_PATH`, a copy placed in `lib/zxv/native/` before building the
 gem, the in-repository build `sdk/libzxv/build/`, then the system loader
-path. A library whose ABI is not 1.x (x >= 2) is refused (the SDK calls the
-`_cap` functions added in ABI 1.2).
+path. A library whose ABI is not 1.x (x >= 3) is refused (the SDK calls the
+`zxv_hex_*` functions added in ABI 1.3 and the `_cap` functions added in 1.2).
 
 Run the tests (Minitest, against the real library and
 `sdk/conformance/vectors.json`):
@@ -147,6 +147,37 @@ LoRA is not built into libzxv yet (`ZXV_FEAT_LORA` is off).
 frame in pure Ruby (`to_bytes`, `from_bytes`), so a service can frame without
 the native library; `native_bytes` cross-checks against C and `resolve` runs
 the C correlation resolver.
+
+## The hexagram tag (ABI 1.3)
+
+A `Hexagram` tags one unit of work with a four-valued base, the polarity
+of its evidence (entropic, neutral, forbidden, negentropic) and its phase
+(potential -> emerging -> manifest -> dissolving), packed into one byte
+0..63. Its action is proceed, wait, refuse, escalate or rollback. Every rule
+comes from libzxv and is tested against `vectors.json` key `hex`.
+Forbidden is absorbing, a phase moves one step at a time, and the base is
+**not** numbered like `Truth` (TRUE is base 3 but Truth 1): convert only
+with the explicit `to_truth` / `Hexagram.from_truth(...)`. Combining BOTH with NEITHER follows
+the `Truth` tables (AND gives NEITHER, OR gives BOTH); those two results
+are pending an owner decision. A `QuarantineLog` (needs the ATTEST
+capability) records forbidden work in a SHA-256 hash chain; when it is
+full, append is refused with `ZXV_E_CAPACITY` and you must halt the
+context. See [ABI.md, Changes in 1.3](../docs/ABI.md#changes-in-13).
+
+```ruby
+h = Zxv::Hexagram.of(:true, :negentropic, :potential)
+h.action                                 # => :proceed
+h = h.advance                            # :emerging
+h.step(:dissolving)                      # ZxvRefusedError (ZXV_E_STATE): a jump
+bad = h.forbid                           # :rollback, forever
+log = Zxv::QuarantineLog.new(cap, capacity: 1024)     # needs :attest
+seq = log.append(bad, reason: 7, submitter: 42, subject: digest32)
+log.verify
+```
+
+Fields are Symbols; tags are frozen and interned. `!h` raises
+TruthConversionError, but Ruby still treats every object as truthy in an
+`if`, so never write `if h`.
 
 ## API overview
 

@@ -66,10 +66,10 @@ KSRC := $(K)/src/iso20022/iso20022.c $(K)/src/finance/triple_ledger.c \
         $(K)/src/rational/rational.c $(K)/src/lpres/lpres.c $(K)/src/rmag/rmag.c \
         $(K)/src/phase_coord/phase_coord.c $(K)/src/harmonic/zt_harmonic_wire.c \
         $(K)/src/swarm/swarm_budget.c $(K)/src/swarm/swarm_emotion.c \
-        $(K)/src/mlkem/keccak.c $(K)/src/hwemu/hwm.c $(K)/src/hwemu/hwp.c \
-        $(K)/src/hwemu/hwr.c $(K)/src/lpres/lpres_hex.c $(K)/src/robin_debanks/sha256.c
+        $(K)/src/mlkem/keccak.c $(K)/src/lpres/lpres_hex.c $(K)/src/robin_debanks/sha256.c \
+        $(K)/src/hwemu/hwm.c $(K)/src/hwemu/hwp.c $(K)/src/hwemu/hwr.c
 SRC  := src/zxv_api.c src/zxv_core.c src/zxv_econ.c src/zxv_crypto.c src/zxv_tensor.c \
-        src/zxv_evm.c src/zxv_hw.c
+        src/zxv_evm.c src/zxv_hex.c src/zxv_hw.c
 DEFS :=
 
 ifeq ($(ZXV_NO_PQC),)
@@ -138,6 +138,8 @@ $(OUT)/test_zxv_abi11: test/test_zxv_abi11.c include/zxv_api.h $(LIB)
 	$(TESTCC) $< -L$(OUT) -lzxv $(RPATH) -lpthread -o $@
 $(OUT)/test_zxv_abi12: test/test_zxv_abi12.c include/zxv_api.h $(LIB)
 	$(TESTCC) $< -L$(OUT) -lzxv $(RPATH) -lpthread -o $@
+$(OUT)/test_zxv_abi13: test/test_zxv_abi13.c include/zxv_api.h $(LIB)
+	$(TESTCC) $< -L$(OUT) -lzxv $(RPATH) -lpthread -o $@
 $(OUT)/test_zxv_abi14: test/test_zxv_abi14.c include/zxv_api.h $(LIB)
 	$(TESTCC) $< -L$(OUT) -lzxv $(RPATH) -lpthread -o $@
 # The portable (no __int128) Q16 rounding, forced with -DZXV_NO_INT128 and
@@ -149,10 +151,12 @@ $(OUT)/gen_vectors: tools/gen_vectors.c include/zxv_api.h $(LIB)
 $(OUT)/mkfixture: tools/mkfixture.c
 	$(CC) -std=c11 -O1 -I$(K)/src/tensor -o $@ $<
 
-test: $(OUT)/test_zxv_api $(OUT)/test_zxv_abi11 $(OUT)/test_zxv_abi12 $(OUT)/test_zxv_abi14 $(OUT)/test_q16 fixtures
+test: $(OUT)/test_zxv_api $(OUT)/test_zxv_abi11 $(OUT)/test_zxv_abi12 $(OUT)/test_zxv_abi13 \
+      $(OUT)/test_zxv_abi14 $(OUT)/test_q16 fixtures
 	./$(OUT)/test_zxv_api
 	./$(OUT)/test_zxv_abi11 ../conformance/fixtures
 	./$(OUT)/test_zxv_abi12 ../conformance/fixtures
+	./$(OUT)/test_zxv_abi13
 	./$(OUT)/test_zxv_abi14
 	./$(OUT)/test_q16
 

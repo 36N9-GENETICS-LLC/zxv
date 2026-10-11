@@ -3,7 +3,7 @@
 
 # ZXV for Python (`zxv-sdk`)
 
-The Python SDK for the ZXV platform core. It wraps `libzxv` (C ABI 1.2,
+The Python SDK for the ZXV platform core. It wraps `libzxv` (C ABI 1.3,
 `sdk/libzxv/include/zxv_api.h`) with [cffi](https://cffi.readthedocs.io) in
 ABI mode, so there is nothing to compile. It gives you:
 
@@ -39,8 +39,8 @@ pip install build && python -m build --wheel       # -> dist/zxv_sdk-1.1.0-py3-n
 
 The library is found in this order: a path passed to `zxv.load_library()`,
 then `ZXV_LIBRARY_PATH`, then the copy bundled in the wheel, then the system
-loader path. The SDK refuses a library whose ABI is not 1.x with x >= 2 (it calls the
-`_cap` functions added in 1.2).
+loader path. The SDK refuses a library whose ABI is not 1.x with x >= 3 (it calls the
+`zxv_hex_*` functions added in 1.3 and the `_cap` functions added in 1.2).
 `import zxv` never loads the library; the first call that needs it does, so
 the pure-Python parts (`Ubh168Frame`, `Truth`) work without it.
 
@@ -159,6 +159,37 @@ wiping). It refuses to pickle.
 **Wire framing.** `Ubh168Frame` packs, parses and resolves UBH-168 frames in
 pure Python; tests check it byte for byte against `vectors.json` and the C
 library (`to_bytes_native()`, `resolve_native()`).
+
+## The hexagram tag (ABI 1.3)
+
+A `Hexagram` tags one unit of work with a four-valued base, the polarity
+of its evidence (entropic, neutral, forbidden, negentropic) and its phase
+(potential -> emerging -> manifest -> dissolving), packed into one byte
+0..63. Its action is proceed, wait, refuse, escalate or rollback. Every rule
+comes from libzxv and is tested against `vectors.json` key `hex`.
+Forbidden is absorbing, a phase moves one step at a time, and the base is
+**not** numbered like `Truth` (TRUE is base 3 but Truth 1): convert only
+with the explicit `to_truth()` / `Hexagram.from_truth(...)`. Combining BOTH with NEITHER follows
+the `Truth` tables (AND gives NEITHER, OR gives BOTH); those two results
+are pending an owner decision. A `QuarantineLog` (needs the ATTEST
+capability) records forbidden work in a SHA-256 hash chain; when it is
+full, append is refused with `ZXV_E_CAPACITY` and you must halt the
+context. See [ABI.md, Changes in 1.3](../docs/ABI.md#changes-in-13).
+
+```python
+from zxv import Hexagram, HexBase, HexPolarity, HexPhase, HexAction, QuarantineLog
+
+h = Hexagram(HexBase.TRUE, HexPolarity.NEGENTROPIC, HexPhase.POTENTIAL)
+assert h.action is HexAction.PROCEED
+h = h.advance()                         # EMERGING
+h.step(HexPhase.DISSOLVING)             # ZxvRefusedError (ZXV_E_STATE): a jump
+bad = h.forbid()                        # action ROLLBACK, forever
+log = QuarantineLog(cap, capacity=1024) # needs Cap.ATTEST
+seq = log.append(bad, reason=7, submitter=42, subject=digest32)
+log.verify()
+```
+
+`bool(h)` raises: a tag has no truth value of its own.
 
 ## API overview
 

@@ -61,7 +61,9 @@ public enum Feature {
     /** LoRA adapters (not built yet). */
     LORA(0x02000000),
     /** EVM state-channel encoding. */
-    EVM(0x04000000);
+    EVM(0x04000000),
+    /** The 64-state hexagram tag and quarantine log (ABI 1.3). */
+    HEX(0x08000000);
 
     private final int bit;
 

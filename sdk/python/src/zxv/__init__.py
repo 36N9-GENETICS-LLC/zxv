@@ -38,6 +38,8 @@ from .errors import (BudgetExhaustedError, CapabilityDeniedError, FatalPolicy, F
                      ZxvLibraryError, ZxvNotImplementedError, ZxvRefusedError, ZxvSystemError,
                      ZxvUsageError)
 from .evm import EvmState, StateChannel
+from .hexagram import (QUARANTINE_MAX_RECORDS, HexAction, HexBase, Hexagram, HexPhase, HexPolarity,
+                       QuarantineLog, QuarantineRecord)
 from .ledger import (AMOUNT_MAX, AccountKind, Balance, Currencies, CurrencyFlag, EnabledCurrency,
                      Iso4217Currency, JournalEntry, Ledger, Rail, iso4217)
 from .messages import (CardAuthorization, CardNetwork, Cards, CdtDbt, EntryStatus, MxAmount, MxField,
@@ -49,7 +51,7 @@ from .swarm import Allotment, EmotionProfile, Grant, Swarm
 from .truth import Truth, UncertainTruthError
 from .wire import FRAME_BYTES, Ubh168Frame, WireTruth, tag_of
 
-__version__ = "1.1.0"
+__version__ = "1.3.0"
 """Version of this Python SDK (tracks the C ABI it wraps)."""
 
 
@@ -85,6 +87,8 @@ class Feature(enum.IntFlag):
     LORA = 0x02000000
     """LoRA adapters: not built yet in any ABI 1.1 library."""
     EVM = 0x04000000
+    HEX = 0x08000000
+    """The 64-state hexagram tag and quarantine log (ABI 1.3)."""
 
 
 def abi_version() -> Tuple[int, int, int]:
@@ -131,6 +135,9 @@ __all__ = [
     "ZxvNotImplementedError", "ZxvSystemError", "ZxvLibraryError", "ZxvFatal",
     # values
     "Rational", "RationalLike", "Truth", "UncertainTruthError",
+    # hexagram tags
+    "Hexagram", "HexBase", "HexPolarity", "HexPhase", "HexAction", "QuarantineLog", "QuarantineRecord",
+    "QUARANTINE_MAX_RECORDS",
     # context
     "Context", "Capability", "CapabilityInfo", "Cap", "IDENTITY_BYTES",
     # ledger
