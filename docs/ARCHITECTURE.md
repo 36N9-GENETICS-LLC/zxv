@@ -10,8 +10,8 @@ how the parts fit together, and the state of each one. It replaces earlier versi
 New in 4.1: integration gap A4 is done (the fee loop and the trade loop are in the app), and the
 full-model low-bit weight results are in.
 
-Sources: the repository (draft PR #1, branch `claude/project-thread-j44rs9`, last pushed commit
-`94fbd0d`, all 21 GitHub checks green), the gap audit ([GAP_AUDIT.md](GAP_AUDIT.md)),
+Sources: the repository (PR #1, merged into `main` on 2026-10-11 as `d832fe1`; figures below were
+measured at `94fbd0d`, with all 21 GitHub checks green), the gap audit ([GAP_AUDIT.md](GAP_AUDIT.md)),
 the per-module reference ([SYSTEM_REFERENCE.md](SYSTEM_REFERENCE.md)), the audit
 ([AUDIT_REPORT.md](AUDIT_REPORT.md)), project memory, the build thread "Plan adaptive local AI
 architecture" and the "Real model test" thread (report in draft PR #4).
