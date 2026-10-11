@@ -144,3 +144,57 @@ jobs:
           python -m pip install ziglang
           npm run build:wasm
       - run: npm test
+
+  solidity:
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: sdk/solidity
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: make -C ../libzxv all fixtures
+      - run: npm ci
+      - run: npm test
+
+  ruby:
+    name: ruby ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-14]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        working-directory: sdk/ruby
+    steps:
+      - uses: actions/checkout@v5
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: '3.3'
+          bundler-cache: true
+          working-directory: sdk/ruby
+      - run: make -C ../libzxv all fixtures
+      - run: bundle exec rake test
+
+  php:
+    name: php ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-14]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        working-directory: sdk/php
+    steps:
+      - uses: actions/checkout@v5
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.3'
+          extensions: ffi
+          ini-values: ffi.enable=true
+      - run: make -C ../libzxv all fixtures
+      - run: php tests/run.php
