@@ -117,7 +117,7 @@ $(OUT)/k/%.o: $(K)/%.c
 	@mkdir -p $(dir $@)
 	$(CC) $(KFLAGS) $(INC) -c $< -o $@
 
-$(OUT)/%.o: src/%.c include/zxv_api.h src/zxv_internal.h
+$(OUT)/%.o: src/%.c include/zxv_api.h src/zxv_internal.h src/zxv_q16.h
 	@mkdir -p $(OUT)
 	$(CC) $(CFLAGS_COMMON) -DZXV_BUILD_SHARED $(DEFS) $(INC) -c $< -o $@
 
@@ -133,14 +133,22 @@ $(OUT)/test_zxv_api: test/test_zxv_api.c include/zxv_api.h $(LIB)
 	$(TESTCC) $< -L$(OUT) -lzxv $(RPATH) -lpthread -o $@
 $(OUT)/test_zxv_abi11: test/test_zxv_abi11.c include/zxv_api.h $(LIB)
 	$(TESTCC) $< -L$(OUT) -lzxv $(RPATH) -lpthread -o $@
+$(OUT)/test_zxv_abi12: test/test_zxv_abi12.c include/zxv_api.h $(LIB)
+	$(TESTCC) $< -L$(OUT) -lzxv $(RPATH) -lpthread -o $@
+# The portable (no __int128) Q16 rounding, forced with -DZXV_NO_INT128 and
+# checked against the 128-bit path and the library.
+$(OUT)/test_q16: test/test_q16.c src/zxv_q16.h include/zxv_api.h $(LIB)
+	$(TESTCC) -DZXV_NO_INT128 -Isrc $< -L$(OUT) -lzxv $(RPATH) -lpthread -o $@
 $(OUT)/gen_vectors: tools/gen_vectors.c include/zxv_api.h $(LIB)
 	$(TESTCC) $< -L$(OUT) -lzxv $(RPATH) -lpthread -o $@
 $(OUT)/mkfixture: tools/mkfixture.c
 	$(CC) -std=c11 -O1 -I$(K)/src/tensor -o $@ $<
 
-test: $(OUT)/test_zxv_api $(OUT)/test_zxv_abi11 fixtures
+test: $(OUT)/test_zxv_api $(OUT)/test_zxv_abi11 $(OUT)/test_zxv_abi12 $(OUT)/test_q16 fixtures
 	./$(OUT)/test_zxv_api
 	./$(OUT)/test_zxv_abi11 ../conformance/fixtures
+	./$(OUT)/test_zxv_abi12 ../conformance/fixtures
+	./$(OUT)/test_q16
 
 fixtures: $(OUT)/mkfixture
 	@mkdir -p ../conformance/fixtures

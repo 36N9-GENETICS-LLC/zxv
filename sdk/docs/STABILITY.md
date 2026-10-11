@@ -64,8 +64,10 @@ old one marked deprecated (minor). Fail-closed behaviour on a poisoned
 context applies to every function, old and new; it is part of the 1.0
 contract, not a change to it.
 
-The 64-state hexagram tag arrives this way: `zxv_hex_*` are new functions in
-ABI 1.2, and the four-valued `ZXV_LP_*` values beside it do not move.
+ABI 1.2 did exactly this: 15 new `*_cap` functions close the calls that took
+no capability, and the old forms are deprecated but unchanged. The 64-state
+hexagram tag will arrive the same way, as new `zxv_hex_*` functions in a later
+minor, while the four-valued `ZXV_LP_*` values beside it do not move.
 
 ## Before 1.x: what counts as released
 

@@ -1,6 +1,6 @@
 # Copyright (c) 2024-2026 Michael Laurence Curzi and 36N9 Genetics, LLC
 # SPDX-License-Identifier: Apache-2.0
-"""The cffi declarations of ``sdk/libzxv/include/zxv_api.h`` (ABI 1.1).
+"""The cffi declarations of ``sdk/libzxv/include/zxv_api.h`` (ABI 1.2).
 
 This is the ONE place the SDK describes the C ABI. ``tests/test_cdef_drift.py``
 parses the header and fails if any ``ZXV_API`` function is missing here or
@@ -184,4 +184,19 @@ int32_t zxv_lora_apply(const zxv_cap *cap, zxv_session *session, zxv_lora *lora)
 void zxv_lora_destroy(zxv_lora *lora);
 int32_t zxv_evm_encode_state(const zxv_cap *cap, const uint8_t channel_id[32], uint64_t nonce, const uint8_t *addresses, const int64_t *balances, uint32_t count, uint8_t *buf, size_t cap_bytes, size_t *out_len, uint8_t digest[32]);
 int32_t zxv_evm_ledger_state(const zxv_cap *cap, const uint8_t channel_id[32], uint64_t nonce, const char *ccy, const uint32_t *accounts, const uint8_t *addresses, uint32_t count, uint8_t *buf, size_t cap_bytes, size_t *out_len, uint8_t digest[32]);
+int32_t zxv_msg_create_cap(const zxv_cap *cap, int32_t kind, zxv_msg **out_msg);
+int32_t zxv_ccy_enable_cap(const zxv_cap *cap, const char *alpha);
+int32_t zxv_ccy_enable_with_minor_cap(const zxv_cap *cap, const char *alpha, uint8_t minor_units);
+int32_t zxv_ccy_register_private_cap(const zxv_cap *cap, const char *code, uint8_t minor_units);
+int32_t zxv_ledger_open_account_cap(const zxv_cap *cap, const char *name, const char *ccy, int32_t kind, uint32_t *out_account_id);
+int32_t zxv_ledger_account_ccy_cap(const zxv_cap *cap, uint32_t account, char *buf, size_t cap_len, size_t *out_len);
+int32_t zxv_ledger_account_name_cap(const zxv_cap *cap, uint32_t account, char *buf, size_t cap_len, size_t *out_len);
+int32_t zxv_ledger_account_kind_cap(const zxv_cap *cap, uint32_t account, int32_t *out_kind);
+int32_t zxv_ledger_account_count_cap(const zxv_cap *cap, uint32_t *out_count);
+int32_t zxv_ledger_entry_count_cap(const zxv_cap *cap, uint32_t account, uint32_t *out_count);
+int32_t zxv_ledger_entry_at_cap(const zxv_cap *cap, uint32_t account, uint32_t index, uint64_t *out_entry_id, int64_t *out_signed_minor, uint32_t *out_counterparty, char *ref_buf, size_t ref_cap, size_t *out_ref_len);
+int32_t zxv_lpres_create_cap(const zxv_cap *cap, zxv_lpres **out_reg);
+int32_t zxv_rmag_create_cap(const zxv_cap *cap, zxv_rmag **out_rmag);
+int32_t zxv_phase_create_cap(const zxv_cap *cap, zxv_phase **out_phase);
+int32_t zxv_swarm_create_cap(const zxv_cap *cap, uint32_t num_levels, uint64_t tokens_per_cycle, zxv_swarm **out_swarm);
 """

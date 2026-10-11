@@ -19,7 +19,8 @@
  *   R3  STATUS CODES. Every function except the destroy functions and
  *       zxv_status_name returns int32_t: ZXV_OK (0) or a negative ZXV_E_*.
  *       Out parameters are written only on ZXV_OK, except *out_len on
- *       ZXV_E_BUFFER (see R4).
+ *       ZXV_E_BUFFER (see R4) and *out_granted of zxv_swarm_consume on
+ *       ZXV_E_BUDGET (it reports the partial grant).
  *   R4  CALLER-OWNED BUFFERS, TWO-CALL PATTERN. A function that returns
  *       text takes (char *buf, size_t cap, size_t *out_len). *out_len always
  *       receives the length the full result needs, EXCLUDING the NUL. If buf
@@ -34,7 +35,16 @@
  *       zxv_netting handle is NOT thread-safe; use it from one thread at a
  *       time. Each handle must be destroyed exactly once, after every other
  *       call on it has returned. A child handle (msg, netting) must be
- *       destroyed before the zxv_ctx it was created from.
+ *       destroyed before the zxv_ctx it was created from. Destroy order
+ *       for the ABI 1.1+ handles, children first:
+ *         zxv_session  before the zxv_model it was created from, and
+ *                      before (or unbound from) any zxv_rmag it is bound to;
+ *         zxv_msg made by zxv_msg_create_cap  before that zxv_cap;
+ *         an attenuated zxv_cap  before its parent zxv_cap;
+ *         zxv_cap, zxv_rmag, zxv_phase, zxv_lpres, zxv_swarm  before the
+ *                      zxv_ctx they belong to.
+ *       A zxv_model holds no context and may outlive the cap that opened
+ *       it. The destroy functions themselves never touch the context.
  *   R7  LAST-ERROR DETAIL. When a call fails, a human-readable reason is kept
  *       in thread-local storage; zxv_last_error copies it out. It is only
  *       diagnostic text: branch on the status code, never on the message.
@@ -45,6 +55,15 @@
  *       ABI as stubs that return ZXV_E_NOTIMPL. zxv_features reports which
  *       groups are live in THIS build, so a binding can light up features
  *       without recompiling.
+ *
+ * FAIL-CLOSED (ABI 1.1, completed in 1.2). Once a context is poisoned
+ * (zxv_ctx_halt, or a broken ledger invariant) EVERY call on it or on any
+ * handle created from it (cap, msg, rmag, phase, lpres, swarm, and the stub
+ * groups netting / cards / VSS) returns ZXV_E_POISONED (class FATAL),
+ * before any argument validation. The only exceptions: the destroy
+ * functions, zxv_ctx_is_poisoned, and zxv_cap_revoke (which can only take
+ * authority away). zxv_generate charging a budget of a poisoned context is
+ * refused the same way.
  *
  * CURRENCIES. ISO 20022 wire messages carry ISO 4217 ALPHA codes ("NGN",
  * "GHS", "XOF") in Ccy attributes. The Vino rail numerics DEBIT 555 (NCR),
@@ -81,8 +100,8 @@ extern "C" {
 
 /* ===== Version ===== */
 #define ZXV_ABI_VERSION_MAJOR 1
-#define ZXV_ABI_VERSION_MINOR 1
-#define ZXV_ABI_VERSION_PATCH 1
+#define ZXV_ABI_VERSION_MINOR 2
+#define ZXV_ABI_VERSION_PATCH 0
 
 /* ===== Status codes (stable; never renumbered) ===== */
 #define ZXV_OK            0
@@ -164,6 +183,7 @@ extern "C" {
 typedef struct zxv_ctx zxv_ctx;         /* one platform instance (ledger, config) */
 typedef struct zxv_msg zxv_msg;         /* one ISO 20022 message under construction */
 typedef struct zxv_netting zxv_netting; /* one netting cycle                     */
+typedef struct zxv_cap zxv_cap;         /* a capability (ABI 1.1, see R10)       */
 
 /* ===== Library ===== */
 
@@ -248,7 +268,10 @@ typedef enum {
 /* Rail -> internal numeric (555/777/888). Proprietary fields only. */
 ZXV_API int32_t zxv_rail_numeric(int32_t rail, uint16_t *out_numeric);
 
-/* ===== Currency configuration (per context) ===== */
+/* ===== Currency configuration (per context) =====
+ * DEPRECATED since ABI 1.2: zxv_ccy_enable, zxv_ccy_enable_with_minor and
+ * zxv_ccy_register_private take no capability (R10). They keep working
+ * unchanged; new code calls the zxv_*_cap forms below (LEDGER_POST). */
 
 /* Enable an ISO 4217 currency for ledger accounts in this context. Minor
  * units come from the ISO 4217 table. ZXV_E_CURRENCY if not payable. */
@@ -274,7 +297,11 @@ ZXV_API int32_t zxv_ccy_enabled_count(zxv_ctx *ctx, uint32_t *out_count);
 ZXV_API int32_t zxv_ccy_enabled_at(zxv_ctx *ctx, uint32_t index, char *buf, size_t cap,
                                    size_t *out_len);
 
-/* ===== Ledger (finance/triple_ledger + exact shadow) ===== */
+/* ===== Ledger (finance/triple_ledger + exact shadow) =====
+ * DEPRECATED since ABI 1.2: the zxv_ctx forms below take no capability
+ * (R10). They keep working unchanged for 1.0 bindings; new code calls the
+ * zxv_ledger_*_cap forms (section "Capabilities"): opening an account needs
+ * LEDGER_POST, reading accounts and journals needs LEDGER_READ. */
 
 typedef enum {
     ZXV_ACCT_HOLDER = 0, /* may never go below zero (no debt)                */
@@ -365,8 +392,16 @@ typedef enum { ZXV_STS_BOOK = 0, ZXV_STS_PDNG = 1, ZXV_STS_INFO = 2 } zxv_entry_
 
 /* Create a message of `kind`. The context validates currencies (enabled is
  * not required, but ISO 4217 membership and minor units are checked).
- * ZXV_E_NOTIMPL for a kind whose kernel builder is not available. */
+ * ZXV_E_NOTIMPL for a kind whose kernel builder is not available.
+ * DEPRECATED since ABI 1.2 (no capability, R10): use zxv_msg_create_cap.
+ * Every zxv_msg_* call on a message of a poisoned context returns
+ * ZXV_E_POISONED. */
 ZXV_API int32_t zxv_msg_create(zxv_ctx *ctx, int32_t kind, zxv_msg **out_msg);
+/* ABI 1.2: create through a capability (needs LEDGER_READ). The message
+ * remembers `cap` and every later zxv_msg_set_* / add_entry / render call
+ * re-checks it (R10), so revoking the cap or clearing its attestation stops
+ * the message. The cap must outlive the message (destroy the msg first). */
+ZXV_API int32_t zxv_msg_create_cap(const zxv_cap *cap, int32_t kind, zxv_msg **out_msg);
 ZXV_API void zxv_msg_destroy(zxv_msg *msg);
 
 ZXV_API int32_t zxv_msg_set_text(zxv_msg *msg, int32_t field, const char *utf8);
@@ -464,6 +499,10 @@ ZXV_API int32_t zxv_vss_level_get(zxv_ctx *ctx, int32_t *out_level);
 /*       takes a `const zxv_cap *` as its first argument and verifies it */
 /*       on EVERY call (sdk/docs/ABI.md, "Capabilities"). Pure functions */
 /*       (rationals, logic tables, hashes, wire framing) take none.      */
+/*       ABI 1.2: a cap passed with a handle (rmag, phase, lpres, swarm, */
+/*       a session's bound budget) must belong to the same context as    */
+/*       that handle, else ZXV_E_CAP. Handles also have *_create_cap     */
+/*       forms; the zxv_ctx *_create forms are deprecated.               */
 /*   R11 NO FLOATS. No parameter is float or double. Q16 values are      */
 /*       int32 fixed point (value = q / 65536). A host float can enter   */
 /*       only through zxv_rat_from_ieee754, which takes the raw IEEE-754 */
@@ -537,8 +576,8 @@ ZXV_API const char *zxv_lp_name(int32_t value);
  * A cap can only be narrowed (zxv_cap_attenuate), never widened.
  * HONEST LIMIT: inside one process this is least-privilege discipline,
  * not a sandbox; code in the same address space can create its own cap.
- * The process boundary (zxvd over IPC) is where it becomes enforcement. */
-typedef struct zxv_cap zxv_cap;
+ * The process boundary (zxvd over IPC) is where it becomes enforcement.
+ * (zxv_cap is declared with the other opaque handles above.) */
 
 #define ZXV_CAP_LEDGER_READ   (UINT64_C(1) << 0)  /* read balances, journals    */
 #define ZXV_CAP_LEDGER_POST   (UINT64_C(1) << 1)  /* SB_CAP_CAPITAL_TRANSFER     */
@@ -558,7 +597,12 @@ typedef struct zxv_cap zxv_cap;
  * Unknown bits in `caps` are ZXV_E_ARG. Attestation starts TRUE. */
 ZXV_API int32_t zxv_cap_create(zxv_ctx *ctx, uint32_t process_id, const uint8_t *identity,
                                uint64_t caps, zxv_cap **out_cap);
-/* A child holding (parent caps & keep). The parent must outlive it. */
+/* A child holding (parent caps & keep). The parent must outlive it.
+ * Revocation propagates: revoking the parent (or any ancestor) kills the
+ * child. Attestation does NOT propagate: the child starts with a COPY of
+ * the parent's attestation at attenuation time, and a later
+ * zxv_cap_set_attestation on the parent does not change existing children
+ * (set each one, or revoke the parent to stop them all). */
 ZXV_API int32_t zxv_cap_attenuate(const zxv_cap *parent, uint64_t keep, zxv_cap **out_cap);
 /* Permanently revoke this cap and, through it, every descendant. */
 ZXV_API int32_t zxv_cap_revoke(zxv_cap *cap);
@@ -583,10 +627,39 @@ ZXV_API int32_t zxv_ledger_balance_cap(const zxv_cap *cap, uint32_t account,
  * poisoned (see zxv_ctx_is_poisoned). */
 ZXV_API int32_t zxv_ledger_check_cap(const zxv_cap *cap);
 
+/* ABI 1.2: the rest of the context surface through a capability, with the
+ * semantics of the zxv_ctx forms (which are now deprecated). */
+/* LEDGER_POST: */
+ZXV_API int32_t zxv_ccy_enable_cap(const zxv_cap *cap, const char *alpha);
+ZXV_API int32_t zxv_ccy_enable_with_minor_cap(const zxv_cap *cap, const char *alpha,
+                                              uint8_t minor_units);
+ZXV_API int32_t zxv_ccy_register_private_cap(const zxv_cap *cap, const char *code,
+                                             uint8_t minor_units);
+ZXV_API int32_t zxv_ledger_open_account_cap(const zxv_cap *cap, const char *name, const char *ccy,
+                                            int32_t kind, uint32_t *out_account_id);
+/* LEDGER_READ: */
+ZXV_API int32_t zxv_ledger_account_ccy_cap(const zxv_cap *cap, uint32_t account, char *buf,
+                                           size_t cap_len, size_t *out_len);
+ZXV_API int32_t zxv_ledger_account_name_cap(const zxv_cap *cap, uint32_t account, char *buf,
+                                            size_t cap_len, size_t *out_len);
+ZXV_API int32_t zxv_ledger_account_kind_cap(const zxv_cap *cap, uint32_t account,
+                                            int32_t *out_kind);
+ZXV_API int32_t zxv_ledger_account_count_cap(const zxv_cap *cap, uint32_t *out_count);
+ZXV_API int32_t zxv_ledger_entry_count_cap(const zxv_cap *cap, uint32_t account,
+                                           uint32_t *out_count);
+ZXV_API int32_t zxv_ledger_entry_at_cap(const zxv_cap *cap, uint32_t account, uint32_t index,
+                                        uint64_t *out_entry_id, int64_t *out_signed_minor,
+                                        uint32_t *out_counterparty, char *ref_buf, size_t ref_cap,
+                                        size_t *out_ref_len);
+
 /* ===== Attestation registry (kernel/src/lpres) ===== */
 typedef struct zxv_lpres zxv_lpres;
 
+/* zxv_lpres_create is DEPRECATED since ABI 1.2 (no capability). */
 ZXV_API int32_t zxv_lpres_create(zxv_ctx *ctx, zxv_lpres **out_reg);
+/* ABI 1.2: create through a cap (needs ATTEST); the registry belongs to
+ * the cap's context. */
+ZXV_API int32_t zxv_lpres_create_cap(const zxv_cap *cap, zxv_lpres **out_reg);
 ZXV_API void zxv_lpres_destroy(zxv_lpres *reg);
 /* name, attester <= 31 bytes; digest <= 32 bytes (may be NULL/0). subject is
  * the kernel lpres_subject_type_t (0 SOURCE .. 14 FIRMWARE). Needs ATTEST. */
@@ -616,13 +689,18 @@ typedef struct zxv_rmag zxv_rmag;
 
 /* Listener events, delivered synchronously on the thread whose call caused
  * them, after the budget's lock is released (so the listener may call
- * back into the library). */
+ * back into the library). The calling thread's zxv_last_error detail is
+ * saved around the listener and restored (ABI 1.2), so a listener that
+ * calls the library cannot change the detail the outer call reports. */
 #define ZXV_RMAG_EV_DENIED      1 /* a consume was refused (ZXV_E_BUDGET)     */
 #define ZXV_RMAG_EV_INVALID     2 /* a consume/release was malformed         */
 #define ZXV_RMAG_EV_REPLENISHED 3 /* a release or new limit freed budget     */
 typedef void (*zxv_rmag_listener)(void *user, uint32_t budget, int32_t event);
 
+/* zxv_rmag_create is DEPRECATED since ABI 1.2 (no capability). */
 ZXV_API int32_t zxv_rmag_create(zxv_ctx *ctx, zxv_rmag **out_rmag);
+/* ABI 1.2: create through a cap (needs BUDGET). */
+ZXV_API int32_t zxv_rmag_create_cap(const zxv_cap *cap, zxv_rmag **out_rmag);
 ZXV_API void zxv_rmag_destroy(zxv_rmag *rmag);
 /* A budget with an exact rational limit (>= 0). enforce = 0 only counts. */
 ZXV_API int32_t zxv_rmag_budget(const zxv_cap *cap, zxv_rmag *rmag, const char *name,
@@ -645,7 +723,12 @@ ZXV_API int32_t zxv_rmag_set_limit(const zxv_cap *cap, zxv_rmag *rmag, uint32_t 
 ZXV_API int32_t zxv_rmag_status(zxv_rmag *rmag, uint32_t budget, int64_t *out_rem_num,
                                 int64_t *out_rem_den, int64_t *out_used_num,
                                 int64_t *out_used_den, uint64_t *out_epoch);
-/* One listener per zxv_rmag (NULL removes it). */
+/* One listener per zxv_rmag (NULL removes it). When this returns (ABI
+ * 1.2), no call of the PREVIOUS listener is running on any thread or will
+ * start, so the host may free the old `user` at once: it waits for
+ * deliveries already in flight on other threads. Called from inside a
+ * listener of the same zxv_rmag it cannot wait for itself; it then only
+ * swaps the listener (other threads' in-flight calls may still finish). */
 ZXV_API int32_t zxv_rmag_listen(zxv_rmag *rmag, zxv_rmag_listener fn, void *user);
 
 /* ===== Phase coordinator ticks (kernel/src/phase_coord, K6) =====
@@ -676,7 +759,10 @@ typedef struct zxv_phase zxv_phase;
 #define ZXV_HEALTH_DEGRADED  2
 #define ZXV_HEALTH_UNHEALTHY 3
 
+/* zxv_phase_create is DEPRECATED since ABI 1.2 (no capability). */
 ZXV_API int32_t zxv_phase_create(zxv_ctx *ctx, zxv_phase **out_phase);
+/* ABI 1.2: create through a cap (needs PHASE). */
+ZXV_API int32_t zxv_phase_create_cap(const zxv_cap *cap, zxv_phase **out_phase);
 ZXV_API void zxv_phase_destroy(zxv_phase *phase);
 ZXV_API int32_t zxv_phase_now(zxv_phase *phase, uint64_t *out_tick);
 /* Advance by `delta` ticks; deferred events due at or before the new tick
@@ -690,7 +776,11 @@ ZXV_API int32_t zxv_phase_admit(const zxv_cap *cap, zxv_phase *phase, uint32_t p
                                 uint64_t *out_token);
 ZXV_API int32_t zxv_phase_set_health(const zxv_cap *cap, zxv_phase *phase, uint32_t phase_id,
                                      int32_t health);
-/* Park an S0 event until absolute tick `due_tick` (> now). */
+/* Park an S0 event until absolute tick `due_tick` (> now). Event ids come
+ * from a 64-bit counter that never repeats within a zxv_phase, so a stale
+ * id can never name or cancel a newer event. A finished event's table slot
+ * is recycled once 4096 newer ids exist; its id then gives
+ * ZXV_E_NOT_FOUND. */
 ZXV_API int32_t zxv_phase_defer(const zxv_cap *cap, zxv_phase *phase, uint64_t due_tick,
                                 uint64_t *out_event);
 ZXV_API int32_t zxv_phase_event(zxv_phase *phase, uint64_t event, int32_t *out_state,
@@ -712,7 +802,9 @@ ZXV_API int32_t zxv_phase_next_due(zxv_phase *phase, uint64_t *out_tick);
 #define ZXV_TRUTH_GLUT    4 /* contradiction held */
 #define ZXV_TRUTH_PARADOX 5 /* persistent GLUT    */
 
-/* tag = 100*sync + 10*shell + trunk; trunk, shell 0..9, sync 0..1. */
+/* tag = 100*sync + 10*shell + trunk; trunk, shell 0..9, sync 0..1, so a
+ * valid tag is 0..199. zxv_wire_pack refuses a tag above 199 with
+ * ZXV_E_ARG (ABI 1.2; 1.1 framed it anyway). */
 ZXV_API int32_t zxv_wire_tag(uint32_t trunk, uint32_t shell, uint32_t sync, uint8_t *out_tag);
 ZXV_API int32_t zxv_wire_pack(uint8_t tag, const uint32_t s_plus[3], const uint32_t s_minus[2],
                               uint8_t out_frame[21]);
@@ -731,8 +823,12 @@ ZXV_API int32_t zxv_wire_idle(uint32_t trunk, uint8_t out_frame[21]);
  * integers. */
 typedef struct zxv_swarm zxv_swarm;
 
+/* zxv_swarm_create is DEPRECATED since ABI 1.2 (no capability). */
 ZXV_API int32_t zxv_swarm_create(zxv_ctx *ctx, uint32_t num_levels, uint64_t tokens_per_cycle,
                                  zxv_swarm **out_swarm);
+/* ABI 1.2: create through a cap (needs SWARM). */
+ZXV_API int32_t zxv_swarm_create_cap(const zxv_cap *cap, uint32_t num_levels,
+                                     uint64_t tokens_per_cycle, zxv_swarm **out_swarm);
 ZXV_API void zxv_swarm_destroy(zxv_swarm *swarm);
 /* Level d (0-based) holds at most F(d+2) models. ZXV_E_CAPACITY when full. */
 ZXV_API int32_t zxv_swarm_register(const zxv_cap *cap, zxv_swarm *swarm, uint32_t model_id,
@@ -748,8 +844,10 @@ ZXV_API int32_t zxv_swarm_set_feeling(const zxv_cap *cap, zxv_swarm *swarm, uint
                                       uint32_t codepoint, uint32_t intensity);
 ZXV_API int32_t zxv_swarm_begin_cycle(const zxv_cap *cap, zxv_swarm *swarm, uint64_t *out_cycle);
 /* Grant up to `requested` tokens. ZXV_OK with *out_granted = requested,
- * or ZXV_E_BUDGET with *out_granted = what was left and granted (this
- * out parameter is written on ZXV_E_BUDGET too). */
+ * or ZXV_E_BUDGET with *out_granted = what was left and granted. This out
+ * parameter is written on ZXV_E_BUDGET too (an exception to R3): the
+ * partial grant IS consumed, so read it before treating BUDGET as a
+ * failure. On any other status it is not written. */
 ZXV_API int32_t zxv_swarm_consume(const zxv_cap *cap, zxv_swarm *swarm, uint32_t model_id,
                                   uint64_t requested, uint64_t *out_granted);
 /* This cycle: allotted (real + imaginary), its imaginary part, used. */
@@ -769,7 +867,9 @@ ZXV_API int32_t zxv_sha3_256(const uint8_t *data, size_t len, uint8_t out[32]);
 ZXV_API int32_t zxv_shake256(const uint8_t *data, size_t len, uint8_t *out, size_t out_len);
 /* Ethereum's Keccak-256 (pre-FIPS padding 0x01), for the EVM adapter. */
 ZXV_API int32_t zxv_keccak256(const uint8_t *data, size_t len, uint8_t out[32]);
-/* Fill with bytes from the OS CSPRNG (getrandom / arc4random). */
+/* Fill with bytes from the OS CSPRNG: getrandom (Linux), arc4random_buf
+ * (macOS, BSD), BCryptGenRandom (Windows; link bcrypt), getentropy (WASI,
+ * over random_get). ZXV_E_NOTIMPL on a platform with none. */
 ZXV_API int32_t zxv_random(uint8_t *buf, size_t len);
 /* Zero memory in a way the compiler may not remove. SDKs call it on every
  * buffer that held a secret (their off-heap key storage). */
@@ -874,7 +974,10 @@ ZXV_API int32_t zxv_model_open_memory(const zxv_cap *cap, const uint8_t *model, 
 ZXV_API void zxv_model_destroy(zxv_model *model);
 ZXV_API int32_t zxv_model_info(const zxv_model *model, int32_t key, int64_t *out_value);
 
-/* Token ids of UTF-8 text (R4 two-call pattern on *out_count). */
+/* Token ids of UTF-8 text, two-call on *out_count. Unlike R4 text, `ids`
+ * is a plain array with NO terminator: *out_count is always the exact
+ * number of ids, and cap >= *out_count suffices (no +1). A NULL ids or
+ * cap < count gives ZXV_E_BUFFER with *out_count set. */
 ZXV_API int32_t zxv_tokenize(const zxv_model *model, const uint8_t *text, size_t len,
                              int32_t parse_special, int32_t *ids, size_t cap, size_t *out_count);
 ZXV_API int32_t zxv_detokenize(const zxv_model *model, const int32_t *ids, size_t count,
@@ -886,10 +989,19 @@ ZXV_API int32_t zxv_session_create(const zxv_model *model, uint32_t n_ctx, int32
 ZXV_API void zxv_session_destroy(zxv_session *session);
 /* Forget the conversation (empty KV cache). */
 ZXV_API int32_t zxv_session_reset(zxv_session *session);
+/* Tokens held in the KV cache. After zxv_generate on a fresh (or reset)
+ * session with P prompt tokens and N >= 1 generated tokens this is
+ * P + N - 1: the last generated token is returned but not yet fed back
+ * into the cache (the next zxv_generate call starts after it). */
 ZXV_API int32_t zxv_session_position(zxv_session *session, uint32_t *out_pos);
 /* Charge this budget one unit per prompt and generated token (rmag NULL
  * unbinds). Prompt tokens are charged up front: if they do not fit,
- * zxv_generate returns ZXV_E_BUDGET and runs nothing. */
+ * zxv_generate returns ZXV_E_BUDGET and runs nothing.
+ * LIFETIME: the session keeps the `rmag` POINTER (no copy, no reference
+ * count). The zxv_rmag, and its zxv_ctx, must stay alive until the
+ * session is unbound (rmag NULL), rebound or destroyed; destroying a bound
+ * rmag first is a use-after-free on the next zxv_generate. zxv_generate
+ * refuses a budget of another context than its cap (ZXV_E_CAP). */
 ZXV_API int32_t zxv_session_bind_budget(zxv_session *session, zxv_rmag *rmag, uint32_t budget);
 
 /* Generate. Sampling parameters are Q16.16 (temperature_q16 0 = greedy;
@@ -911,6 +1023,12 @@ ZXV_API int32_t zxv_lora_apply(const zxv_cap *cap, zxv_session *session, zxv_lor
 ZXV_API void zxv_lora_destroy(zxv_lora *lora);
 
 /* ===== EVM state channels =====
+ * Buffers: two-call on *out_len, but BYTES, not text (R4 differs): there
+ * is no NUL, *out_len is exactly (6 + 2 * count) * 32, and cap_bytes >=
+ * *out_len suffices (no +1). NULL buf or a smaller cap_bytes gives
+ * ZXV_E_BUFFER with *out_len set and nothing else written; `digest` is
+ * written only on ZXV_OK. Size it once: (6 + 2n) * 32 is known up front.
+ *
  * The ledger's exact integer balances, encoded for a Solidity state-channel
  * contract (sdk/solidity/ZxvStateChannel.sol) as
  *   abi.encode(bytes32 channelId, uint256 nonce, address[] parties,

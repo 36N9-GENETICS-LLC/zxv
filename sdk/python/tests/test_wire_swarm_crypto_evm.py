@@ -46,7 +46,11 @@ def test_resolver_agrees_with_c_on_many_frames() -> None:
         pick = lambda: rng.choice(specials) if rng.random() < 0.5 else rng.getrandbits(32)  # noqa: E731
         f = Ubh168Frame(rng.randrange(256), (pick(), pick(), pick()), (pick(), pick()))
         assert f.resolve_native() == f.resolve(), f
-        assert f.to_bytes_native() == f.to_bytes()
+        if f.tag <= 199:
+            assert f.to_bytes_native() == f.to_bytes()
+        else:  # libzxv 1.2: zxv_wire_pack refuses a tag no (trunk, shell, sync) makes
+            with pytest.raises(zxv.ZxvUsageError):
+                f.to_bytes_native()
 
 
 def test_frame_validation() -> None:

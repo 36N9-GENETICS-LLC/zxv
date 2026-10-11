@@ -57,7 +57,7 @@ _Static_assert(ISO_CCY_EQUITY == VINO_ISO_EQUITY, "EQUITY rail numeric diverged"
 /* Last error (thread-local, R7)                                         */
 /* ===================================================================== */
 
-static _Thread_local char g_err[256];
+static _Thread_local char g_err[ZXVI_ERR_MAX];
 
 int32_t zxvi_fail(int32_t status, const char *fmt, ...)
 {
@@ -72,6 +72,17 @@ int32_t zxvi_ok(void)
 {
     g_err[0] = '\0';
     return ZXV_OK;
+}
+
+void zxvi_err_save(char out[ZXVI_ERR_MAX])
+{
+    memcpy(out, g_err, ZXVI_ERR_MAX);
+}
+
+void zxvi_err_restore(const char in[ZXVI_ERR_MAX])
+{
+    memcpy(g_err, in, ZXVI_ERR_MAX);
+    g_err[ZXVI_ERR_MAX - 1] = '\0';
 }
 
 /* R4: copy `s` (length n) to a caller buffer. */
@@ -525,6 +536,18 @@ bool zxvi_ctx_is_poisoned(zxv_ctx *ctx)
     return p;
 }
 
+int32_t zxvi_ctx_check(zxv_ctx *ctx, const char *what)
+{
+    if (!ctx) return zxvi_fail(ZXV_E_ARG, "%s: context is NULL", what);
+    pthread_mutex_lock(&ctx->mu);
+    bool p = ctx->poisoned;
+    char why[sizeof ctx->poison_why];
+    if (p) memcpy(why, ctx->poison_why, sizeof why);
+    pthread_mutex_unlock(&ctx->mu);
+    if (p) return zxvi_fail(ZXV_E_POISONED, "%s: context halted after a broken invariant: %s", what, why);
+    return ZXV_OK;
+}
+
 int32_t zxv_ctx_halt(zxv_ctx *ctx, const char *reason)
 {
     int32_t rc = zxvi_ctx_enter(ctx);
@@ -652,6 +675,8 @@ int32_t zxv_ccy_enable_with_minor(zxv_ctx *ctx, const char *alpha, uint8_t minor
 int32_t zxv_ccy_register_private(zxv_ctx *ctx, const char *code, uint8_t minor_units)
 {
     if (!ctx || !code) return zxvi_fail(ZXV_E_ARG, "NULL argument");
+    int32_t prc = zxvi_ctx_check(ctx, "ccy_register_private"); /* fail closed first */
+    if (prc) return prc;
     size_t n = strlen(code);
     if (n < 3 || n > ZXV_CODE_MAX)
         return zxvi_fail(ZXV_E_ARG, "private code must be 3..%u characters", ZXV_CODE_MAX);
@@ -771,7 +796,9 @@ int32_t zxv_ledger_open_account(zxv_ctx *ctx, const char *name, const char *ccy,
                                 uint32_t *out_account_id)
 {
     if (!ctx || !out_account_id) return zxvi_fail(ZXV_E_ARG, "NULL argument");
-    int32_t rc = zxvi_check_str(name, ZXV_NAME_MAX, "name", false);
+    int32_t rc = zxvi_ctx_check(ctx, "ledger_open_account"); /* fail closed first */
+    if (rc) return rc;
+    rc = zxvi_check_str(name, ZXV_NAME_MAX, "name", false);
     if (rc) return rc;
     if ((rc = zxvi_check_str(ccy, ZXV_CODE_MAX, "ccy", false))) return rc;
     if (kind != ZXV_ACCT_HOLDER && kind != ZXV_ACCT_ISSUER)
@@ -850,6 +877,7 @@ int32_t zxv_ledger_post(zxv_ctx *ctx, uint32_t from_account, uint32_t to_account
 {
     if (!ctx) return zxvi_fail(ZXV_E_ARG, "ctx is NULL");
     int32_t rc;
+    if ((rc = zxvi_ctx_check(ctx, "ledger_post"))) return rc; /* fail closed first */
     if ((rc = zxvi_check_str(ccy, ZXV_CODE_MAX, "ccy", false))) return rc;
     if ((rc = zxvi_check_str(reference, ZXV_REF_MAX, "reference", false))) return rc;
     if (amount_minor <= 0 || amount_minor > ZXV_AMOUNT_MAX)
@@ -1101,6 +1129,7 @@ int32_t zxvi_ledger_equity(zxv_ctx *ctx, uint32_t account, const char *ccy, int6
 
 struct zxv_msg {
     zxv_ctx *ctx;
+    const zxv_cap *cap; /* zxv_msg_create_cap: re-checked on every call (R10) */
     int32_t kind;
     uint32_t set; /* F_BIT(zxv_mx_field) | F_BIT(16 + zxv_mx_amount) */
     union {
@@ -1112,9 +1141,17 @@ struct zxv_msg {
 
 #define A_BIT(a) (1u << (16 + (a)))
 
-int32_t zxv_msg_create(zxv_ctx *ctx, int32_t kind, zxv_msg **out_msg)
+/* Every msg call: the context must not be halted (fail closed) and, for a
+ * message made by zxv_msg_create_cap, its capability must still pass. */
+static int32_t msg_enter(const zxv_msg *msg, const char *what)
 {
-    if (!ctx || !out_msg) return zxvi_fail(ZXV_E_ARG, "NULL argument");
+    if (!msg) return zxvi_fail(ZXV_E_ARG, "%s: msg is NULL", what);
+    if (msg->cap) return zxvi_cap_gate_ctx(msg->cap, ZXV_CAP_LEDGER_READ, what, msg->ctx);
+    return zxvi_ctx_check(msg->ctx, what);
+}
+
+static int32_t msg_new(zxv_ctx *ctx, const zxv_cap *cap, int32_t kind, zxv_msg **out_msg)
+{
     switch (kind) {
     case ZXV_MX_PACS008:
     case ZXV_MX_CAMT053:
@@ -1133,10 +1170,27 @@ int32_t zxv_msg_create(zxv_ctx *ctx, int32_t kind, zxv_msg **out_msg)
     zxv_msg *m = calloc(1, sizeof *m);
     if (!m) return zxvi_fail(ZXV_E_NOMEM, "message allocation failed");
     m->ctx = ctx;
+    m->cap = cap;
     m->kind = kind;
     if (kind == ZXV_MX_PACS008) m->u.p8.nb_of_txs = 1;
     *out_msg = m;
     return zxvi_ok();
+}
+
+int32_t zxv_msg_create(zxv_ctx *ctx, int32_t kind, zxv_msg **out_msg)
+{
+    if (!ctx || !out_msg) return zxvi_fail(ZXV_E_ARG, "NULL argument");
+    int32_t rc = zxvi_ctx_check(ctx, "msg_create");
+    return rc ? rc : msg_new(ctx, NULL, kind, out_msg);
+}
+
+int32_t zxv_msg_create_cap(const zxv_cap *cap, int32_t kind, zxv_msg **out_msg)
+{
+    zxv_ctx *ctx;
+    int32_t rc = zxvi_cap_gate(cap, ZXV_CAP_LEDGER_READ, "msg_create", &ctx);
+    if (rc) return rc;
+    if (!out_msg) return zxvi_fail(ZXV_E_ARG, "out_msg is NULL");
+    return msg_new(ctx, cap, kind, out_msg);
 }
 
 void zxv_msg_destroy(zxv_msg *msg)
@@ -1176,7 +1230,8 @@ static int32_t wire_ccy_check(zxv_ctx *ctx, const char *ccy, uint8_t *out_minor)
 
 int32_t zxv_msg_set_text(zxv_msg *msg, int32_t field, const char *utf8)
 {
-    if (!msg) return zxvi_fail(ZXV_E_ARG, "msg is NULL");
+    int32_t mrc = msg_enter(msg, "msg_set_text");
+    if (mrc) return mrc;
     char *dst = NULL;
     size_t max = 0;
     bool p8 = msg->kind == ZXV_MX_PACS008;
@@ -1230,7 +1285,8 @@ int32_t zxv_msg_set_text(zxv_msg *msg, int32_t field, const char *utf8)
 
 int32_t zxv_msg_set_amount(zxv_msg *msg, int32_t field, int64_t units, uint8_t frac_digits)
 {
-    if (!msg) return zxvi_fail(ZXV_E_ARG, "msg is NULL");
+    int32_t mrc = msg_enter(msg, "msg_set_amount");
+    if (mrc) return mrc;
     if (frac_digits > 8) return zxvi_fail(ZXV_E_ARG, "frac_digits %u out of range 0..8", frac_digits);
     if (units > ZXV_AMOUNT_MAX || units < -ZXV_AMOUNT_MAX)
         return zxvi_fail(ZXV_E_RANGE, "amount beyond exact range");
@@ -1253,7 +1309,8 @@ int32_t zxv_msg_set_amount(zxv_msg *msg, int32_t field, int64_t units, uint8_t f
 
 int32_t zxv_msg_set_tx_count(zxv_msg *msg, uint32_t nb_of_txs)
 {
-    if (!msg) return zxvi_fail(ZXV_E_ARG, "msg is NULL");
+    int32_t mrc = msg_enter(msg, "msg_set_tx_count");
+    if (mrc) return mrc;
     if (msg->kind != ZXV_MX_PACS008) return zxvi_fail(ZXV_E_FIELD, "NbOfTxs is a pacs.008 field");
     if (nb_of_txs == 0) return zxvi_fail(ZXV_E_ARG, "NbOfTxs must be >= 1");
     msg->u.p8.nb_of_txs = nb_of_txs;
@@ -1263,7 +1320,8 @@ int32_t zxv_msg_set_tx_count(zxv_msg *msg, uint32_t nb_of_txs)
 int32_t zxv_msg_add_entry(zxv_msg *msg, int64_t units, uint8_t frac_digits, int32_t cdt_dbt,
                           int32_t status)
 {
-    if (!msg) return zxvi_fail(ZXV_E_ARG, "msg is NULL");
+    int32_t mrc = msg_enter(msg, "msg_add_entry");
+    if (mrc) return mrc;
     if (msg->kind != ZXV_MX_CAMT053) return zxvi_fail(ZXV_E_FIELD, "entries belong to camt.053");
     if (units <= 0 || units > ZXV_AMOUNT_MAX) return zxvi_fail(ZXV_E_RANGE, "entry amount must be > 0");
     if (frac_digits > 8) return zxvi_fail(ZXV_E_ARG, "frac_digits out of range");
@@ -1331,7 +1389,9 @@ static int32_t msg_validate(zxv_msg *m)
 int32_t zxv_msg_render(zxv_msg *msg, char *buf, size_t cap, size_t *out_len)
 {
     if (!msg || !out_len) return zxvi_fail(ZXV_E_ARG, "NULL argument");
-    int32_t rc = msg_validate(msg);
+    int32_t rc = msg_enter(msg, "msg_render");
+    if (rc) return rc;
+    rc = msg_validate(msg);
     if (rc) return rc;
     uint32_t scap = 8192;
     for (;;) {
@@ -1365,9 +1425,10 @@ struct zxv_netting {
 
 int32_t zxv_netting_open(zxv_ctx *ctx, const char *cycle_id, const char *ccy, zxv_netting **out_cycle)
 {
-    (void) ctx; (void) cycle_id; (void) ccy;
+    (void) cycle_id; (void) ccy;
     if (out_cycle) *out_cycle = NULL;
-    return zxvi_fail(ZXV_E_NOTIMPL, NETTING_TODO);
+    int32_t rc = zxvi_ctx_check(ctx, "netting_open");
+    return rc ? rc : zxvi_fail(ZXV_E_NOTIMPL, NETTING_TODO);
 }
 
 void zxv_netting_destroy(zxv_netting *cycle)
@@ -1441,23 +1502,26 @@ int32_t zxv_card_check_digit(int32_t network, const char *pan, int32_t *out_vali
 int32_t zxv_card_issue(zxv_ctx *ctx, int32_t network, uint32_t account, int64_t limit_minor,
                        uint64_t *out_card_id, char *masked_pan, size_t cap, size_t *out_len)
 {
-    (void) ctx; (void) network; (void) account; (void) limit_minor;
+    (void) network; (void) account; (void) limit_minor;
     (void) out_card_id; (void) masked_pan; (void) cap; (void) out_len;
-    return zxvi_fail(ZXV_E_NOTIMPL, CARDS_TODO);
+    int32_t rc = zxvi_ctx_check(ctx, "card_issue");
+    return rc ? rc : zxvi_fail(ZXV_E_NOTIMPL, CARDS_TODO);
 }
 
 int32_t zxv_card_reissue(zxv_ctx *ctx, uint64_t card_id, uint64_t *out_new_card_id)
 {
-    (void) ctx; (void) card_id; (void) out_new_card_id;
-    return zxvi_fail(ZXV_E_NOTIMPL, CARDS_TODO);
+    (void) card_id; (void) out_new_card_id;
+    int32_t rc = zxvi_ctx_check(ctx, "card_reissue");
+    return rc ? rc : zxvi_fail(ZXV_E_NOTIMPL, CARDS_TODO);
 }
 
 int32_t zxv_card_authorize(zxv_ctx *ctx, uint64_t card_id, int64_t amount_minor, const char *ccy,
                            int32_t *out_response, char *approval_buf, size_t cap, size_t *out_len)
 {
-    (void) ctx; (void) card_id; (void) amount_minor; (void) ccy;
+    (void) card_id; (void) amount_minor; (void) ccy;
     (void) out_response; (void) approval_buf; (void) cap; (void) out_len;
-    return zxvi_fail(ZXV_E_NOTIMPL, CARDS_TODO);
+    int32_t rc = zxvi_ctx_check(ctx, "card_authorize");
+    return rc ? rc : zxvi_fail(ZXV_E_NOTIMPL, CARDS_TODO);
 }
 
 /* ===================================================================== */
@@ -1469,12 +1533,14 @@ int32_t zxv_card_authorize(zxv_ctx *ctx, uint64_t card_id, int64_t amount_minor,
 int32_t zxv_vss_run(zxv_ctx *ctx, int32_t check, int32_t *out_passed, char *detail, size_t cap,
                     size_t *out_len)
 {
-    (void) ctx; (void) check; (void) out_passed; (void) detail; (void) cap; (void) out_len;
-    return zxvi_fail(ZXV_E_NOTIMPL, "VSS conformance not built in yet (kernel/src/cbank cb_vss.h)");
+    (void) check; (void) out_passed; (void) detail; (void) cap; (void) out_len;
+    int32_t rc = zxvi_ctx_check(ctx, "vss_run");
+    return rc ? rc : zxvi_fail(ZXV_E_NOTIMPL, "VSS conformance not built in yet (kernel/src/cbank cb_vss.h)");
 }
 
 int32_t zxv_vss_level_get(zxv_ctx *ctx, int32_t *out_level)
 {
-    (void) ctx; (void) out_level;
-    return zxvi_fail(ZXV_E_NOTIMPL, "VSS conformance not built in yet (kernel/src/cbank cb_vss.h)");
+    (void) out_level;
+    int32_t rc = zxvi_ctx_check(ctx, "vss_level_get");
+    return rc ? rc : zxvi_fail(ZXV_E_NOTIMPL, "VSS conformance not built in yet (kernel/src/cbank cb_vss.h)");
 }

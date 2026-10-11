@@ -10,9 +10,9 @@ stops. Every SDK README repeats the limits that apply to it.
 
 | Property | How |
 |---|---|
-| Least privilege | Every gated call carries a capability handle, checked in C on every call. Capabilities can only be narrowed; revoking one revokes all its children. |
-| Attestation gate | A capability whose attestation is not `TRUE` (including the contradictory `BOTH`) is refused. |
-| Fail-closed | A broken ledger invariant rolls back and poisons the context in C. Every later call fails with `ZXV_E_POISONED`. SDKs raise a terminal error type and offer an opt-in process abort. |
+| Least privilege | Every gated call carries a capability handle, checked in C on every call. Capabilities can only be narrowed; revoking one revokes all its children. A cap from one context is refused on another context's handles. The 1.0 calls without a cap remain for compatibility and are deprecated in favour of their `_cap` forms. |
+| Attestation gate | A capability whose attestation is not `TRUE` (including the contradictory `BOTH`) is refused. A child cap copies its parent's attestation when it is made; a later change on the parent does not reach existing children (revocation does). |
+| Fail-closed | A broken ledger invariant rolls back and poisons the context in C. Every later call on it, or on any handle made from it, fails with `ZXV_E_POISONED` before its arguments are even checked. SDKs raise a terminal error type and offer an opt-in process abort. |
 | No silent float drift | No API takes a float. A host double enters only through a method named `fromDoubleExact`, which keeps its exact binary value. |
 | Secret wiping | Secret keys and shared secrets live in memory the SDK allocates outside the garbage-collected heap where the language allows, and are wiped with `zxv_secure_zero` on close and by a finalizer as a backstop. Expanded keys and randomness inside libzxv are wiped after each operation. |
 | Post-quantum crypto | ML-KEM-1024 (FIPS 203) and ML-DSA-87 (FIPS 204) from the kernel's vendored reference code, checked against NIST ACVP vectors in the kernel tests. |

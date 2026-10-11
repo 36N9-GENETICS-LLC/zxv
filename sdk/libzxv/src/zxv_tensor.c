@@ -24,6 +24,7 @@
 #include "zt_tok.h"
 
 int32_t zxvi_rmag_charge(zxv_rmag *rmag, uint32_t budget, uint64_t n);
+zxv_ctx *zxvi_rmag_ctx(const zxv_rmag *rmag);
 
 struct zxv_model {
     uint8_t *file, *tok_file; /* owned bytes (tok_file NULL = same file) */
@@ -369,9 +370,14 @@ int32_t zxv_generate(const zxv_cap *cap, zxv_session *session, const uint8_t *pr
                      uint32_t repeat_last_n, uint64_t seed, zxv_token_fn on_token, void *user,
                      uint32_t *out_n_prompt, uint32_t *out_n_generated, int32_t *out_stop)
 {
-    int32_t rc = zxvi_cap_gate(cap, ZXV_CAP_AI_INFERENCE, "generate", NULL);
+    zxv_ctx *cctx;
+    int32_t rc = zxvi_cap_gate(cap, ZXV_CAP_AI_INFERENCE, "generate", &cctx);
     if (rc) return rc;
     if (!session || (!prompt && prompt_len)) return zxvi_fail(ZXV_E_ARG, "NULL argument");
+    /* A bound budget is charged on this cap's authority: it must belong to
+     * the same context (ABI 1.2), and that context must not be halted. */
+    if (session->rmag && zxvi_rmag_ctx(session->rmag) != cctx)
+        return zxvi_fail(ZXV_E_CAP, "generate: the bound budget belongs to a different context than the capability");
     if (temperature_q16 < 0 || top_p_q16 < 0 || repeat_penalty_q16 < 0)
         return zxvi_fail(ZXV_E_ARG, "sampling parameters must be >= 0");
     const zxv_model *M = session->model;

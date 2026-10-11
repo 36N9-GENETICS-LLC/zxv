@@ -18,10 +18,25 @@
 #include "lpres.h"
 #include "rational.h"
 #include "zt_harmonic_wire.h"
+#include "zxv_q16.h"
 
-#if defined(__APPLE__) || defined(__OpenBSD__) || defined(__FreeBSD__)
+/* OS randomness for zxv_random. ZXV_HAVE_ARC4RANDOM may also come from the
+ * build (the TypeScript wasm build maps it to WASI random_get). */
+#if defined(ZXV_HAVE_ARC4RANDOM)
 #    include <stdlib.h> /* arc4random_buf */
+#elif defined(__APPLE__) || defined(__OpenBSD__) || defined(__FreeBSD__) || defined(__NetBSD__)
+#    include <stdlib.h>
 #    define ZXV_HAVE_ARC4RANDOM 1
+#elif defined(_WIN32)
+#    include <windows.h>
+#    include <bcrypt.h> /* BCryptGenRandom; link bcrypt.lib / -lbcrypt */
+#    if defined(_MSC_VER)
+#        pragma comment(lib, "bcrypt")
+#    endif
+#    define ZXV_RANDOM_BCRYPT 1
+#elif defined(__wasi__)
+#    include <unistd.h> /* getentropy, over WASI random_get */
+#    define ZXV_RANDOM_GETENTROPY 1
 #elif defined(__linux__)
 #    include <sys/random.h>
 #    include <errno.h>
@@ -209,12 +224,11 @@ int32_t zxv_rat_to_q16(int64_t num, int64_t den, int32_t *out_q16)
     rat_t r = {0, 1, false};
     int32_t rc = rat_in(num, den, &r, "value");
     if (rc) return rc;
-    __int128 scaled = (__int128) r.num * 65536;
-    __int128 q = scaled / r.den, rem = scaled % r.den;
-    if (rem < 0) rem = -rem;
-    if (2 * rem >= (__int128) r.den) q += scaled < 0 ? -1 : 1;
-    if (q > INT32_MAX || q < INT32_MIN) return zxvi_fail(ZXV_E_RANGE, "value is outside Q16.16");
-    *out_q16 = (int32_t) q;
+    int32_t q;
+    /* zxv_q16.h: __int128 where the compiler has it, else a portable
+     * 64-bit long division with the same result. */
+    if (!zxv_q16_round(r.num, r.den, &q)) return zxvi_fail(ZXV_E_RANGE, "value is outside Q16.16");
+    *out_q16 = q;
     return zxvi_ok();
 }
 
@@ -319,6 +333,8 @@ int32_t zxv_cap_attenuate(const zxv_cap *parent, uint64_t keep, zxv_cap **out_ca
 {
     if (!parent || parent->magic != CAP_MAGIC || !out_cap)
         return zxvi_fail(ZXV_E_ARG, "parent is not a capability or out_cap is NULL");
+    int32_t rc = zxvi_ctx_check(parent->ctx, "cap_attenuate");
+    if (rc) return rc;
     if (!cap_live(parent)) return zxvi_fail(ZXV_E_CAP, "parent capability is revoked");
     zxv_cap *c = calloc(1, sizeof *c);
     if (!c) return zxvi_fail(ZXV_E_NOMEM, "capability allocation failed");
@@ -345,6 +361,8 @@ int32_t zxv_cap_set_attestation(zxv_cap *cap, int32_t lp_state)
 {
     if (!cap || cap->magic != CAP_MAGIC) return zxvi_fail(ZXV_E_ARG, "not a capability");
     if (!lp_ok(lp_state)) return zxvi_fail(ZXV_E_ARG, "attestation %d is not a ZXV_LP_* value", lp_state);
+    int32_t rc = zxvi_ctx_check(cap->ctx, "cap_set_attestation");
+    if (rc) return rc;
     atomic_store(&cap->attestation, lp_state);
     return zxvi_ok();
 }
@@ -353,6 +371,8 @@ int32_t zxv_cap_info(const zxv_cap *cap, uint64_t *out_caps, uint32_t *out_proce
                      int32_t *out_attestation, int32_t *out_revoked)
 {
     if (!cap || cap->magic != CAP_MAGIC) return zxvi_fail(ZXV_E_ARG, "not a capability");
+    int32_t rc = zxvi_ctx_check(cap->ctx, "cap_info");
+    if (rc) return rc;
     if (out_caps) *out_caps = cap->caps;
     if (out_process_id) *out_process_id = cap->process_id;
     if (out_attestation) *out_attestation = atomic_load(&((zxv_cap *) cap)->attestation);
@@ -364,6 +384,9 @@ int32_t zxvi_cap_gate(const zxv_cap *cap, uint64_t needed, const char *what, zxv
 {
     if (!cap || cap->magic != CAP_MAGIC)
         return zxvi_fail(ZXV_E_ARG, "%s: cap is NULL or not a capability", what);
+    /* Fail closed first: a halted context is FATAL whatever the cap says. */
+    if (zxvi_ctx_is_poisoned(cap->ctx))
+        return zxvi_fail(ZXV_E_POISONED, "%s: context halted after a broken invariant", what);
     if (!cap_live(cap)) return zxvi_fail(ZXV_E_CAP, "%s: capability is revoked", what);
     if ((cap->caps & needed) != needed)
         return zxvi_fail(ZXV_E_CAP, "%s: capability lacks 0x%llx", what,
@@ -372,9 +395,19 @@ int32_t zxvi_cap_gate(const zxv_cap *cap, uint64_t needed, const char *what, zxv
     if (att != ZXV_LP_TRUE)
         return zxvi_fail(ZXV_E_CAP, "%s: attestation is %s%s", what, zxv_lp_name(att),
                          att == ZXV_LP_BOTH ? " (contradictory attestation)" : "");
-    if (zxvi_ctx_is_poisoned(cap->ctx))
-        return zxvi_fail(ZXV_E_POISONED, "%s: context halted after a broken invariant", what);
     if (out_ctx) *out_ctx = cap->ctx;
+    return ZXV_OK;
+}
+
+int32_t zxvi_cap_gate_ctx(const zxv_cap *cap, uint64_t needed, const char *what,
+                          zxv_ctx *handle_ctx)
+{
+    zxv_ctx *ctx;
+    int32_t rc = zxvi_cap_gate(cap, needed, what, &ctx);
+    if (rc) return rc;
+    if (ctx != handle_ctx)
+        return zxvi_fail(ZXV_E_CAP, "%s: capability belongs to a different context than the handle",
+                         what);
     return ZXV_OK;
 }
 
@@ -418,6 +451,81 @@ int32_t zxv_ledger_check_cap(const zxv_cap *cap)
     return rc ? rc : zxv_ledger_check(ctx);
 }
 
+/* ABI 1.2: the rest of the 1.0 context surface through a capability (R10).
+ * Changing configuration or opening accounts needs LEDGER_POST; reading
+ * accounts and journals needs LEDGER_READ. Semantics are the ctx forms'. */
+#define CAP_CTX(bit, name)                                       \
+    zxv_ctx *ctx;                                                \
+    int32_t rc = zxvi_cap_gate(cap, (bit), (name), &ctx);        \
+    if (rc) return rc
+
+int32_t zxv_ccy_enable_cap(const zxv_cap *cap, const char *alpha)
+{
+    CAP_CTX(ZXV_CAP_LEDGER_POST, "ccy_enable");
+    return zxv_ccy_enable(ctx, alpha);
+}
+
+int32_t zxv_ccy_enable_with_minor_cap(const zxv_cap *cap, const char *alpha, uint8_t minor_units)
+{
+    CAP_CTX(ZXV_CAP_LEDGER_POST, "ccy_enable_with_minor");
+    return zxv_ccy_enable_with_minor(ctx, alpha, minor_units);
+}
+
+int32_t zxv_ccy_register_private_cap(const zxv_cap *cap, const char *code, uint8_t minor_units)
+{
+    CAP_CTX(ZXV_CAP_LEDGER_POST, "ccy_register_private");
+    return zxv_ccy_register_private(ctx, code, minor_units);
+}
+
+int32_t zxv_ledger_open_account_cap(const zxv_cap *cap, const char *name, const char *ccy,
+                                    int32_t kind, uint32_t *out_account_id)
+{
+    CAP_CTX(ZXV_CAP_LEDGER_POST, "ledger_open_account");
+    return zxv_ledger_open_account(ctx, name, ccy, kind, out_account_id);
+}
+
+int32_t zxv_ledger_account_ccy_cap(const zxv_cap *cap, uint32_t account, char *buf, size_t cap_len,
+                                   size_t *out_len)
+{
+    CAP_CTX(ZXV_CAP_LEDGER_READ, "ledger_account_ccy");
+    return zxv_ledger_account_ccy(ctx, account, buf, cap_len, out_len);
+}
+
+int32_t zxv_ledger_account_name_cap(const zxv_cap *cap, uint32_t account, char *buf, size_t cap_len,
+                                    size_t *out_len)
+{
+    CAP_CTX(ZXV_CAP_LEDGER_READ, "ledger_account_name");
+    return zxv_ledger_account_name(ctx, account, buf, cap_len, out_len);
+}
+
+int32_t zxv_ledger_account_kind_cap(const zxv_cap *cap, uint32_t account, int32_t *out_kind)
+{
+    CAP_CTX(ZXV_CAP_LEDGER_READ, "ledger_account_kind");
+    return zxv_ledger_account_kind(ctx, account, out_kind);
+}
+
+int32_t zxv_ledger_account_count_cap(const zxv_cap *cap, uint32_t *out_count)
+{
+    CAP_CTX(ZXV_CAP_LEDGER_READ, "ledger_account_count");
+    return zxv_ledger_account_count(ctx, out_count);
+}
+
+int32_t zxv_ledger_entry_count_cap(const zxv_cap *cap, uint32_t account, uint32_t *out_count)
+{
+    CAP_CTX(ZXV_CAP_LEDGER_READ, "ledger_entry_count");
+    return zxv_ledger_entry_count(ctx, account, out_count);
+}
+
+int32_t zxv_ledger_entry_at_cap(const zxv_cap *cap, uint32_t account, uint32_t index,
+                                uint64_t *out_entry_id, int64_t *out_signed_minor,
+                                uint32_t *out_counterparty, char *ref_buf, size_t ref_cap,
+                                size_t *out_ref_len)
+{
+    CAP_CTX(ZXV_CAP_LEDGER_READ, "ledger_entry_at");
+    return zxv_ledger_entry_at(ctx, account, index, out_entry_id, out_signed_minor,
+                               out_counterparty, ref_buf, ref_cap, out_ref_len);
+}
+
 /* ===================================================================== */
 /* Attestation registry (kernel/src/lpres)                               */
 /* ===================================================================== */
@@ -431,6 +539,8 @@ struct zxv_lpres {
 int32_t zxv_lpres_create(zxv_ctx *ctx, zxv_lpres **out_reg)
 {
     if (!ctx || !out_reg) return zxvi_fail(ZXV_E_ARG, "ctx or out_reg is NULL");
+    int32_t rc = zxvi_ctx_check(ctx, "lpres_create");
+    if (rc) return rc;
     zxv_lpres *r = calloc(1, sizeof *r);
     if (!r) return zxvi_fail(ZXV_E_NOMEM, "registry allocation failed");
     r->ctx = ctx;
@@ -438,6 +548,13 @@ int32_t zxv_lpres_create(zxv_ctx *ctx, zxv_lpres **out_reg)
     lpres_registry_init(&r->reg);
     *out_reg = r;
     return zxvi_ok();
+}
+
+int32_t zxv_lpres_create_cap(const zxv_cap *cap, zxv_lpres **out_reg)
+{
+    zxv_ctx *ctx;
+    int32_t rc = zxvi_cap_gate(cap, ZXV_CAP_ATTEST, "lpres_create", &ctx);
+    return rc ? rc : zxv_lpres_create(ctx, out_reg);
 }
 
 void zxv_lpres_destroy(zxv_lpres *reg)
@@ -451,9 +568,9 @@ int32_t zxv_lpres_attest(const zxv_cap *cap, zxv_lpres *reg, const char *name, i
                          int32_t lp_state, const char *attester, const uint8_t *digest,
                          uint32_t digest_len, uint32_t *out_index)
 {
-    int32_t rc = zxvi_cap_gate(cap, ZXV_CAP_ATTEST, "lpres_attest", NULL);
-    if (rc) return rc;
     if (!reg || !out_index) return zxvi_fail(ZXV_E_ARG, "reg or out_index is NULL");
+    int32_t rc = zxvi_cap_gate_ctx(cap, ZXV_CAP_ATTEST, "lpres_attest", reg->ctx);
+    if (rc) return rc;
     if ((rc = zxvi_check_str(name, LPRES_MAX_NAME_LEN - 1, "name", false)) ||
         (rc = zxvi_check_str(attester, LPRES_MAX_NAME_LEN - 1, "attester", false)))
         return rc;
@@ -477,9 +594,9 @@ int32_t zxv_lpres_attest(const zxv_cap *cap, zxv_lpres *reg, const char *name, i
 
 int32_t zxv_lpres_evidence(const zxv_cap *cap, zxv_lpres *reg, uint32_t index, int32_t positive)
 {
-    int32_t rc = zxvi_cap_gate(cap, ZXV_CAP_ATTEST, "lpres_evidence", NULL);
-    if (rc) return rc;
     if (!reg) return zxvi_fail(ZXV_E_ARG, "reg is NULL");
+    int32_t rc = zxvi_cap_gate_ctx(cap, ZXV_CAP_ATTEST, "lpres_evidence", reg->ctx);
+    if (rc) return rc;
     pthread_mutex_lock(&reg->mu);
     bool okay = lpres_add_evidence(&reg->reg, index, positive != 0);
     lpres_attestation_t *a = okay ? lpres_get(&reg->reg, index) : NULL;
@@ -496,6 +613,8 @@ int32_t zxv_lpres_evidence(const zxv_cap *cap, zxv_lpres *reg, uint32_t index, i
 int32_t zxv_lpres_find(zxv_lpres *reg, const char *name, uint32_t *out_index)
 {
     if (!reg || !name || !out_index) return zxvi_fail(ZXV_E_ARG, "NULL argument");
+    int32_t rc = zxvi_ctx_check(reg->ctx, "lpres_find");
+    if (rc) return rc;
     pthread_mutex_lock(&reg->mu);
     lpres_attestation_t *a = lpres_find(&reg->reg, name);
     uint32_t idx = a ? (uint32_t) (a - reg->reg.attestations) : 0;
@@ -509,6 +628,8 @@ int32_t zxv_lpres_state(zxv_lpres *reg, uint32_t index, int32_t *out_lp_state,
                         uint32_t *out_positive, uint32_t *out_negative)
 {
     if (!reg) return zxvi_fail(ZXV_E_ARG, "reg is NULL");
+    int32_t rc = zxvi_ctx_check(reg->ctx, "lpres_state");
+    if (rc) return rc;
     pthread_mutex_lock(&reg->mu);
     lpres_attestation_t *a = lpres_get(&reg->reg, index);
     if (a) {
@@ -524,6 +645,8 @@ int32_t zxv_lpres_state(zxv_lpres *reg, uint32_t index, int32_t *out_lp_state,
 int32_t zxv_lpres_gate(zxv_lpres *reg, int32_t *out_clear)
 {
     if (!reg || !out_clear) return zxvi_fail(ZXV_E_ARG, "reg or out_clear is NULL");
+    int32_t rc = zxvi_ctx_check(reg->ctx, "lpres_gate");
+    if (rc) return rc;
     pthread_mutex_lock(&reg->mu);
     *out_clear = lpres_safety_gate_clear(&reg->reg) ? 1 : 0;
     pthread_mutex_unlock(&reg->mu);
@@ -547,6 +670,8 @@ int32_t zxv_wire_pack(uint8_t tag, const uint32_t s_plus[3], const uint32_t s_mi
                       uint8_t out_frame[21])
 {
     if (!s_plus || !s_minus || !out_frame) return zxvi_fail(ZXV_E_ARG, "NULL argument");
+    /* A tag is 100*sync + 10*shell + trunk with sync 0..1, so 0..199. */
+    if (tag > 199) return zxvi_fail(ZXV_E_ARG, "tag %u is not 0..199 (100*sync + 10*shell + trunk)", tag);
     zt_ubh168_wire_frame_t f;
     zt_wire_pack_tagged(tag, s_plus, s_minus, &f);
     zt_wire_to_octets(&f, out_frame);
@@ -679,6 +804,23 @@ int32_t zxv_random(uint8_t *buf, size_t len)
     if (!buf && len) return zxvi_fail(ZXV_E_ARG, "buf is NULL");
 #if defined(ZXV_HAVE_ARC4RANDOM)
     arc4random_buf(buf, len);
+    return zxvi_ok();
+#elif defined(ZXV_RANDOM_BCRYPT)
+    size_t got = 0;
+    while (got < len) {
+        ULONG n = len - got > 0x40000000u ? 0x40000000u : (ULONG) (len - got);
+        if (BCryptGenRandom(NULL, buf + got, n, BCRYPT_USE_SYSTEM_PREFERRED_RNG) < 0)
+            return zxvi_fail(ZXV_E_IO, "BCryptGenRandom failed");
+        got += n;
+    }
+    return zxvi_ok();
+#elif defined(ZXV_RANDOM_GETENTROPY)
+    size_t got = 0;
+    while (got < len) {
+        size_t n = len - got > 256 ? 256 : len - got; /* getentropy's limit */
+        if (getentropy(buf + got, n) != 0) return zxvi_fail(ZXV_E_IO, "getentropy failed");
+        got += n;
+    }
     return zxvi_ok();
 #elif defined(__linux__)
     size_t got = 0;

@@ -28,11 +28,68 @@
 struct zxv_rmag {
     zxv_ctx *ctx;
     pthread_mutex_t mu;
+    pthread_cond_t idle;  /* signalled when inflight drops to zero        */
+    uint32_t inflight;    /* listener calls started and not yet returned   */
     rmag_registry_t reg;
     uint64_t epoch[RMAG_MAX_BUDGET_ENTRIES];
     zxv_rmag_listener listener;
     void *user;
 };
+
+/* Listener delivery (ABI 1.2).
+ *
+ * A call decides under the budget lock whether an event fires, copies the
+ * listener and its user pointer, and counts the delivery as in flight
+ * (inflight++) BEFORE it drops the lock. zxv_rmag_listen replaces the
+ * listener and then waits until no delivery is in flight, so once it
+ * returns the old listener is not running on any thread and never will be:
+ * the host may free the old `user` immediately. (Without this a removal
+ * could return while another thread was still inside, or about to enter,
+ * the old callback: a use-after-free of `user`.)
+ *
+ * A listener may call back into the library, including zxv_rmag_listen on
+ * its own zxv_rmag. That call cannot wait for itself, so from inside a
+ * callback it swaps the listener without waiting (the frames list below
+ * tells it so). The calling thread's error detail (R7) is saved around the
+ * callback and restored, so the status detail the outer call returns is the
+ * outer call's, whatever the listener did. */
+typedef struct cb_frame {
+    const zxv_rmag *m;
+    struct cb_frame *next;
+} cb_frame;
+static _Thread_local cb_frame *tl_frames;
+
+static bool in_callback_of(const zxv_rmag *m)
+{
+    for (const cb_frame *f = tl_frames; f; f = f->next)
+        if (f->m == m) return true;
+    return false;
+}
+
+/* Call with m->mu held: claim a delivery if there is a listener. */
+static zxv_rmag_listener claim(zxv_rmag *m, void **user)
+{
+    zxv_rmag_listener fn = m->listener;
+    *user = m->user;
+    if (fn) m->inflight++;
+    return fn;
+}
+
+/* Call without the lock, once per successful claim. */
+static void deliver(zxv_rmag *m, uint32_t budget, int32_t ev, zxv_rmag_listener fn, void *user)
+{
+    if (!fn) return;
+    char saved[ZXVI_ERR_MAX];
+    zxvi_err_save(saved);
+    cb_frame f = {m, tl_frames};
+    tl_frames = &f;
+    fn(user, budget, ev);
+    tl_frames = f.next;
+    zxvi_err_restore(saved);
+    pthread_mutex_lock(&m->mu);
+    if (--m->inflight == 0) pthread_cond_broadcast(&m->idle);
+    pthread_mutex_unlock(&m->mu);
+}
 
 static int32_t to_rmag(int64_t num, int64_t den, bool allow_zero, rmag_rational_t *out,
                        rat_t *exact)
@@ -61,28 +118,45 @@ static rat_t from_rmag(rmag_rational_t r)
 int32_t zxv_rmag_create(zxv_ctx *ctx, zxv_rmag **out_rmag)
 {
     if (!ctx || !out_rmag) return zxvi_fail(ZXV_E_ARG, "ctx or out_rmag is NULL");
+    int32_t rc = zxvi_ctx_check(ctx, "rmag_create");
+    if (rc) return rc;
     zxv_rmag *m = calloc(1, sizeof *m);
     if (!m) return zxvi_fail(ZXV_E_NOMEM, "rmag allocation failed");
     m->ctx = ctx;
     pthread_mutex_init(&m->mu, NULL);
+    pthread_cond_init(&m->idle, NULL);
     rmag_registry_init(&m->reg);
     *out_rmag = m;
     return zxvi_ok();
 }
 
+int32_t zxv_rmag_create_cap(const zxv_cap *cap, zxv_rmag **out_rmag)
+{
+    zxv_ctx *ctx;
+    int32_t rc = zxvi_cap_gate(cap, ZXV_CAP_BUDGET, "rmag_create", &ctx);
+    return rc ? rc : zxv_rmag_create(ctx, out_rmag);
+}
+
 void zxv_rmag_destroy(zxv_rmag *rmag)
 {
     if (!rmag) return;
+    pthread_cond_destroy(&rmag->idle);
     pthread_mutex_destroy(&rmag->mu);
     free(rmag);
+}
+
+zxv_ctx *zxvi_rmag_ctx(const zxv_rmag *rmag);
+zxv_ctx *zxvi_rmag_ctx(const zxv_rmag *rmag)
+{
+    return rmag->ctx;
 }
 
 int32_t zxv_rmag_budget(const zxv_cap *cap, zxv_rmag *rmag, const char *name, int32_t resource,
                         int64_t limit_num, int64_t limit_den, int32_t enforce, uint32_t *out_budget)
 {
-    int32_t rc = zxvi_cap_gate(cap, ZXV_CAP_BUDGET, "rmag_budget", NULL);
-    if (rc) return rc;
     if (!rmag || !out_budget) return zxvi_fail(ZXV_E_ARG, "rmag or out_budget is NULL");
+    int32_t rc = zxvi_cap_gate_ctx(cap, ZXV_CAP_BUDGET, "rmag_budget", rmag->ctx);
+    if (rc) return rc;
     if ((rc = zxvi_check_str(name, RMAG_MAX_NAME_LEN - 1, "name", false))) return rc;
     if (resource < 0 || resource >= RMAG_RES_COUNT)
         return zxvi_fail(ZXV_E_ARG, "resource %d is not 0..%d", resource, RMAG_RES_COUNT - 1);
@@ -96,23 +170,15 @@ int32_t zxv_rmag_budget(const zxv_cap *cap, zxv_rmag *rmag, const char *name, in
     return zxvi_ok();
 }
 
-static void notify(zxv_rmag *m, uint32_t budget, int32_t ev, zxv_rmag_listener fn, void *user)
-{
-    (void) m;
-    if (fn) fn(user, budget, ev);
-}
-
 int32_t zxv_rmag_consume(const zxv_cap *cap, zxv_rmag *rmag, uint32_t budget, int64_t num,
                          int64_t den)
 {
-    int32_t rc = zxvi_cap_gate(cap, ZXV_CAP_BUDGET, "rmag_consume", NULL);
-    if (rc) return rc;
     if (!rmag) return zxvi_fail(ZXV_E_ARG, "rmag is NULL");
+    int32_t rc = zxvi_cap_gate_ctx(cap, ZXV_CAP_BUDGET, "rmag_consume", rmag->ctx);
+    if (rc) return rc;
     rmag_rational_t amt;
     rat_t exact;
     pthread_mutex_lock(&rmag->mu);
-    zxv_rmag_listener fn = rmag->listener;
-    void *user = rmag->user;
     if (budget >= rmag->reg.budget_count) {
         pthread_mutex_unlock(&rmag->mu);
         return zxvi_fail(ZXV_E_NOT_FOUND, "budget %u does not exist", budget);
@@ -130,22 +196,22 @@ int32_t zxv_rmag_consume(const zxv_cap *cap, zxv_rmag *rmag, uint32_t budget, in
                                        : zxvi_fail(ZXV_E_RMAG_INVALID, "rmag refused the amount (%s)",
                                                    rmag_result_name(r));
     }
+    int32_t ev = rc == ZXV_E_BUDGET ? ZXV_RMAG_EV_DENIED : rc == ZXV_E_RMAG_INVALID ? ZXV_RMAG_EV_INVALID : 0;
+    void *user = NULL;
+    zxv_rmag_listener fn = ev ? claim(rmag, &user) : NULL;
     pthread_mutex_unlock(&rmag->mu);
-    if (rc == ZXV_E_BUDGET) notify(rmag, budget, ZXV_RMAG_EV_DENIED, fn, user);
-    if (rc == ZXV_E_RMAG_INVALID) notify(rmag, budget, ZXV_RMAG_EV_INVALID, fn, user);
+    deliver(rmag, budget, ev, fn, user);
     return rc;
 }
 
 int32_t zxv_rmag_release(const zxv_cap *cap, zxv_rmag *rmag, uint32_t budget, int64_t num,
                          int64_t den)
 {
-    int32_t rc = zxvi_cap_gate(cap, ZXV_CAP_BUDGET, "rmag_release", NULL);
-    if (rc) return rc;
     if (!rmag) return zxvi_fail(ZXV_E_ARG, "rmag is NULL");
+    int32_t rc = zxvi_cap_gate_ctx(cap, ZXV_CAP_BUDGET, "rmag_release", rmag->ctx);
+    if (rc) return rc;
     rmag_rational_t amt;
     pthread_mutex_lock(&rmag->mu);
-    zxv_rmag_listener fn = rmag->listener;
-    void *user = rmag->user;
     if (budget >= rmag->reg.budget_count) {
         pthread_mutex_unlock(&rmag->mu);
         return zxvi_fail(ZXV_E_NOT_FOUND, "budget %u does not exist", budget);
@@ -158,23 +224,23 @@ int32_t zxv_rmag_release(const zxv_cap *cap, zxv_rmag *rmag, uint32_t budget, in
                                              rmag_result_name(r));
         if (rc == ZXV_OK) rmag->epoch[budget]++;
     }
+    void *user = NULL;
+    zxv_rmag_listener fn = claim(rmag, &user);
     pthread_mutex_unlock(&rmag->mu);
-    notify(rmag, budget, rc == ZXV_OK ? ZXV_RMAG_EV_REPLENISHED : ZXV_RMAG_EV_INVALID, fn, user);
+    deliver(rmag, budget, rc == ZXV_OK ? ZXV_RMAG_EV_REPLENISHED : ZXV_RMAG_EV_INVALID, fn, user);
     return rc;
 }
 
 int32_t zxv_rmag_set_limit(const zxv_cap *cap, zxv_rmag *rmag, uint32_t budget, int64_t num,
                            int64_t den)
 {
-    int32_t rc = zxvi_cap_gate(cap, ZXV_CAP_BUDGET, "rmag_set_limit", NULL);
-    if (rc) return rc;
     if (!rmag) return zxvi_fail(ZXV_E_ARG, "rmag is NULL");
+    int32_t rc = zxvi_cap_gate_ctx(cap, ZXV_CAP_BUDGET, "rmag_set_limit", rmag->ctx);
+    if (rc) return rc;
     rmag_rational_t lim;
     rat_t exact;
     if ((rc = to_rmag(num, den, true, &lim, &exact))) return rc;
     pthread_mutex_lock(&rmag->mu);
-    zxv_rmag_listener fn = rmag->listener;
-    void *user = rmag->user;
     if (budget >= rmag->reg.budget_count) {
         pthread_mutex_unlock(&rmag->mu);
         return zxvi_fail(ZXV_E_NOT_FOUND, "budget %u does not exist", budget);
@@ -183,9 +249,12 @@ int32_t zxv_rmag_set_limit(const zxv_cap *cap, zxv_rmag *rmag, uint32_t budget, 
     bool grew = rat_cmp(exact, from_rmag(b->limit)) > 0;
     b->limit = rmag_rational_reduce(lim);
     if (grew) rmag->epoch[budget]++;
+    void *user = NULL;
+    zxv_rmag_listener fn = grew ? claim(rmag, &user) : NULL;
     pthread_mutex_unlock(&rmag->mu);
-    if (grew) notify(rmag, budget, ZXV_RMAG_EV_REPLENISHED, fn, user);
-    return zxvi_ok();
+    zxvi_ok();
+    deliver(rmag, budget, ZXV_RMAG_EV_REPLENISHED, fn, user);
+    return ZXV_OK;
 }
 
 int32_t zxv_rmag_status(zxv_rmag *rmag, uint32_t budget, int64_t *out_rem_num,
@@ -193,6 +262,8 @@ int32_t zxv_rmag_status(zxv_rmag *rmag, uint32_t budget, int64_t *out_rem_num,
                         uint64_t *out_epoch)
 {
     if (!rmag) return zxvi_fail(ZXV_E_ARG, "rmag is NULL");
+    int32_t rc = zxvi_ctx_check(rmag->ctx, "rmag_status");
+    if (rc) return rc;
     pthread_mutex_lock(&rmag->mu);
     if (budget >= rmag->reg.budget_count) {
         pthread_mutex_unlock(&rmag->mu);
@@ -217,9 +288,14 @@ int32_t zxv_rmag_status(zxv_rmag *rmag, uint32_t budget, int64_t *out_rem_num,
 int32_t zxv_rmag_listen(zxv_rmag *rmag, zxv_rmag_listener fn, void *user)
 {
     if (!rmag) return zxvi_fail(ZXV_E_ARG, "rmag is NULL");
+    int32_t rc = zxvi_ctx_check(rmag->ctx, "rmag_listen");
+    if (rc) return rc;
+    bool nested = in_callback_of(rmag);
     pthread_mutex_lock(&rmag->mu);
     rmag->listener = fn;
     rmag->user = fn ? user : NULL;
+    /* Wait out every delivery already claimed (see "Listener delivery"). */
+    while (!nested && rmag->inflight > 0) pthread_cond_wait(&rmag->idle, &rmag->mu);
     pthread_mutex_unlock(&rmag->mu);
     return zxvi_ok();
 }
@@ -230,10 +306,9 @@ int32_t zxvi_rmag_charge(zxv_rmag *rmag, uint32_t budget, uint64_t n)
 {
     if (n == 0) return ZXV_OK;
     if (n > (uint64_t) INT64_MAX) return zxvi_fail(ZXV_E_RANGE, "charge too large");
+    int32_t rc = zxvi_ctx_check(rmag->ctx, "rmag_charge");
+    if (rc) return rc;
     pthread_mutex_lock(&rmag->mu);
-    zxv_rmag_listener fn = rmag->listener;
-    void *user = rmag->user;
-    int32_t rc;
     if (budget >= rmag->reg.budget_count) {
         rc = zxvi_fail(ZXV_E_NOT_FOUND, "bound budget %u does not exist", budget);
     } else {
@@ -247,8 +322,10 @@ int32_t zxvi_rmag_charge(zxv_rmag *rmag, uint32_t budget, uint64_t n)
                                            : zxvi_fail(ZXV_E_RMAG_INVALID, "%s", rmag_result_name(r));
         }
     }
+    void *user = NULL;
+    zxv_rmag_listener fn = rc == ZXV_E_BUDGET ? claim(rmag, &user) : NULL;
     pthread_mutex_unlock(&rmag->mu);
-    if (rc == ZXV_E_BUDGET) notify(rmag, budget, ZXV_RMAG_EV_DENIED, fn, user);
+    deliver(rmag, budget, ZXV_RMAG_EV_DENIED, fn, user);
     return rc;
 }
 
@@ -274,6 +351,8 @@ struct zxv_phase {
 int32_t zxv_phase_create(zxv_ctx *ctx, zxv_phase **out_phase)
 {
     if (!ctx || !out_phase) return zxvi_fail(ZXV_E_ARG, "ctx or out_phase is NULL");
+    int32_t rc = zxvi_ctx_check(ctx, "phase_create");
+    if (rc) return rc;
     zxv_phase *p = calloc(1, sizeof *p);
     if (!p) return zxvi_fail(ZXV_E_NOMEM, "phase allocation failed");
     p->ctx = ctx;
@@ -282,6 +361,13 @@ int32_t zxv_phase_create(zxv_ctx *ctx, zxv_phase **out_phase)
     p->next_ev = 1;
     *out_phase = p;
     return zxvi_ok();
+}
+
+int32_t zxv_phase_create_cap(const zxv_cap *cap, zxv_phase **out_phase)
+{
+    zxv_ctx *ctx;
+    int32_t rc = zxvi_cap_gate(cap, ZXV_CAP_PHASE, "phase_create", &ctx);
+    return rc ? rc : zxv_phase_create(ctx, out_phase);
 }
 
 void zxv_phase_destroy(zxv_phase *phase)
@@ -295,6 +381,8 @@ void zxv_phase_destroy(zxv_phase *phase)
 int32_t zxv_phase_now(zxv_phase *phase, uint64_t *out_tick)
 {
     if (!phase || !out_tick) return zxvi_fail(ZXV_E_ARG, "phase or out_tick is NULL");
+    int32_t rc = zxvi_ctx_check(phase->ctx, "phase_now");
+    if (rc) return rc;
     pthread_mutex_lock(&phase->mu);
     *out_tick = phase->now;
     pthread_mutex_unlock(&phase->mu);
@@ -304,9 +392,9 @@ int32_t zxv_phase_now(zxv_phase *phase, uint64_t *out_tick)
 int32_t zxv_phase_advance(const zxv_cap *cap, zxv_phase *phase, uint64_t delta, uint64_t *out_now,
                           uint32_t *out_cleared)
 {
-    int32_t rc = zxvi_cap_gate(cap, ZXV_CAP_PHASE, "phase_advance", NULL);
-    if (rc) return rc;
     if (!phase) return zxvi_fail(ZXV_E_ARG, "phase is NULL");
+    int32_t rc = zxvi_cap_gate_ctx(cap, ZXV_CAP_PHASE, "phase_advance", phase->ctx);
+    if (rc) return rc;
     pthread_mutex_lock(&phase->mu);
     if (phase->now > UINT64_MAX - delta) {
         pthread_mutex_unlock(&phase->mu);
@@ -329,9 +417,9 @@ int32_t zxv_phase_advance(const zxv_cap *cap, zxv_phase *phase, uint64_t delta, 
 int32_t zxv_phase_admit(const zxv_cap *cap, zxv_phase *phase, uint32_t phase_id, uint32_t step_id,
                         uint32_t flags, int32_t *out_decision, uint64_t *out_token)
 {
-    int32_t rc = zxvi_cap_gate(cap, ZXV_CAP_PHASE, "phase_admit", NULL);
-    if (rc) return rc;
     if (!phase || !out_decision) return zxvi_fail(ZXV_E_ARG, "phase or out_decision is NULL");
+    int32_t rc = zxvi_cap_gate_ctx(cap, ZXV_CAP_PHASE, "phase_admit", phase->ctx);
+    if (rc) return rc;
     if (phase_id < 1 || phase_id > PC_MAX_PHASES)
         return zxvi_fail(ZXV_E_ARG, "phase_id %u is not 1..%u", phase_id, PC_MAX_PHASES);
     if (flags & ~(ZXV_STEP_REQUIRES_HEALTH | ZXV_STEP_HARDWARE | ZXV_STEP_S0_PENDING))
@@ -364,9 +452,10 @@ int32_t zxv_phase_admit(const zxv_cap *cap, zxv_phase *phase, uint32_t phase_id,
 int32_t zxv_phase_set_health(const zxv_cap *cap, zxv_phase *phase, uint32_t phase_id,
                              int32_t health)
 {
-    int32_t rc = zxvi_cap_gate(cap, ZXV_CAP_PHASE, "phase_set_health", NULL);
+    if (!phase) return zxvi_fail(ZXV_E_ARG, "phase is NULL");
+    int32_t rc = zxvi_cap_gate_ctx(cap, ZXV_CAP_PHASE, "phase_set_health", phase->ctx);
     if (rc) return rc;
-    if (!phase || phase_id < 1 || phase_id > PC_MAX_PHASES || health < 0 || health > 3)
+    if (phase_id < 1 || phase_id > PC_MAX_PHASES || health < 0 || health > 3)
         return zxvi_fail(ZXV_E_ARG, "bad phase or health value");
     pthread_mutex_lock(&phase->mu);
     pc_set_phase_health(&phase->reg, (pc_phase_id_t) phase_id, (pc_health_t) health);
@@ -377,9 +466,9 @@ int32_t zxv_phase_set_health(const zxv_cap *cap, zxv_phase *phase, uint32_t phas
 int32_t zxv_phase_defer(const zxv_cap *cap, zxv_phase *phase, uint64_t due_tick,
                         uint64_t *out_event)
 {
-    int32_t rc = zxvi_cap_gate(cap, ZXV_CAP_PHASE, "phase_defer", NULL);
-    if (rc) return rc;
     if (!phase || !out_event) return zxvi_fail(ZXV_E_ARG, "phase or out_event is NULL");
+    int32_t rc = zxvi_cap_gate_ctx(cap, ZXV_CAP_PHASE, "phase_defer", phase->ctx);
+    if (rc) return rc;
     pthread_mutex_lock(&phase->mu);
     if (due_tick <= phase->now) {
         uint64_t now = phase->now;
@@ -387,7 +476,14 @@ int32_t zxv_phase_defer(const zxv_cap *cap, zxv_phase *phase, uint64_t due_tick,
         return zxvi_fail(ZXV_E_ARG, "due tick %llu is not after now (%llu)",
                          (unsigned long long) due_tick, (unsigned long long) now);
     }
-    /* Reuse a finished slot before growing. */
+    /* Event ids are a 64-bit counter that only grows: an id is never issued
+     * twice, so a stale id can never name (or cancel) a newer event. Only
+     * table SLOTS are recycled, once an event is finished and 4096 newer
+     * ids exist; a recycled event's id then reports ZXV_E_NOT_FOUND. */
+    if (phase->next_ev == UINT64_MAX) {
+        pthread_mutex_unlock(&phase->mu);
+        return zxvi_fail(ZXV_E_CAPACITY, "event ids exhausted");
+    }
     size_t slot = phase->n_ev;
     for (size_t i = 0; i < phase->n_ev; i++)
         if (phase->ev[i].state != ZXV_EV_PENDING && phase->ev[i].id + 4096 < phase->next_ev) {
@@ -424,6 +520,8 @@ int32_t zxv_phase_event(zxv_phase *phase, uint64_t event, int32_t *out_state,
                         uint64_t *out_due_tick)
 {
     if (!phase) return zxvi_fail(ZXV_E_ARG, "phase is NULL");
+    int32_t rc = zxvi_ctx_check(phase->ctx, "phase_event");
+    if (rc) return rc;
     pthread_mutex_lock(&phase->mu);
     phase_ev *e = ev_find(phase, event);
     if (e) {
@@ -437,9 +535,9 @@ int32_t zxv_phase_event(zxv_phase *phase, uint64_t event, int32_t *out_state,
 
 int32_t zxv_phase_cancel(const zxv_cap *cap, zxv_phase *phase, uint64_t event)
 {
-    int32_t rc = zxvi_cap_gate(cap, ZXV_CAP_PHASE, "phase_cancel", NULL);
-    if (rc) return rc;
     if (!phase) return zxvi_fail(ZXV_E_ARG, "phase is NULL");
+    int32_t rc = zxvi_cap_gate_ctx(cap, ZXV_CAP_PHASE, "phase_cancel", phase->ctx);
+    if (rc) return rc;
     pthread_mutex_lock(&phase->mu);
     phase_ev *e = ev_find(phase, event);
     int32_t st = e ? e->state : -1;
@@ -453,6 +551,8 @@ int32_t zxv_phase_cancel(const zxv_cap *cap, zxv_phase *phase, uint64_t event)
 int32_t zxv_phase_next_due(zxv_phase *phase, uint64_t *out_tick)
 {
     if (!phase || !out_tick) return zxvi_fail(ZXV_E_ARG, "phase or out_tick is NULL");
+    int32_t rc = zxvi_ctx_check(phase->ctx, "phase_next_due");
+    if (rc) return rc;
     pthread_mutex_lock(&phase->mu);
     bool any = false;
     uint64_t best = 0;
@@ -494,9 +594,11 @@ int32_t zxv_swarm_create(zxv_ctx *ctx, uint32_t num_levels, uint64_t tokens_per_
                          zxv_swarm **out_swarm)
 {
     if (!ctx || !out_swarm) return zxvi_fail(ZXV_E_ARG, "ctx or out_swarm is NULL");
+    int32_t rc = zxvi_ctx_check(ctx, "swarm_create");
+    if (rc) return rc;
     zxv_swarm *s = calloc(1, sizeof *s);
     if (!s) return zxvi_fail(ZXV_E_NOMEM, "swarm allocation failed");
-    int32_t rc = swarm_status(swarm_budget_init(&s->b, num_levels, tokens_per_cycle), "swarm_create");
+    rc = swarm_status(swarm_budget_init(&s->b, num_levels, tokens_per_cycle), "swarm_create");
     if (rc) {
         free(s);
         return rc;
@@ -508,6 +610,14 @@ int32_t zxv_swarm_create(zxv_ctx *ctx, uint32_t num_levels, uint64_t tokens_per_
     return zxvi_ok();
 }
 
+int32_t zxv_swarm_create_cap(const zxv_cap *cap, uint32_t num_levels, uint64_t tokens_per_cycle,
+                             zxv_swarm **out_swarm)
+{
+    zxv_ctx *ctx;
+    int32_t rc = zxvi_cap_gate(cap, ZXV_CAP_SWARM, "swarm_create", &ctx);
+    return rc ? rc : zxv_swarm_create(ctx, num_levels, tokens_per_cycle, out_swarm);
+}
+
 void zxv_swarm_destroy(zxv_swarm *swarm)
 {
     if (!swarm) return;
@@ -516,9 +626,9 @@ void zxv_swarm_destroy(zxv_swarm *swarm)
 }
 
 #define SWARM_ENTER(name)                                                    \
-    int32_t rc = zxvi_cap_gate(cap, ZXV_CAP_SWARM, name, NULL);               \
-    if (rc) return rc;                                                        \
     if (!swarm) return zxvi_fail(ZXV_E_ARG, "%s: swarm is NULL", name);       \
+    int32_t rc = zxvi_cap_gate_ctx(cap, ZXV_CAP_SWARM, name, swarm->ctx);     \
+    if (rc) return rc;                                                        \
     pthread_mutex_lock(&swarm->mu)
 
 int32_t zxv_swarm_register(const zxv_cap *cap, zxv_swarm *swarm, uint32_t model_id, uint32_t level)
@@ -612,6 +722,8 @@ int32_t zxv_swarm_allotment(zxv_swarm *swarm, uint32_t model_id, uint64_t *out_a
                             uint64_t *out_imaginary, uint64_t *out_used)
 {
     if (!swarm) return zxvi_fail(ZXV_E_ARG, "swarm is NULL");
+    int32_t rc = zxvi_ctx_check(swarm->ctx, "swarm_allotment");
+    if (rc) return rc;
     pthread_mutex_lock(&swarm->mu);
     const swarm_slot_t *s = NULL;
     for (uint32_t i = 0; i < swarm->b.num_slots; i++)
