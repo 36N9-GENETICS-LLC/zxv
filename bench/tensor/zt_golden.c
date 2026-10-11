@@ -269,10 +269,10 @@ int main(int argc, char **argv)
     if (zt_gguf_open(&g, file, size) != 0) return 4;
     zt_model_err_t err;
     memset(&err, 0, sizeof err);
-    uint64_t mbytes = zt_model_arena_bytes(&g);
+    uint64_t mbytes = zt_model_arena_bytes_ex(&g, ZT_LOAD_CONVERT);
     void *marena = mbytes ? alloc64(mbytes) : NULL;
     zt_model_t m;
-    if (!marena || zt_model_load(&m, &g, marena, mbytes, &err) != 0) {
+    if (!marena || zt_model_load_ex(&m, &g, marena, mbytes, ZT_LOAD_CONVERT, &err) != 0) {
         fprintf(stderr, "zt_golden: model load failed: %s %s\n", err.what ? err.what : "",
                 err.name);
         return 4;

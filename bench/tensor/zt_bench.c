@@ -18,7 +18,7 @@
  *
  * Usage: zt_bench MODEL.gguf [--prompt TEXT] [-n N] [--ctx C] [--batch B]
  *                 [--kv q16|q8] [--text FILE] [--kern NAME] [--threads T]
- *                 [--special]
+ *                 [--special] [--convert]
  * --special parses special-token text in the prompt (a chat template such as
  * "<|im_start|>user\n...<|im_end|>\n<|im_start|>assistant\n").
  * zt.logits_fnv lets two machines check they computed the same bits, not
@@ -27,6 +27,9 @@
  * the fastest this CPU runs), --threads the thread count (default 1). Every
  * choice gives the same token ids; only the speed differs. It prints
  * zt.kern=<name> zt.threads=<T>.
+ * --convert loads Q4_K/Q6_K matrices the older way, re-quantized to 8-bit
+ * blocks (ZT_LOAD_CONVERT), instead of using them in place; it prints
+ * zt.load=convert|native and the load time zt.load_s.
  * Exit: 0 ok, 2 usage, 3 cannot read file, 4 model or tokenizer not loadable,
  *       5 run failed. */
 #define _POSIX_C_SOURCE 200809L
@@ -92,7 +95,7 @@ int main(int argc, char **argv)
     bool special = false;
     const char *path = NULL, *prompt = "The capital of France is", *text_out = NULL;
     const char *kern_name = NULL;
-    uint32_t n_gen = 32, n_ctx = 0, n_batch = 32, kv = ZT_KV_Q16, n_threads = 1;
+    uint32_t n_gen = 32, n_ctx = 0, n_batch = 32, kv = ZT_KV_Q16, n_threads = 1, lflags = 0;
     for (int i = 1; i < argc; i++) {
         const char *a = argv[i];
         const char *v = i + 1 < argc ? argv[i + 1] : NULL;
@@ -114,13 +117,16 @@ int main(int argc, char **argv)
             n_threads = (uint32_t) strtoul(argv[++i], NULL, 10);
         else if (!strcmp(a, "--special"))
             special = true;
+        else if (!strcmp(a, "--convert"))
+            lflags = ZT_LOAD_CONVERT;
         else if (a[0] != '-' && !path)
             path = a;
         else {
-            fprintf(stderr,
-                    "usage: %s MODEL.gguf [--prompt TEXT] [-n N] [--ctx C] [--batch B] "
-                    "[--kv q16|q8] [--text FILE] [--kern NAME] [--threads T] [--special]\n",
-                    argv[0]);
+            fprintf(
+                stderr,
+                "usage: %s MODEL.gguf [--prompt TEXT] [-n N] [--ctx C] [--batch B] "
+                "[--kv q16|q8] [--text FILE] [--kern NAME] [--threads T] [--special] [--convert]\n",
+                argv[0]);
             return 2;
         }
     }
@@ -144,7 +150,8 @@ int main(int argc, char **argv)
 
     zt_model_err_t err;
     memset(&err, 0, sizeof err);
-    uint64_t mbytes = zt_model_arena_bytes(&g);
+    double tl0 = now_s();
+    uint64_t mbytes = zt_model_arena_bytes_ex(&g, lflags);
     if (!mbytes) {
         zt_model_cfg_t cfg;
         zt_model_config(&g, &cfg, &err);
@@ -154,10 +161,11 @@ int main(int argc, char **argv)
     }
     void *marena = alloc64(mbytes);
     zt_model_t m;
-    if (!marena || zt_model_load(&m, &g, marena, mbytes, &err) != 0) {
+    if (!marena || zt_model_load_ex(&m, &g, marena, mbytes, lflags, &err) != 0) {
         fprintf(stderr, "zt_bench: model load failed: %s %s\n", err.what ? err.what : "", err.name);
         return 4;
     }
+    printf("zt.load=%s\nzt.load_s=%.3f\n", lflags ? "convert" : "native", now_s() - tl0);
     const zt_kern_t *kb = kern_name ? zt_simd_find(kern_name) : zt_simd_best();
     if (!kb) {
         fprintf(stderr, "zt_bench: kernel set '%s' is not available on this CPU\n", kern_name);

@@ -29,9 +29,10 @@ the text says so.
 | Same bits on x86_64 and arm64? | Yes, all 8 prompts (FNV-1a of every logit vector matches). |
 | Same answers as llama.cpp? | Yes, token for token on all 8 prompts. |
 | Accuracy against llama.cpp | Perplexity 9.371 against 9.362 (0.10% higher). Next-token choice agrees at 95.5% of positions. |
-| Speed against llama.cpp | Slower: about 11 tok/s against 15 to 18 tok/s generating, and about 22 against 80 to 200 tok/s reading the prompt. |
+| Speed against llama.cpp | Slower: about 11 tok/s against 15 to 18 tok/s generating, and about 22 against 80 to 200 tok/s reading the prompt. With the native K-quant kernels (section 1.5, a different CPU): 13 against 20 tok/s generating, 22 against 80 to 100 reading. |
+| Accuracy against exact math (added 2026-10-11) | Against a float64 forward pass on the same weights: native K-quant ZXV KL 0.000008, top-1 99.8%; converted ZXV 0.0005, 99.2%; llama.cpp 0.0073, 95.9% (section 1.5). |
 | Golden-ratio parts | Lossless coil + holographic coding: no change. Phi scales: small harm. E8 lattice: clearly better than the plain 2-bit quantiser it replaces, but 2-bit weights of any kind need retraining. Lossy holographic decode: breaks the model. |
-| Defect found | The first token of a text (no context yet) differs sharply from llama.cpp (F1 below). |
+| First-token gap (F1) | ZXV and llama.cpp differ sharply on a text's first token. The float64 reference shows llama.cpp is the one that is off (KL 2.7 against ZXV's 0.0002); not a ZXV defect. |
 
 ## 1. The plain engine against llama.cpp
 
@@ -99,20 +100,74 @@ ZXV runs them one row at a time per token. That is the main speed work ahead. ZX
 the roadmap's 10 to 18 tok/s generation target on this container. The M3 Max has not been
 measured.
 
-### F1. First-token defect
+### 1.5 Native K-quant kernels (added 2026-10-11)
 
-With no context, at the first position of a text, ZXV's prediction differs sharply from
-llama.cpp's: KL 4.5 nats, and ZXV's top logit is 18.52 against llama.cpp's 10.39 (the same
-token wins). From position 1 on, the KL drops to about 0.01. An instrumented build
-(logs/position0_instrumented.log) shows values up to 9,400 inside the forward pass at that
-position, without saturating the int32 range. Qwen models are known for very large
-activations on their first token. **Inferred, not proven:** the likely cause is ZXV's
-block quantisation of a matrix product's input (16 bits per block of 32, one exponent per
-block), which loses the small values that share a block with one huge value. It matters
-when a prompt is a single token. Chat prompts start with the template's `<|im_start|>`
-token, and the 8 prompts were unaffected. Next step: a unit test that feeds a block with
-one outlier through the kernels and compares against a 64-bit reference, then a fix (for
-example, splitting outlier blocks) that must keep the bit-identity guarantees.
+The runs above convert every Q4_K and Q6_K matrix to 8-bit blocks at load (36 seconds, a
+second rounding of every weight). zt_model.h T22 now uses those matrices in place: each
+32-weight sub-block meets one activation block in exact integer sums, and the file's own
+scales are applied in 64 bits. `--convert` (ZT_LOAD_CONVERT) keeps the old path.
+**Note: these runs are on a different machine from sections 1.1 to 1.4.** The container
+moved to an `Intel Xeon @ 2.80 GHz`, 4 vCPUs, AVX-512 with VNNI but without BF16/FP16;
+llama.cpp was rebuilt for it (`GGML_NATIVE=ON`, same commit), and every speed in this
+section was measured on it, side by side.
+
+| | ZXV native K-quants | ZXV converted 8-bit | llama.cpp |
+|---|---|---|---|
+| KL against float64, positions 1..511 (mean) | **0.000008** | 0.00050 | 0.0073 |
+| KL against float64, position 0 | **0.0000** | 0.0002 | 2.71 |
+| Top-1 agreement with float64 | **99.8%** | 99.2% | 95.9% |
+| Perplexity, 512 tokens (float64: 9.3664) | 9.3692 | 9.3713 | 9.3616 |
+| Same answers as llama.cpp, 8 prompts | 8 of 8 | 8 of 8 | |
+| Generate, 64 tokens (tok/s) | 12.9, 13.5 | 9.8, 10.6 | 20.1, 19.9 |
+| Prompt, 31 tokens (tok/s) | 21.7, 21.7 | 20.3, 22.5 | 100.5, 81.5 |
+| Model set-up after reading the file (s) | 0.03 | 31.2 | |
+
+(logs/vs_float64_reference.txt, logs/speed_native_vs_converted_vs_llama_cpp.log,
+logs/zxv_prompts_native_kquant_x86_64.log, logs/llama_cpp_greedy_compare_native_kquant.json)
+
+What this shows:
+
+* **Accuracy.** Using the file's weights as they are removes ZXV's only rounding of the
+  weights. What is left is the 16-bit activation rounding, and the logits come out about
+  60 times closer to exact math than before and about 900 times closer than llama.cpp's
+  (by mean KL). llama.cpp's slightly lower perplexity is luck, not accuracy: the exact
+  computation scores 9.3664, and llama.cpp's 8-bit activation error happens to move it
+  the right way on this text.
+* **Determinism.** The C, AVX2 and AVX-512 kernels, 1 or 4 threads, batch 1 or 32, and
+  the arm64 NEON build give the same SHA-256 for all 16 x 151,936 logits
+  (logs/native_kquant_x86_kernel_identity.log, logs/native_kquant_arm64_neon_identity.log).
+  `test_zt_simd` checks every kernel against the C reference on 3,400 random and extreme
+  rows each, and the C reference against ggml's own dequantization summed in 128-bit
+  integers: worst error 0.499 of a Q16 unit, i.e. rounding only.
+* **Speed.** Generation is about 30% faster than the converted path, because Q4_K is half
+  the bytes of 8-bit weights. It is still about 1.5 times slower than llama.cpp, and
+  prompt reading is 4 to 5 times slower: llama.cpp multiplies 8-bit activations with
+  dedicated dot-product instructions and runs prompts as matrix-matrix products, while
+  ZXV keeps 16-bit activations (the accuracy above) and computes one activation vector
+  at a time.
+
+### F1. First-token gap: llama.cpp's error, not ZXV's (resolved 2026-10-11)
+
+With no context, at the first position of a text, ZXV and llama.cpp disagree sharply: KL
+4.5 nats, ZXV's top logit 18.52 against llama.cpp's 10.39 (the same token wins). The first
+version of this report called that a ZXV defect. It is not. A third, exact reference
+settles it: `bench/tensor/compare/ref_f64.py` runs the same forward pass in float64 numpy
+with the weights dequantized exactly from the file by gguf-py (llama.cpp's own Python
+package), on the same 512 token ids. Against that reference (logs/vs_float64_reference.txt):
+
+| | KL at position 0 | KL, positions 1..511 (mean) | Top logit at position 0 |
+|---|---|---|---|
+| float64 reference | 0 | 0 | 18.53 |
+| ZXV, converted 8-bit weights (this report's runs) | 0.0002 | 0.00050 | 18.52 |
+| llama.cpp | 2.71 | 0.0073 | 10.39 |
+
+So ZXV was right at position 0 and llama.cpp was off. The reference's per-layer log
+(logs/float64_reference_activations.log) shows why: layers 1 and 2 build activations of
+about 6,000 in a few channels, which layer 26 cancels again. llama.cpp rounds each
+matrix product's input to 8 bits per block, so the small values that share a block with a
+6,000 are lost; ZXV keeps 16 bits per block, about 256 times finer. The effect is largest
+at position 0, where those channels dominate. The 8 chat prompts were unaffected because
+they start with the template's `<|im_start|>` token.
 
 ## 2. The golden-ratio parts inside the model (logs/golden_*.log, logs/golden_variants_compare.json)
 
@@ -178,6 +233,12 @@ How the model behaves with each part, against how it behaves normally:
 | logs/llama_cpp_greedy_compare.json | Per prompt: ZXV and llama.cpp generated ids (4 and 1 threads), prompt token counts, and both engines' speeds. `same_answer` means identical token ids. |
 | logs/logits_vs_llama_cpp.json | Every-position comparison on the 512 WikiText-2 tokens: perplexity of each engine, top-1 agreement, KL (mean, 99th percentile, max), logit differences. The second entry is llama.cpp against itself at two batch sizes, the yardstick for "normal" variation. |
 | logs/position0_instrumented.log | F1: the largest values inside the forward pass, and the positions with the largest KL. |
+| logs/float64_reference_activations.log | F1: the float64 reference's largest activations per layer (about 6,000 built in layers 1 and 2, cancelled in layer 26). |
+| logs/vs_float64_reference.txt | 1.5 and F1: KL, top-1 and perplexity of native ZXV, converted ZXV and llama.cpp (two batch sizes) against the float64 reference. |
+| logs/speed_native_vs_converted_vs_llama_cpp.log | 1.5: the same prompt through all three, twice each, on the 2.80 GHz machine. `zt.load_s` is the set-up time after the file is read. |
+| logs/zxv_prompts_native_kquant_x86_64.log / .json | 1.5: the 8 prompts with native K-quants, every kernel; same columns as the first prompt log. |
+| logs/llama_cpp_greedy_compare_native_kquant.json | 1.5: native ZXV against llama.cpp (rebuilt for the 2.80 GHz machine) on the 8 prompts. |
+| logs/native_kquant_x86_kernel_identity.log, native_kquant_arm64_neon_identity.log | 1.5: SHA-256 of all logits for every kernel, thread count, batch size and arm64. |
 | logs/golden_<variant>.log | `zt_golden` output: how many matrices and weights it rewrote, the shift range of the converted blocks (0..24), the transform time, and for holo the code and residual entropies and how many weights decoding changed. |
 | logs/golden_variants_compare.json | The table in section 2. |
 
@@ -192,14 +253,18 @@ g++ -O2 -std=c++17 -I$LLAMA/include -I$LLAMA/ggml/include bench/tensor/compare/l
 $ZXV_CMP_DIR/llama_ref dump $MODEL wikitext2_test.txt 512 ids.bin ref_t4.f32 4
 /tmp/zxv_bench/zt_dump $MODEL ids.bin zxv.f32 --threads 4
 python3 bench/tensor/compare/cmp_logits.py          # needs ref_ub7.f32 too (llama_ref ... 4 7)
+python3 bench/tensor/compare/ref_f64.py $MODEL ids.bin 512 ref64.f32   # float64 reference (pip gguf numpy)
+python3 bench/tensor/compare/cmp_ref64.py 512 ref64.f32 zxv.f32 ref_t4.f32
+/tmp/zxv_bench/zt_bench $MODEL --prompt "..." -n 64 --threads 4 [--convert]
 sh bench/tensor/compare/run_golden.sh && python3 bench/tensor/compare/cmp_golden.py requant phi phi16 holo10 holo9 e8down int2down e8 int2
 ```
 
 ## 5. Follow-ups this report opens
 
-1. F1: outlier-aware activation blocks, with a kernel test, keeping bit-identity.
-2. Speed: matrix-matrix prefill, and loading converted weights without the 36-second
-   conversion (cache the arena, or use Q8_0 files in place).
+1. F1: closed (llama.cpp's error, see F1).
+2. Speed: the conversion is gone (1.5). Next: a matrix-matrix prefill that unpacks each
+   weight row once for several tokens, and a faster C reference for kernel images
+   (0.6 tok/s on one thread today).
 3. T4/T6/T11 on speed and memory, measured the same way.
 4. E8 at more bits a weight against Q4/Q5, and E8 or quaternary weights on a model trained
    for low bits.
