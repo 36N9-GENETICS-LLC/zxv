@@ -17,7 +17,7 @@ final class Attestations extends NativeHandle
     public function __construct(public readonly Capability $capability)
     {
         $out = Native::new("zxv_lpres*");
-        Native::check(Native::ffi()->zxv_lpres_create($capability->context->raw(), \FFI::addr($out)), $capability->context);
+        Native::check(Native::ffi()->zxv_lpres_create_cap($capability->ptr(), \FFI::addr($out)), $capability->context);
         parent::__construct($capability->context, $out, "zxv_lpres_destroy");
     }
 

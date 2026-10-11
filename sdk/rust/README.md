@@ -4,7 +4,7 @@
 # ZXV Rust SDK
 
 Safe Rust bindings to `libzxv`, the stable C ABI of the ZXV platform
-(`sdk/libzxv/include/zxv_api.h`, ABI 1.1). Two crates:
+(`sdk/libzxv/include/zxv_api.h`, ABI 1.2). Two crates:
 
 | Crate | What it is |
 |---|---|
@@ -42,7 +42,7 @@ use zxv::{AccountKind, Caps, Context, Ledger};
 fn main() -> zxv::Result<()> {
     let ctx = Context::new()?;                                  // one platform instance
     let root = ctx.root_capability(1, None, Caps::ALL)?;        // what you may do
-    ctx.enable_currency("NGN")?;
+    ctx.enable_currency_cap(&root, "NGN")?;
     let ledger = Ledger::new(&root);
     let bank = ledger.open_account("bank", "NGN", AccountKind::Issuer)?;
     let alice = ledger.open_account("alice", "NGN", AccountKind::Holder)?;
@@ -120,16 +120,35 @@ callback per token; return `false` to stop) and `stream` (an `Iterator` of
 tokens inside a closure; dropping it stops generation). The same seed and
 inputs give the same tokens on every machine.
 
+## Capabilities on every gated call (ABI 1.2)
+
+Every gated operation takes a `Capability`, and the SDK calls the
+capability-gated `zxv_*_cap` form of the C ABI:
+
+| Call | Needs |
+|---|---|
+| `Context::enable_currency_cap`, `enable_currency_with_minor_cap`, `register_private_currency_cap` | `LEDGER_POST` |
+| `Ledger::open_account`, `post` | `LEDGER_POST` |
+| `Ledger::balance`, `account`, `account_count`, `journal`; `Capability::new_message` | `LEDGER_READ` |
+| `Budgets::new`, `PhaseClock::new`, `Attestations::new`, `Swarm::new` | `BUDGET`, `PHASE`, `ATTEST`, `SWARM` |
+
+A capability of another context is refused with `ZXV_E_CAP`
+(`is_capability_denied()`). A message borrows the capability it was made
+with and the library re-checks it on every call. The 1.0 forms
+`Context::enable_currency`, `enable_currency_with_minor`,
+`register_private_currency` and `new_message` still work but are
+`#[deprecated(since = "1.2.0")]`.
+
 ## API overview
 
 | Area | Types | Key calls |
 |---|---|---|
 | Library | `zxv::version`, `features`, `Features` | ABI version, live feature groups |
-| Context | `Context`, `FatalPolicy` | `new`, `root_capability`, `halt`, `enable_currency`, `register_private_currency`, `new_message` |
-| Capability | `Capability`, `Caps` | `attenuate`, `revoke`, `set_attestation`, `check`, `info` |
+| Context | `Context`, `FatalPolicy` | `new`, `root_capability`, `halt`, `enable_currency_cap`, `enable_currency_with_minor_cap`, `register_private_currency_cap` |
+| Capability | `Capability`, `Caps` | `attenuate`, `revoke`, `set_attestation`, `check`, `info`, `new_message` |
 | Exact numbers | `Rational` | `new`, `parse`, `checked_*`, `to_q16`, `from_f64_exact` |
 | Logic | `Truth` | `and`, `or`, `not`, `from_evidence`, `to_bool` |
-| Ledger | `Ledger`, `AccountId`, `Balance` | `open_account`, `post`, `balance`, `check`, `journal` |
+| Ledger | `Ledger`, `AccountId`, `Balance` | `open_account`, `post`, `balance`, `check`, `account`, `account_count`, `journal` |
 | ISO data | `iso4217`, `iso20022::Message` | `by_alpha`, `by_numeric`, `set_text`, `set_amount`, `render` |
 | Attestations | `Attestations` | `attest`, `evidence`, `state`, `gate_clear` |
 | Budgets | `Budgets`, `Budget` | `create`, `consume`, `consume_async`, `release`, `set_limit`, `on_exhausted` |

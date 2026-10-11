@@ -25,11 +25,11 @@ public final class Attestations: @unchecked Sendable {
     private let cap: Capability
     private let handle: OpaquePointer
 
-    /// A registry in the capability's context.
+    /// A registry in the capability's context (needs `.attest`).
     public init(_ cap: Capability) throws(ZxvError) {
         self.cap = cap
         var r: OpaquePointer?
-        try cap.call { _ in zxv_lpres_create(cap.context.handle, &r) }
+        try cap.call { zxv_lpres_create_cap($0, &r) }
         handle = r!
     }
     deinit { zxv_lpres_destroy(handle) }

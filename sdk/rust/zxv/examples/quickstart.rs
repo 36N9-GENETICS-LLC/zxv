@@ -12,7 +12,7 @@ fn main() -> zxv::Result<()> {
 
     let ctx = Context::new()?;
     let root = ctx.root_capability(1, None, Caps::ALL)?;
-    ctx.enable_currency("NGN")?;
+    ctx.enable_currency_cap(&root, "NGN")?;
 
     // A reader that can never post.
     let reader = root.attenuate(Caps::LEDGER_READ)?;

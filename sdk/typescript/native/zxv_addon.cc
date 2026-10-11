@@ -411,6 +411,12 @@ Napi::Value Load(const Napi::CallbackInfo &info)
     FN(zxv_session_destroy); FN(zxv_session_reset); FN(zxv_session_position);
     FN(zxv_session_bind_budget); FN(zxv_lora_load); FN(zxv_lora_apply); FN(zxv_lora_destroy);
     FN(zxv_evm_encode_state); FN(zxv_evm_ledger_state);
+    // ABI 1.2: the _cap forms.
+    FN(zxv_ccy_enable_cap); FN(zxv_ccy_enable_with_minor_cap); FN(zxv_ccy_register_private_cap);
+    FN(zxv_ledger_open_account_cap); FN(zxv_ledger_account_ccy_cap); FN(zxv_ledger_account_name_cap);
+    FN(zxv_ledger_account_kind_cap); FN(zxv_ledger_account_count_cap); FN(zxv_ledger_entry_count_cap);
+    FN(zxv_ledger_entry_at_cap); FN(zxv_msg_create_cap); FN(zxv_rmag_create_cap);
+    FN(zxv_phase_create_cap); FN(zxv_lpres_create_cap); FN(zxv_swarm_create_cap);
 
     g_generate = reinterpret_cast<decltype(g_generate)>(find_symbol(g_lib, "zxv_generate"));
     g_last_error = reinterpret_cast<decltype(g_last_error)>(find_symbol(g_lib, "zxv_last_error"));

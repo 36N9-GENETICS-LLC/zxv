@@ -77,10 +77,11 @@ type PhaseClock struct {
 	wake chan struct{}
 }
 
-// NewPhaseClock creates a clock at tick 0 in cap's context.
+// NewPhaseClock creates a clock at tick 0 in cap's context (cap needs
+// CapPhase).
 func NewPhaseClock(cap *Capability) (*PhaseClock, error) {
 	var p *C.zxv_phase
-	if err := cap.ctx.ctxCall(func(c *C.zxv_ctx) C.int32_t { return C.zxv_phase_create(c, &p) }); err != nil {
+	if err := cap.gated(func(c *C.zxv_cap) C.int32_t { return C.zxv_phase_create_cap(c, &p) }); err != nil {
 		return nil, err
 	}
 	pc := &PhaseClock{cap: cap, wake: make(chan struct{})}

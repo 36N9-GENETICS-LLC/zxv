@@ -125,11 +125,11 @@ unsafe impl Send for Budgets<'_> {}
 unsafe impl Sync for Budgets<'_> {}
 
 impl<'a> Budgets<'a> {
-    /// An empty budget set in the capability's context.
+    /// An empty budget set in the capability's context (needs
+    /// [`Caps::BUDGET`](crate::Caps::BUDGET)).
     pub fn new(cap: &'a Capability<'a>) -> Result<Budgets<'a>> {
-        let ctx = cap.context();
         let mut raw = std::ptr::null_mut();
-        ctx.call(|x| unsafe { sys::zxv_rmag_create(x, &mut raw) })?;
+        cap.call(|x| unsafe { sys::zxv_rmag_create_cap(x, &mut raw) })?;
         let raw = NonNull::new(raw)
             .ok_or_else(|| Error::with_detail(sys::ZXV_E_INTERNAL, "NULL rmag"))?;
         let shared = Box::<Shared>::default();

@@ -73,7 +73,7 @@ class Budgets(NativeHandle):
         ctx = cap.context
         out = ffi.new("zxv_rmag **")
         L = _native.lib()
-        _native.check(L.zxv_rmag_create(ctx._handle(), out), ctx)
+        _native.check(L.zxv_rmag_create_cap(cap._handle(), out), ctx)
         self._cap = cap
         self._cond = threading.Condition()
         self._async_waiters: Dict[int, List[Tuple[asyncio.AbstractEventLoop, "asyncio.Future[None]"]]] = {}

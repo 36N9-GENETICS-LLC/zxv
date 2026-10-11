@@ -7,7 +7,7 @@ module Zxv
   # raise Zxv::NotImplementedError until the kernel builds them).
   # Serialization only: libzxv has no network transport.
   #
-  #   msg = Zxv::Message.new(ctx, :pacs008)
+  #   msg = Zxv::Message.new(cap, :pacs008)   # cap needs :ledger_read
   #   msg[:msg_id] = "M1"; msg[:ccy] = "NGN"; ...
   #   msg.amount(:settlement, 150_075, 2)
   #   xml = msg.render
@@ -19,12 +19,34 @@ module Zxv
     DIRECTIONS = { credit: 0, debit: 1 }.freeze
     STATUSES = { booked: 0, pending: 1, info: 2 }.freeze
 
-    # @param context [Context] @param kind [Symbol] one of KINDS
-    def initialize(context, kind)
+    # @return [Capability, nil] the capability the message re-checks on every call
+    attr_reader :capability
+
+    # @param owner [Capability] needs :ledger_read; the message re-checks it on
+    #   every call. Passing a Context is deprecated since ABI 1.2 (no capability).
+    # @param kind [Symbol] one of KINDS
+    def initialize(owner, kind)
       k = KINDS.fetch(kind) { raise ZxvUsageError.new(Status::E_ARG, "unknown message kind #{kind.inspect}") }
       out = Call.out(:pointer)
-      Call.check(Native.lib.zxv_msg_create(context.raw, k, out), context)
-      super(context, out.read_pointer, :zxv_msg_destroy)
+      if owner.is_a?(Capability)
+        @capability = owner
+        Call.check(Native.lib.zxv_msg_create_cap(owner.ptr, k, out), owner.context)
+        super(owner.context, out.read_pointer, :zxv_msg_destroy)
+      else
+        warn("Zxv::Message.new(context, kind) is deprecated since ABI 1.2: pass a Capability " \
+             "with :ledger_read", uplevel: 1, category: :deprecated)
+        Call.check(Native.lib.zxv_msg_create(owner.raw, k, out), owner)
+        super(owner, out.read_pointer, :zxv_msg_destroy)
+      end
+    end
+
+    # @api private
+    def ptr
+      if @capability&.closed?
+        raise ZxvUsageError.new(Status::E_STATE, "the capability of this Message is closed")
+      end
+
+      super
     end
 
     # Set a text field (plain text; the serializer escapes XML).

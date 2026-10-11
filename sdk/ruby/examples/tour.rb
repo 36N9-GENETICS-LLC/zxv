@@ -21,7 +21,7 @@ Zxv::Context.open do |ctx|
   root = ctx.root_capability
 
   # Ledger, through a capability.
-  ctx.enable_currency("NGN")
+  ctx.enable_currency("NGN", cap: root)
   ledger = Zxv::Ledger.new(root)
   bank = ledger.open_account("bank", "NGN", kind: :issuer)
   ada = ledger.open_account("ada", "NGN")

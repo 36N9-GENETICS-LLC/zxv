@@ -34,7 +34,7 @@ fn thread_safety_markers() {
 fn fatal_path_poisons_context_and_handles() {
     let ctx = Context::new().unwrap();
     let cap = ctx.root_capability(7, None, Caps::ALL).unwrap();
-    ctx.enable_currency_with_minor("NGN", 2).unwrap();
+    ctx.enable_currency_with_minor_cap(&cap, "NGN", 2).unwrap();
     let ledger = Ledger::new(&cap);
     let bank = ledger
         .open_account("bank", "NGN", AccountKind::Issuer)
@@ -53,7 +53,7 @@ fn fatal_path_poisons_context_and_handles() {
     // Every later call fails fast, on every handle of the context.
     assert!(ledger.balance(alice).unwrap_err().is_fatal());
     assert!(cap.attenuate(Caps::LEDGER_READ).unwrap_err().is_fatal());
-    assert!(ctx.enable_currency("USD").unwrap_err().is_fatal());
+    assert!(ctx.enable_currency_cap(&cap, "USD").unwrap_err().is_fatal());
     assert!(Budgets::new(&cap).err().unwrap().is_fatal());
     // Pure functions keep working.
     assert_eq!(Rational::new(1, 2).unwrap().to_string(), "0.5");
@@ -71,7 +71,7 @@ fn fatal_from_c_poisons_rust_handle() {
     assert!(e.is_fatal());
     assert!(ctx.is_poisoned());
     // Now refused before reaching C, with the same class.
-    assert!(ctx.enable_currency("USD").unwrap_err().is_fatal());
+    assert!(ctx.enable_currency_cap(&cap, "USD").unwrap_err().is_fatal());
 }
 
 #[test]
@@ -126,7 +126,7 @@ fn capability_denial_attenuation_and_revocation() {
     assert_eq!(info.caps, Caps::ALL);
     assert_eq!(info.attestation, Truth::True);
 
-    ctx.enable_currency_with_minor("NGN", 2).unwrap();
+    ctx.enable_currency_with_minor_cap(&root, "NGN", 2).unwrap();
     let ledger = Ledger::new(&root);
     let a = ledger
         .open_account("issuer", "NGN", AccountKind::Issuer)
@@ -165,8 +165,8 @@ fn capability_denial_attenuation_and_revocation() {
 fn ledger_and_currencies() {
     let ctx = Context::new().unwrap();
     let cap = ctx.root_capability(1, None, Caps::ALL).unwrap();
-    ctx.enable_currency("NGN").unwrap();
-    ctx.register_private_currency("VFV", 2).unwrap();
+    ctx.enable_currency_cap(&cap, "NGN").unwrap();
+    ctx.register_private_currency_cap(&cap, "VFV", 2).unwrap();
     assert_eq!(ctx.currency("NGN").unwrap().minor_units, 2);
     assert_ne!(
         ctx.currency("VFV").unwrap().flags & iso4217::flags::PRIVATE,
@@ -236,7 +236,8 @@ fn iso_reference_data_and_messages() {
         .unwrap());
 
     let ctx = Context::new().unwrap();
-    let mut m = ctx.new_message(iso20022::MessageKind::Pacs008).unwrap();
+    let cap = ctx.root_capability(1, None, Caps::LEDGER_READ).unwrap();
+    let mut m = cap.new_message(iso20022::MessageKind::Pacs008).unwrap();
     use iso20022::TextField::*;
     m.set_text(MsgId, "MSG-1")
         .unwrap()
@@ -260,7 +261,7 @@ fn iso_reference_data_and_messages() {
     assert!(xml.contains("125.50"), "{xml}");
     assert!(xml.contains("Ada &amp; Co"));
     assert!(
-        ctx.new_message(iso20022::MessageKind::Pacs002)
+        cap.new_message(iso20022::MessageKind::Pacs002)
             .err()
             .unwrap()
             .refused_kind()
@@ -289,8 +290,12 @@ fn attestations_hold_contradictions() {
     );
     assert!(!reg.gate_clear().unwrap());
     assert_eq!(reg.find("model.gguf").unwrap(), i);
+    // Creating a registry needs ATTEST (ABI 1.2), and so does attesting.
     let ro = cap.attenuate(Caps::LEDGER_READ).unwrap();
-    let reg2 = Attestations::new(&ro).unwrap();
+    assert!(Attestations::new(&ro).err().unwrap().is_capability_denied());
+    let at = cap.attenuate(Caps::ATTEST).unwrap();
+    let reg2 = Attestations::new(&at).unwrap();
+    at.set_attestation(Truth::Neither).unwrap();
     assert!(reg2
         .attest("x", 0, Truth::True, "a", &[])
         .unwrap_err()
@@ -331,7 +336,10 @@ fn budget_exhaustion_is_refused_and_invalid_is_usage() {
     assert_eq!((s.remaining, s.epoch), (Rational::new(1, 2).unwrap(), 1));
     // Denied capability.
     let ro = cap.attenuate(Caps::LEDGER_READ).unwrap();
-    let nb = Budgets::new(&ro).unwrap();
+    assert!(Budgets::new(&ro).err().unwrap().is_capability_denied());
+    let bc = cap.attenuate(Caps::BUDGET).unwrap();
+    let nb = Budgets::new(&bc).unwrap();
+    bc.revoke().unwrap();
     assert!(nb
         .create("x", Resource::Energy, Rational::ONE, true)
         .unwrap_err()
@@ -445,7 +453,13 @@ fn phase_deferral_manual_driver() {
         Decision::Admit(_)
     ));
     let nophase = cap.attenuate(Caps::LEDGER_READ).unwrap();
-    let c2 = PhaseClock::new(&nophase).unwrap();
+    assert!(PhaseClock::new(&nophase)
+        .err()
+        .unwrap()
+        .is_capability_denied());
+    let ph = cap.attenuate(Caps::PHASE).unwrap();
+    let c2 = PhaseClock::new(&ph).unwrap();
+    ph.revoke().unwrap();
     assert!(c2.advance(1).unwrap_err().is_capability_denied());
 }
 
@@ -648,4 +662,121 @@ fn rational_and_truth_semantics() {
     assert!(Truth::True.require_true().is_ok());
     assert!(Truth::Both.require_true().is_err());
     assert!(!Truth::Neither.is_certain());
+}
+
+#[test]
+fn cap_forms_need_the_right_bit() {
+    let ctx = Context::new().unwrap();
+    let root = ctx.root_capability(1, None, Caps::ALL).unwrap();
+    let post = root.attenuate(Caps::LEDGER_POST).unwrap();
+    let read = root.attenuate(Caps::LEDGER_READ).unwrap();
+
+    // LEDGER_POST: currencies and opening accounts.
+    ctx.enable_currency_cap(&post, "NGN").unwrap();
+    ctx.enable_currency_with_minor_cap(&post, "GHS", 2).unwrap();
+    ctx.register_private_currency_cap(&post, "VFV", 2).unwrap();
+    assert_eq!(ctx.enabled_currencies().unwrap(), ["NGN", "GHS", "VFV"]);
+    assert!(ctx
+        .enable_currency_cap(&read, "KES")
+        .unwrap_err()
+        .is_capability_denied());
+    assert!(ctx
+        .enable_currency_with_minor_cap(&read, "KES", 2)
+        .unwrap_err()
+        .is_capability_denied());
+    assert!(ctx
+        .register_private_currency_cap(&read, "VFX", 2)
+        .unwrap_err()
+        .is_capability_denied());
+    let writer = Ledger::new(&post);
+    let reader = Ledger::new(&read);
+    let bank = writer
+        .open_account("bank", "NGN", AccountKind::Issuer)
+        .unwrap();
+    let ada = writer
+        .open_account("ada", "NGN", AccountKind::Holder)
+        .unwrap();
+    assert!(reader
+        .open_account("x", "NGN", AccountKind::Holder)
+        .unwrap_err()
+        .is_capability_denied());
+    writer.post(bank, ada, 7, "NGN", "R-1").unwrap();
+
+    // LEDGER_READ: account metadata, journals and messages.
+    assert_eq!(reader.account_count().unwrap(), 2);
+    assert_eq!(reader.account(ada).unwrap().name, "ada");
+    assert_eq!(reader.journal(ada).unwrap()[0].reference, "R-1");
+    assert!(writer.account_count().unwrap_err().is_capability_denied());
+    assert!(writer.account(ada).unwrap_err().is_capability_denied());
+    assert!(writer.journal(ada).unwrap_err().is_capability_denied());
+    assert!(post
+        .new_message(iso20022::MessageKind::Pacs008)
+        .err()
+        .unwrap()
+        .is_capability_denied());
+    let mut m = read.new_message(iso20022::MessageKind::Pacs008).unwrap();
+    m.set_text(iso20022::TextField::MsgId, "M-1").unwrap();
+    // The message re-checks its capability on every call.
+    read.set_attestation(Truth::Neither).unwrap();
+    assert!(m
+        .set_text(iso20022::TextField::MsgId, "M-2")
+        .err()
+        .unwrap()
+        .is_capability_denied());
+    read.set_attestation(Truth::True).unwrap();
+
+    // Handle creation: BUDGET, PHASE, ATTEST, SWARM.
+    assert!(Budgets::new(&read).err().unwrap().is_capability_denied());
+    assert!(PhaseClock::new(&read).err().unwrap().is_capability_denied());
+    assert!(Attestations::new(&read)
+        .err()
+        .unwrap()
+        .is_capability_denied());
+    assert!(Swarm::new(&read, 2, 10)
+        .err()
+        .unwrap()
+        .is_capability_denied());
+    let b = root.attenuate(Caps::BUDGET).unwrap();
+    let p = root.attenuate(Caps::PHASE).unwrap();
+    let t = root.attenuate(Caps::ATTEST).unwrap();
+    let w = root.attenuate(Caps::SWARM).unwrap();
+    Budgets::new(&b).unwrap();
+    PhaseClock::new(&p).unwrap();
+    Attestations::new(&t).unwrap();
+    Swarm::new(&w, 2, 10).unwrap();
+}
+
+#[test]
+fn cap_from_another_context_is_refused() {
+    let ctx = Context::new().unwrap();
+    let other = Context::new().unwrap();
+    let foreign = other.root_capability(1, None, Caps::ALL).unwrap();
+    for e in [
+        ctx.enable_currency_cap(&foreign, "NGN").unwrap_err(),
+        ctx.enable_currency_with_minor_cap(&foreign, "NGN", 2)
+            .unwrap_err(),
+        ctx.register_private_currency_cap(&foreign, "VFV", 2)
+            .unwrap_err(),
+    ] {
+        assert!(e.is_capability_denied(), "{e}");
+        assert_eq!(e.name(), "ZXV_E_CAP");
+        assert!(e.detail().contains("different context"), "{}", e.detail());
+    }
+    assert!(ctx.enabled_currencies().unwrap().is_empty());
+    assert!(
+        other.enabled_currencies().unwrap().is_empty(),
+        "nothing leaked into the cap's own context"
+    );
+}
+
+#[test]
+#[allow(deprecated)]
+fn deprecated_no_cap_forms_still_work() {
+    let ctx = Context::new().unwrap();
+    ctx.enable_currency("NGN").unwrap();
+    ctx.enable_currency_with_minor("GHS", 2).unwrap();
+    ctx.register_private_currency("VFV", 2).unwrap();
+    assert_eq!(ctx.enabled_currencies().unwrap(), ["NGN", "GHS", "VFV"]);
+    let m = ctx.new_message(iso20022::MessageKind::Pacs008).unwrap();
+    drop(m);
 }

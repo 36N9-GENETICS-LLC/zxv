@@ -84,10 +84,11 @@ type Budgets struct {
 	cgoh   cgo.Handle
 }
 
-// NewBudgets creates an empty budget set in cap's context.
+// NewBudgets creates an empty budget set in cap's context (cap needs
+// CapBudget).
 func NewBudgets(cap *Capability) (*Budgets, error) {
 	var r *C.zxv_rmag
-	if err := cap.ctx.ctxCall(func(p *C.zxv_ctx) C.int32_t { return C.zxv_rmag_create(p, &r) }); err != nil {
+	if err := cap.gated(func(p *C.zxv_cap) C.int32_t { return C.zxv_rmag_create_cap(p, &r) }); err != nil {
 		return nil, err
 	}
 	b := &Budgets{cap: cap, shared: &budgetShared{wake: make(chan struct{})}}

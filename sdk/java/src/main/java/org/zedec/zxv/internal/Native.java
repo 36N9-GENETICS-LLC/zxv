@@ -3,10 +3,8 @@
 package org.zedec.zxv.internal;
 
 import static java.lang.foreign.ValueLayout.ADDRESS;
-import static java.lang.foreign.ValueLayout.JAVA_BYTE;
 import static java.lang.foreign.ValueLayout.JAVA_INT;
 import static java.lang.foreign.ValueLayout.JAVA_LONG;
-import static java.lang.foreign.ValueLayout.JAVA_SHORT;
 
 import java.lang.foreign.FunctionDescriptor;
 import java.lang.foreign.Linker;
@@ -31,8 +29,15 @@ public final class Native {
     private static final MemoryLayout I = JAVA_INT;
     private static final MemoryLayout L = JAVA_LONG; // int64, uint64, size_t (LP64/LLP64)
     private static final MemoryLayout A = ADDRESS;
-    private static final MemoryLayout B = JAVA_BYTE;
-    private static final MemoryLayout S = JAVA_SHORT;
+    // By-value uint8_t / uint16_t parameters are declared as a 32-bit int and
+    // passed as 0..255 / 0..65535. A JAVA_BYTE / JAVA_SHORT layout would be
+    // signed: FFM sign-extends 0xC7 to 0xFFFFFFC7, and on Apple arm64 the
+    // caller extends narrow arguments and the callee trusts the full
+    // register, so libzxv would see 4294967239. An int already in range is
+    // ABI-correct for a uint8_t / uint16_t argument on SysV x86-64, AAPCS64,
+    // Apple arm64 and Windows x64.
+    private static final MemoryLayout U8 = JAVA_INT;
+    private static final MemoryLayout U16 = JAVA_INT;
 
     private static final Linker LINKER = Linker.nativeLinker();
     private static final SymbolLookup LIB = NativeLoader.open();
@@ -74,18 +79,18 @@ public final class Native {
     public static final MethodHandle ctx_halt = fn("zxv_ctx_halt", I, A, A);
     // ---- ISO 4217
     public static final MethodHandle iso4217_by_alpha = fn("zxv_iso4217_by_alpha", I, A, A, A, A);
-    public static final MethodHandle iso4217_by_numeric = fn("zxv_iso4217_by_numeric", I, S, A, L, A, A, A);
+    public static final MethodHandle iso4217_by_numeric = fn("zxv_iso4217_by_numeric", I, U16, A, L, A, A, A);
     public static final MethodHandle iso4217_name = fn("zxv_iso4217_name", I, A, A, L, A);
     public static final MethodHandle iso4217_count = fn("zxv_iso4217_count", I, A);
     public static final MethodHandle iso4217_at = fn("zxv_iso4217_at", I, I, A, L, A);
     public static final MethodHandle iso4217_published = fn("zxv_iso4217_published", I, A, L, A);
-    public static final MethodHandle ccy_caveat = fn("zxv_ccy_caveat", I, S, A, L, A);
+    public static final MethodHandle ccy_caveat = fn("zxv_ccy_caveat", I, U16, A, L, A);
     public static final MethodHandle au_is_member = fn("zxv_au_is_member", I, A, A);
     public static final MethodHandle rail_numeric = fn("zxv_rail_numeric", I, I, A);
     // ---- currencies per context
     public static final MethodHandle ccy_enable = fn("zxv_ccy_enable", I, A, A);
-    public static final MethodHandle ccy_enable_with_minor = fn("zxv_ccy_enable_with_minor", I, A, A, B);
-    public static final MethodHandle ccy_register_private = fn("zxv_ccy_register_private", I, A, A, B);
+    public static final MethodHandle ccy_enable_with_minor = fn("zxv_ccy_enable_with_minor", I, A, A, U8);
+    public static final MethodHandle ccy_register_private = fn("zxv_ccy_register_private", I, A, A, U8);
     public static final MethodHandle ccy_get = fn("zxv_ccy_get", I, A, A, A, A);
     public static final MethodHandle ccy_enabled_count = fn("zxv_ccy_enabled_count", I, A, A);
     public static final MethodHandle ccy_enabled_at = fn("zxv_ccy_enabled_at", I, A, I, A, L, A);
@@ -100,13 +105,25 @@ public final class Native {
     public static final MethodHandle ledger_post_cap = fn("zxv_ledger_post_cap", I, A, I, I, L, A, A, A);
     public static final MethodHandle ledger_balance_cap = fn("zxv_ledger_balance_cap", I, A, I, A, A, A);
     public static final MethodHandle ledger_check_cap = fn("zxv_ledger_check_cap", I, A);
+    // ABI 1.2: the context surface through a capability.
+    public static final MethodHandle ccy_enable_cap = fn("zxv_ccy_enable_cap", I, A, A);
+    public static final MethodHandle ccy_enable_with_minor_cap = fn("zxv_ccy_enable_with_minor_cap", I, A, A, U8);
+    public static final MethodHandle ccy_register_private_cap = fn("zxv_ccy_register_private_cap", I, A, A, U8);
+    public static final MethodHandle ledger_open_account_cap = fn("zxv_ledger_open_account_cap", I, A, A, A, I, A);
+    public static final MethodHandle ledger_account_ccy_cap = fn("zxv_ledger_account_ccy_cap", I, A, I, A, L, A);
+    public static final MethodHandle ledger_account_name_cap = fn("zxv_ledger_account_name_cap", I, A, I, A, L, A);
+    public static final MethodHandle ledger_account_kind_cap = fn("zxv_ledger_account_kind_cap", I, A, I, A);
+    public static final MethodHandle ledger_account_count_cap = fn("zxv_ledger_account_count_cap", I, A, A);
+    public static final MethodHandle ledger_entry_count_cap = fn("zxv_ledger_entry_count_cap", I, A, I, A);
+    public static final MethodHandle ledger_entry_at_cap = fn("zxv_ledger_entry_at_cap", I, A, I, I, A, A, A, A, L, A);
     // ---- ISO 20022
     public static final MethodHandle msg_create = fn("zxv_msg_create", I, A, I, A);
+    public static final MethodHandle msg_create_cap = fn("zxv_msg_create_cap", I, A, I, A);
     public static final MethodHandle msg_destroy = fn("zxv_msg_destroy", null, A);
     public static final MethodHandle msg_set_text = fn("zxv_msg_set_text", I, A, I, A);
-    public static final MethodHandle msg_set_amount = fn("zxv_msg_set_amount", I, A, I, L, B);
+    public static final MethodHandle msg_set_amount = fn("zxv_msg_set_amount", I, A, I, L, U8);
     public static final MethodHandle msg_set_tx_count = fn("zxv_msg_set_tx_count", I, A, I);
-    public static final MethodHandle msg_add_entry = fn("zxv_msg_add_entry", I, A, L, B, I, I);
+    public static final MethodHandle msg_add_entry = fn("zxv_msg_add_entry", I, A, L, U8, I, I);
     public static final MethodHandle msg_render = fn("zxv_msg_render", I, A, A, L, A);
     // ---- rationals (pure)
     public static final MethodHandle rat_normalize = pure("zxv_rat_normalize", I, L, L, A, A);
@@ -134,6 +151,7 @@ public final class Native {
     public static final MethodHandle cap_destroy = fn("zxv_cap_destroy", null, A);
     // ---- attestations
     public static final MethodHandle lpres_create = fn("zxv_lpres_create", I, A, A);
+    public static final MethodHandle lpres_create_cap = fn("zxv_lpres_create_cap", I, A, A);
     public static final MethodHandle lpres_destroy = fn("zxv_lpres_destroy", null, A);
     public static final MethodHandle lpres_attest = fn("zxv_lpres_attest", I, A, A, A, I, I, A, A, I, A);
     public static final MethodHandle lpres_evidence = fn("zxv_lpres_evidence", I, A, A, I, I);
@@ -142,6 +160,7 @@ public final class Native {
     public static final MethodHandle lpres_gate = fn("zxv_lpres_gate", I, A, A);
     // ---- budgets
     public static final MethodHandle rmag_create = fn("zxv_rmag_create", I, A, A);
+    public static final MethodHandle rmag_create_cap = fn("zxv_rmag_create_cap", I, A, A);
     public static final MethodHandle rmag_destroy = fn("zxv_rmag_destroy", null, A);
     public static final MethodHandle rmag_budget = fn("zxv_rmag_budget", I, A, A, A, I, L, L, I, A);
     public static final MethodHandle rmag_consume = fn("zxv_rmag_consume", I, A, A, I, L, L);
@@ -151,6 +170,7 @@ public final class Native {
     public static final MethodHandle rmag_listen = fn("zxv_rmag_listen", I, A, A, A);
     // ---- phase
     public static final MethodHandle phase_create = fn("zxv_phase_create", I, A, A);
+    public static final MethodHandle phase_create_cap = fn("zxv_phase_create_cap", I, A, A);
     public static final MethodHandle phase_destroy = fn("zxv_phase_destroy", null, A);
     public static final MethodHandle phase_now = fn("zxv_phase_now", I, A, A);
     public static final MethodHandle phase_advance = fn("zxv_phase_advance", I, A, A, L, A, A);
@@ -162,12 +182,13 @@ public final class Native {
     public static final MethodHandle phase_next_due = fn("zxv_phase_next_due", I, A, A);
     // ---- wire (pure)
     public static final MethodHandle wire_tag = pure("zxv_wire_tag", I, I, I, I, A);
-    public static final MethodHandle wire_pack = pure("zxv_wire_pack", I, B, A, A, A);
+    public static final MethodHandle wire_pack = pure("zxv_wire_pack", I, U8, A, A, A);
     public static final MethodHandle wire_unpack = pure("zxv_wire_unpack", I, A, A, A, A);
     public static final MethodHandle wire_resolve = pure("zxv_wire_resolve", I, A, A);
     public static final MethodHandle wire_idle = pure("zxv_wire_idle", I, I, A);
     // ---- swarm
     public static final MethodHandle swarm_create = fn("zxv_swarm_create", I, A, I, L, A);
+    public static final MethodHandle swarm_create_cap = fn("zxv_swarm_create_cap", I, A, I, L, A);
     public static final MethodHandle swarm_destroy = fn("zxv_swarm_destroy", null, A);
     public static final MethodHandle swarm_register = fn("zxv_swarm_register", I, A, A, I, I);
     public static final MethodHandle swarm_set_active = fn("zxv_swarm_set_active", I, A, A, I, I);
@@ -224,14 +245,14 @@ public final class Native {
     public static final MethodHandle evm_ledger_state = fn("zxv_evm_ledger_state", I, A, A, L, A, A, A, I, A, L, A, A);
 
     static {
-        // The version gate of SDK_DESIGN section 1: same major, minor >= 1.
+        // The version gate of SDK_DESIGN section 1: same major, minor >= 2 (the _cap forms of ABI 1.2).
         try (var arena = java.lang.foreign.Arena.ofConfined()) {
             MemorySegment ma = arena.allocate(JAVA_INT), mi = arena.allocate(JAVA_INT), pa = arena.allocate(JAVA_INT);
             int st = (int) version.invokeExact(ma, mi, pa);
             int major = ma.get(JAVA_INT, 0), minor = mi.get(JAVA_INT, 0);
-            if (st != 0 || major != 1 || minor < 1) {
+            if (st != 0 || major != 1 || minor < 2) {
                 throw new UnsatisfiedLinkError("libzxv at " + NativeLoader.loadedFrom() + " reports ABI "
-                        + major + "." + minor + "; this SDK needs ABI 1.x with x >= 1");
+                        + major + "." + minor + "; this SDK needs ABI 1.x with x >= 2");
             }
         } catch (UnsatisfiedLinkError e) {
             throw e;

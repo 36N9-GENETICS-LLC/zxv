@@ -94,7 +94,7 @@ public sealed class Budgets : IDisposable
     {
         _cap = capability;
         capability.Enter("Budgets.Create");
-        int rc = NativeMethods.RmagCreate(capability.Context.Handle, out _handle);
+        int rc = NativeMethods.RmagCreateCap(capability.Handle, out _handle);
         if (rc != (int)ZxvStatus.Ok)
         {
             _handle.Dispose();

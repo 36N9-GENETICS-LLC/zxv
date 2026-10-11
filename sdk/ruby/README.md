@@ -4,7 +4,7 @@
 # zxv: the Ruby SDK for ZXV
 
 A small, idiomatic Ruby wrapper of `libzxv`, the one C library every ZXV SDK
-shares (`sdk/libzxv/include/zxv_api.h`, ABI 1.1). It follows the cross-SDK
+shares (`sdk/libzxv/include/zxv_api.h`, ABI 1.2). It follows the cross-SDK
 rules in `sdk/docs/SDK_DESIGN.md`, so the nouns are the same as in every
 other ZXV SDK.
 
@@ -22,7 +22,8 @@ gem build zxv.gemspec && gem install zxv-1.1.0.gem
 The library is found, in order: the path passed to `Zxv.load_library(path)`,
 `ZXV_LIBRARY_PATH`, a copy placed in `lib/zxv/native/` before building the
 gem, the in-repository build `sdk/libzxv/build/`, then the system loader
-path. A library whose ABI is not 1.x (x >= 1) is refused.
+path. A library whose ABI is not 1.x (x >= 2) is refused (the SDK calls the
+`_cap` functions added in ABI 1.2).
 
 Run the tests (Minitest, against the real library and
 `sdk/conformance/vectors.json`):
@@ -40,7 +41,7 @@ require "zxv"
 
 Zxv::Context.open do |ctx|
   cap = ctx.root_capability                       # every gated call carries a capability
-  ctx.enable_currency("NGN")
+  ctx.enable_currency("NGN", cap: cap)            # needs :ledger_post
   ledger = Zxv::Ledger.new(cap)
   bank = ledger.open_account("bank", "NGN", kind: :issuer)
   ada  = ledger.open_account("ada", "NGN")
@@ -80,6 +81,18 @@ object that makes gated calls (`Ledger`, `Budgets`, `PhaseClock`, `Swarm`,
 `Attestations`, `Ed25519`, `MlDsa87`, `MlKem1024`, `Model`, `StateChannel`)
 takes a capability when you create it and passes it on every call. There is
 no global "current capability".
+
+Since ABI 1.2 every gated operation carries a capability:
+`ctx.enable_currency("NGN", cap: cap)` and
+`ctx.register_private_currency("VFV", 2, cap: cap)` need `:ledger_post`, as
+does `Ledger#open_account`; `Ledger#account`, `#account_count` and
+`#journal` need `:ledger_read`; `Zxv::Message.new(cap, :pacs008)` needs
+`:ledger_read` and re-checks it on every call; `Budgets`, `PhaseClock`,
+`Attestations` and `Swarm` need `:budget`, `:phase`, `:attest` and `:swarm`
+to be created. A capability of another context raises
+`CapabilityDeniedError`. The forms without a capability
+(`ctx.enable_currency("NGN")`, `Zxv::Message.new(ctx, kind)`) still work and
+emit a `:deprecated` warning (shown under `ruby -w`).
 
 **Errors.** Every negative status maps through `zxv_status_class`:
 
@@ -140,13 +153,13 @@ the C correlation resolver.
 | Ruby | Wraps | Main methods |
 |---|---|---|
 | `Zxv` | version, features | `abi_version`, `features`, `feature?`, `load_library`, `random_bytes`, `fatal_policy=` |
-| `Zxv::Context` | `zxv_ctx` | `open { }`, `root_capability`, `enable_currency`, `register_private_currency`, `currencies`, `halt`, `poisoned?`, `close` |
+| `Zxv::Context` | `zxv_ctx` | `open { }`, `root_capability`, `enable_currency(alpha, cap:)`, `register_private_currency(code, mu, cap:)`, `currencies`, `halt`, `poisoned?`, `close` |
 | `Zxv::Capability` | `zxv_cap` | `attenuate`, `revoke`, `check`, `allows?`, `attestation=`, `info` |
 | `Zxv::Rational` | `zxv_rat_*` | `of`, `parse`, `from`, `from_double_exact`, `+ - * /`, `<=>`, `to_s`, `to_r`, `to_q16` |
 | `Zxv::Truth` | `zxv_lp_*` | `NEITHER TRUE FALSE BOTH`, `and`, `or`, `not`, `from_evidence`, `certainly_true?`, `to_boolean`, `require_true!` |
 | `Zxv::Ledger` | `zxv_ledger_*` | `open_account`, `post`, `balance`, `check`, `journal`, `account` |
 | `Zxv::Iso4217`, `Zxv::Currency` | ISO 4217 table | `lookup`, `by_numeric`, `name`, `codes`, `published` |
-| `Zxv::Message` | `zxv_msg_*` | `[]=`, `amount`, `add_entry`, `render` (pacs.008, camt.053) |
+| `Zxv::Message` | `zxv_msg_*` | `new(cap, kind)`, `[]=`, `amount`, `add_entry`, `render` (pacs.008, camt.053) |
 | `Zxv::Attestations` | `zxv_lpres_*` | `attest`, `evidence`, `find`, `state`, `gate_clear?` |
 | `Zxv::Budgets` / `Zxv::Budget` | `zxv_rmag_*` | `budget`, `consume`, `consume_async`, `release`, `limit=`, `status`, `on_exhausted` |
 | `Zxv::PhaseClock` / `DeferredEvent` | `zxv_phase_*` | `now`, `advance`, `admit`, `set_health`, `defer`, `next_due`, `start_realtime`; `await_cleared`, `cancel` |

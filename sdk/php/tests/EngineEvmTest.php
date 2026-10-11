@@ -108,7 +108,7 @@ final class EngineEvmTest extends TestCase
             $st2 = $ch->encodeState("0x" . $v["channel_id"], $v["nonce"], array_map(fn ($a) => "0x" . $a, $v["addresses"]), $v["balances"]);
             $this->assertSame($st->digest, $st2->digest);
 
-            $ctx->enableCurrency("USD", 2);
+            $ctx->enableCurrency("USD", 2, cap: $cap);
             $l = new Ledger($cap);
             $a = $l->openAccount("a", "USD", Ledger::ISSUER);
             $b = $l->openAccount("b", "USD");

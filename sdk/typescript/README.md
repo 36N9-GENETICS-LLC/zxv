@@ -32,7 +32,7 @@ The addon finds the library in the order of SDK_DESIGN.md §1: the
 `libraryPath` you pass, `ZXV_LIBRARY_PATH`, the bundled copy (the
 repository build `../libzxv/build` when run from this tree, otherwise `lib/`
 of the published package, staged by `npm pack`), then the system loader. A library whose ABI major is not 1, or whose minor
-is below 1, is refused.
+is below 2, is refused (the SDK calls the `_cap` functions added in ABI 1.2).
 
 In a published package, `import '@zedec/zxv'` resolves to the Node entry
 (`node` condition) or the browser entry (`browser` condition, wasm only, no
@@ -47,7 +47,7 @@ import { Zxv, Ledger, AccountKind, Cap, Rational } from '@zedec/zxv';
 const zxv = await Zxv.load();                       // native in Node, wasm in a browser
 using ctx = zxv.createContext();
 const root = ctx.rootCapability();                  // hand out root.attenuate(...) to the rest
-ctx.enableCurrency('NGN');
+ctx.enableCurrency(root, 'NGN');                    // needs Cap.LEDGER_POST
 const ledger = Ledger.of(root);
 const bank = ledger.openAccount('bank', 'NGN', AccountKind.ISSUER);
 const ada = ledger.openAccount('ada', 'NGN');
@@ -91,6 +91,18 @@ subtree; `setAttestation(Truth.BOTH)` blocks every gated call. Objects that
 make gated calls hold their capability (`Ledger.of(cap)`,
 `Budgets.open(cap)`, `PhaseClock.open(cap)`, `Model.open(cap, ...)`) and
 present it on every call. Bits are bigint flags: `Cap.LEDGER_READ | Cap.EVM`.
+
+Since ABI 1.2 every gated operation carries a capability:
+`ctx.enableCurrency(cap, 'NGN')` and `ctx.registerPrivateUnit(cap, 'VFV', 2)`
+need `LEDGER_POST`, as does `Ledger.openAccount`; `Ledger.account`,
+`accountCount` and `journal` need `LEDGER_READ`;
+`Iso20022Message.create(cap, kind)` needs `LEDGER_READ` and re-checks it on
+every call; `Budgets.open`, `PhaseClock.open`, `Attestations.create` and
+`Swarm.create` need `BUDGET`, `PHASE`, `ATTEST` and `SWARM`. A capability of
+another context throws `CapabilityDeniedError` (`ZXV_E_CAP`). The forms
+without a capability (`ctx.enableCurrency('NGN')`,
+`Iso20022Message.create(ctx, kind)`) still work and are marked
+`@deprecated`.
 
 **Errors** map every negative status through `zxv_status_class`:
 
@@ -148,12 +160,12 @@ runs the C W5 resolver.
 | Area | API |
 |---|---|
 | Library | `Zxv.load({ backend, libraryPath, wasm })`, `zxv.version`, `zxv.has('TENSOR')`, `zxv.features()`, `statusName`, `statusClass`, `random`, `secretKey`, `iso4217`, `kernel` (C rationals/logic), `wire` (C framing) |
-| Context | `zxv.createContext({ fatalPolicy })`, `rootCapability`, `enableCurrency`, `registerPrivateUnit`, `currency`, `enabledCurrencies`, `halt`, `isPoisoned`, `close` |
+| Context | `zxv.createContext({ fatalPolicy })`, `rootCapability`, `enableCurrency(cap, alpha[, minorUnits])`, `registerPrivateUnit(cap, code, minorUnits)`, `currency`, `enabledCurrencies`, `halt`, `isPoisoned`, `close` |
 | Capability | `Cap.*`, `attenuate`, `revoke`, `setAttestation`, `info`, `check`, `require` |
 | Exact numbers | `Rational.of/parse/fromNumberExact/fromIeee754Bits/fromQ16`, `add/sub/mul/div/cmp/equals/toQ16/toString` |
 | Logic | `Truth.*`, `and/or/not`, `fromEvidence`, `toBoolean(policy)`, `require` |
 | Ledger | `Ledger.of(cap)`: `openAccount`, `post`, `balance`, `journal`, `account`, `check` |
-| ISO 20022 | `Iso20022Message.create(ctx, MxKind.PACS008)`: `setText`, `setAmount`, `addEntry`, `render`; `NettingCycle`, `Cards`, `runVss` (pending kernel modules) |
+| ISO 20022 | `Iso20022Message.create(cap, MxKind.PACS008)`: `setText`, `setAmount`, `addEntry`, `render`; `NettingCycle`, `Cards`, `runVss` (pending kernel modules) |
 | Attestations | `Attestations.create(cap)`: `attest`, `evidence`, `state`, `find`, `gate` |
 | Budgets | `Budgets.open(cap).create(name, limit)`: `consume`, `consumeAsync`, `release`, `setLimit`, `status`, `onExhausted` |
 | Phase | `PhaseClock.open(cap)`: `now`, `advance`, `admit`, `setHealth`, `defer` -> `DeferredEvent.awaitCleared/cancel`, `untilTick`, `nextDue`, `startRealtime` |

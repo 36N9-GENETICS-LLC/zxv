@@ -18,7 +18,7 @@ final class LibraryTests: XCTestCase {
     func testVersionAndFeatures() throws {
         let v = ZxvLibrary.version
         XCTAssertEqual(v.major, 1)
-        XCTAssertGreaterThanOrEqual(v.minor, 1)
+        XCTAssertGreaterThanOrEqual(v.minor, 2)
         try ZxvLibrary.ensureCompatible()
         XCTAssertTrue(ZxvLibrary.features.contains([.rational, .caps, .rmag, .phase]))
         XCTAssertFalse(ZxvLibrary.features.contains(.lora))
@@ -157,7 +157,7 @@ final class CapabilityLedgerTests: XCTestCase {
         }
         try root.setAttestation(.true)
 
-        try ctx.enableCurrency("NGN", minorUnits: 2)
+        try ctx.enableCurrency("NGN", minorUnits: 2, capability: root)
         XCTAssertEqual(try ctx.enabledCurrencies(), ["NGN"])
         let ledger = Ledger(root)
         let issuer = try ledger.openAccount("issuer", currency: "NGN", kind: .issuer)
@@ -180,7 +180,7 @@ final class CapabilityLedgerTests: XCTestCase {
         XCTAssertEqual(try reader.accountName(bob), "bob")
         try ledger.check()
 
-        let msg = try Message(ctx, kind: .pacs008)
+        let msg = try Message(ro, kind: .pacs008)
         try msg.set(.msgId, "M1").set(.creDtTm, "2026-10-11T00:00:00Z").set(.debtorName, "Alice & Co")
             .set(.debtorAccount, "A1").set(.creditorName, "Bob").set(.creditorAccount, "B1")
             .set(.endToEndId, "E2E1").set(.currency, "NGN").setAmount(.settlement, units: 12075, fractionDigits: 2)
@@ -601,7 +601,7 @@ final class EvmTests: XCTestCase {
         XCTAssertEqual(hexString(st.digest), v.str("digest"))
         XCTAssertEqual(Hashes.keccak256(st.encoding), st.digest)
 
-        try ctx.enableCurrency("USD", minorUnits: 2)
+        try ctx.enableCurrency("USD", minorUnits: 2, capability: cap)
         let ledger = Ledger(cap)
         let a = try ledger.openAccount("a", currency: "USD", kind: .issuer)
         let b = try ledger.openAccount("b", currency: "USD")
@@ -613,3 +613,114 @@ final class EvmTests: XCTestCase {
             channelId: id, nonce: 1, parties: parties, balances: balances))
     }
 }
+
+/// ABI 1.2: every gated call goes through a capability (the `zxv_*_cap` forms).
+final class CapFormTests: XCTestCase {
+    private func assertDenied(_ body: @autoclosure () throws -> some Any, file: StaticString = #filePath,
+                              line: UInt = #line) {
+        do {
+            _ = try body()
+            XCTFail("not refused", file: file, line: line)
+        } catch {
+            XCTAssertEqual(error.zxv?.refusal, .capabilityDenied, "\(error)", file: file, line: line)
+            XCTAssertEqual(error.zxv?.status, ZXV_E_CAP, file: file, line: line)
+        }
+    }
+
+    func testCapFormsNeedTheRightBit() throws {
+        let ctx = try ZxvContext()
+        let root = try ctx.rootCapability()
+        let post = try root.attenuate(.ledgerPost)
+        let read = try root.attenuate(.ledgerRead)
+
+        // .ledgerPost: currencies and opening accounts
+        try ctx.enableCurrency("NGN", capability: post)
+        try ctx.enableCurrency("GHS", minorUnits: 2, capability: post)
+        try ctx.registerPrivateUnit("VFV", minorUnits: 2, capability: post)
+        XCTAssertEqual(try ctx.enabledCurrencies(), ["NGN", "GHS", "VFV"])
+        assertDenied(try ctx.enableCurrency("KES", capability: read))
+        assertDenied(try ctx.enableCurrency("KES", minorUnits: 2, capability: read))
+        assertDenied(try ctx.registerPrivateUnit("VFX", minorUnits: 2, capability: read))
+        let writer = Ledger(post), reader = Ledger(read)
+        let bank = try writer.openAccount("bank", currency: "NGN", kind: .issuer)
+        let ada = try writer.openAccount("ada", currency: "NGN")
+        assertDenied(try reader.openAccount("x", currency: "NGN"))
+        try writer.post(from: bank, to: ada, amount: 7, currency: "NGN", reference: "R-1")
+
+        // .ledgerRead: account metadata, journals and messages
+        XCTAssertEqual(try reader.accountCount(), 2)
+        XCTAssertEqual(try reader.accountName(ada), "ada")
+        XCTAssertEqual(try reader.accountCurrency(ada), "NGN")
+        XCTAssertEqual(try reader.accountKind(bank), .issuer)
+        XCTAssertEqual(try reader.journal(ada).map(\.reference), ["R-1"])
+        assertDenied(try writer.accountCount())
+        assertDenied(try writer.accountName(ada))
+        assertDenied(try writer.accountCurrency(ada))
+        assertDenied(try writer.accountKind(ada))
+        assertDenied(try writer.journal(ada))
+        assertDenied(try Message(post, kind: .pacs008))
+        let mcap = try root.attenuate(.ledgerRead)
+        let m = try Message(mcap, kind: .pacs008)
+        try m.set(.msgId, "M-1")
+        try mcap.setAttestation(.neither) // re-checked on every message call
+        assertDenied(try m.set(.msgId, "M-2"))
+
+        // handle creation: .budget, .phase, .attest, .swarm
+        assertDenied(try Budgets(read))
+        assertDenied(try PhaseClock(read))
+        assertDenied(try Attestations(read))
+        assertDenied(try Swarm(read, levels: 2, tokensPerCycle: 10))
+        _ = try Budgets(try root.attenuate(.budget))
+        _ = try PhaseClock(try root.attenuate(.phase))
+        _ = try Attestations(try root.attenuate(.attest))
+        _ = try Swarm(try root.attenuate(.swarm), levels: 2, tokensPerCycle: 10)
+    }
+
+    func testCapFromAnotherContextIsRefused() throws {
+        let ctx = try ZxvContext(), other = try ZxvContext()
+        let foreign = try other.rootCapability()
+        let calls: [() throws -> Void] = [
+            { try ctx.enableCurrency("NGN", capability: foreign) },
+            { try ctx.enableCurrency("NGN", minorUnits: 2, capability: foreign) },
+            { try ctx.registerPrivateUnit("VFV", minorUnits: 2, capability: foreign) },
+        ]
+        for call in calls {
+            do {
+                try call()
+                XCTFail("not refused")
+            } catch {
+                XCTAssertEqual(error.zxv?.refusal, .capabilityDenied)
+                XCTAssertEqual(error.zxv?.status, ZXV_E_CAP)
+                XCTAssertTrue(error.zxv?.detail.contains("different context") ?? false, "\(error)")
+            }
+        }
+        XCTAssertEqual(try ctx.enabledCurrencies(), [])
+        XCTAssertEqual(try other.enabledCurrencies(), [], "nothing leaked into the capability's own context")
+    }
+
+    func testDeprecatedNoCapFormsStillWork() throws {
+        // Through a protocol, so the stable 1.0 surface stays tested without
+        // deprecation warnings in this build.
+        let ctx = try ZxvContext()
+        let legacy: any LegacyContext = ctx
+        try legacy.enableCurrency("NGN", minorUnits: nil)
+        try legacy.enableCurrency("GHS", minorUnits: 2)
+        try legacy.registerPrivateUnit("VFV", minorUnits: 2)
+        XCTAssertEqual(try ctx.enabledCurrencies(), ["NGN", "GHS", "VFV"])
+        let make: any LegacyMessage.Type = Message.self
+        _ = try make.init(ctx, kind: .pacs008)
+    }
+}
+
+/// The 1.0 forms without a capability (deprecated since ABI 1.2).
+protocol LegacyContext {
+    func enableCurrency(_ alpha: String, minorUnits: UInt8?) throws(ZxvError)
+    func registerPrivateUnit(_ code: String, minorUnits: UInt8) throws(ZxvError)
+}
+extension ZxvContext: LegacyContext {}
+
+/// The 1.0 message initializer (deprecated since ABI 1.2).
+protocol LegacyMessage {
+    init(_ context: ZxvContext, kind: MxKind) throws(ZxvError)
+}
+extension Message: LegacyMessage {}

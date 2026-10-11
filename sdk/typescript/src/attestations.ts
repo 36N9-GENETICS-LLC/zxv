@@ -59,7 +59,7 @@ export class Attestations extends Resource {
   /** A new registry in `cap`'s context, written through `cap`. */
   static create(cap: Capability): Attestations {
     const c = cap.context;
-    return new Attestations(cap, newHandle(c._core, c._state, 'zxv_lpres_create', c._ptr()));
+    return new Attestations(cap, newHandle(c._core, c._state, 'zxv_lpres_create_cap', cap._ptr()));
   }
 
   #p(): Ptr {

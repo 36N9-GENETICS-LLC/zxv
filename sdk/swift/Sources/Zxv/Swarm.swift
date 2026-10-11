@@ -37,11 +37,12 @@ public final class Swarm: @unchecked Sendable {
     private let cap: Capability
     private let handle: OpaquePointer
 
-    /// A swarm of `levels` levels issuing `tokensPerCycle` per cycle.
+    /// A swarm of `levels` levels issuing `tokensPerCycle` per cycle (needs
+    /// `.swarm`).
     public init(_ cap: Capability, levels: UInt32, tokensPerCycle: UInt64) throws(ZxvError) {
         self.cap = cap
         var s: OpaquePointer?
-        try cap.call { _ in zxv_swarm_create(cap.context.handle, levels, tokensPerCycle, &s) }
+        try cap.call { zxv_swarm_create_cap($0, levels, tokensPerCycle, &s) }
         handle = s!
     }
     deinit { zxv_swarm_destroy(handle) }

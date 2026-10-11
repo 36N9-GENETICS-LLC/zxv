@@ -22,7 +22,7 @@ module Zxv
     def initialize(capability)
       @capability = capability
       out = Call.out(:pointer)
-      Call.check(Native.lib.zxv_lpres_create(capability.context.raw, out), capability.context)
+      Call.check(Native.lib.zxv_lpres_create_cap(capability.ptr, out), capability.context)
       super(capability.context, out.read_pointer, :zxv_lpres_destroy)
     end
 

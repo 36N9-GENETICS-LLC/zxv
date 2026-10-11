@@ -50,7 +50,7 @@ public class Quickstart {
              Capability teller = root.attenuate(Permission.LEDGER_READ, Permission.LEDGER_POST)) {
 
             // Ledger: exact minor units, through a narrowed capability.
-            ctx.enableCurrency("NGN");
+            ctx.enableCurrency(root, "NGN");
             Ledger ledger = Ledger.of(teller);
             Account bank = ledger.openAccount("bank", "NGN", AccountKind.ISSUER);
             Account ada = ledger.openAccount("ada", "NGN", AccountKind.HOLDER);

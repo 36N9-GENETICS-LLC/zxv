@@ -208,6 +208,17 @@ impl<'c> Capability<'c> {
         self.call(|c| unsafe { sys::zxv_cap_check(c, needed.bits()) })
     }
 
+    /// Starts an ISO 20022 message of `kind` through this capability
+    /// ([`Caps::LEDGER_READ`]); the library re-checks it on every message
+    /// call, so revoking it stops the message too. The message borrows the
+    /// capability, which therefore outlives it.
+    pub fn new_message(
+        &self,
+        kind: crate::iso20022::MessageKind,
+    ) -> Result<crate::iso20022::Message<'_>> {
+        crate::iso20022::Message::with_cap(self, kind)
+    }
+
     /// The context this capability governs.
     pub fn context(&self) -> &'c Context {
         self.ctx

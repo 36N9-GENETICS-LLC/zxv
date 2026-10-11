@@ -94,21 +94,55 @@ final class Context
 
     // --- currencies -------------------------------------------------------
 
-    /** Enable an ISO 4217 currency; $minorUnits only asserts the expected value. */
-    public function enableCurrency(string $alpha, ?int $minorUnits = null): Currency
+    /**
+     * Enable an ISO 4217 currency; $minorUnits only asserts the expected value.
+     * $cap needs LEDGER_POST and must belong to this context (else
+     * CapabilityDeniedException). Without $cap this is deprecated since ABI
+     * 1.2 and raises E_USER_DEPRECATED.
+     */
+    public function enableCurrency(string $alpha, ?int $minorUnits = null, ?Capability $cap = null): Currency
     {
-        $rc = $minorUnits === null
-            ? Native::ffi()->zxv_ccy_enable($this->raw(), $alpha)
-            : Native::ffi()->zxv_ccy_enable_with_minor($this->raw(), $alpha, Native::int($minorUnits, "minorUnits", 0, 255));
+        $mu = $minorUnits === null ? null : Native::int($minorUnits, "minorUnits", 0, 255);
+        if ($cap !== null) {
+            $c = $this->ownCap($cap);
+            $rc = $mu === null
+                ? Native::ffi()->zxv_ccy_enable_cap($c, $alpha)
+                : Native::ffi()->zxv_ccy_enable_with_minor_cap($c, $alpha, $mu);
+        } else {
+            trigger_error("Context::enableCurrency() without \$cap is deprecated since ABI 1.2: pass cap: (a Capability with LEDGER_POST)", E_USER_DEPRECATED);
+            $rc = $mu === null
+                ? Native::ffi()->zxv_ccy_enable($this->raw(), $alpha)
+                : Native::ffi()->zxv_ccy_enable_with_minor($this->raw(), $alpha, $mu);
+        }
         Native::check($rc, $this);
         return $this->currency($alpha) ?? throw new ZxvUsageException(Status::E_CURRENCY, $alpha);
     }
 
-    /** Register a platform-private unit (e.g. "VFV", 2): ledger only, never ISO 20022. */
-    public function registerPrivateCurrency(string $code, int $minorUnits): Currency
+    /**
+     * Register a platform-private unit (e.g. "VFV", 2): ledger only, never ISO
+     * 20022. $cap needs LEDGER_POST; without it this is deprecated since ABI 1.2.
+     */
+    public function registerPrivateCurrency(string $code, int $minorUnits, ?Capability $cap = null): Currency
     {
-        Native::check(Native::ffi()->zxv_ccy_register_private($this->raw(), $code, Native::int($minorUnits, "minorUnits", 0, 255)), $this);
+        $mu = Native::int($minorUnits, "minorUnits", 0, 255);
+        if ($cap !== null) {
+            $rc = Native::ffi()->zxv_ccy_register_private_cap($this->ownCap($cap), $code, $mu);
+        } else {
+            trigger_error("Context::registerPrivateCurrency() without \$cap is deprecated since ABI 1.2: pass cap: (a Capability with LEDGER_POST)", E_USER_DEPRECATED);
+            $rc = Native::ffi()->zxv_ccy_register_private($this->raw(), $code, $mu);
+        }
+        Native::check($rc, $this);
         return $this->currency($code) ?? throw new ZxvUsageException(Status::E_CURRENCY, $code);
+    }
+
+    /** The handle of $cap, after checking it belongs to this context. */
+    private function ownCap(Capability $cap): \FFI\CData
+    {
+        if ($cap->context !== $this) {
+            throw new Exception\CapabilityDeniedException(Status::E_CAP, "the capability belongs to a different context");
+        }
+        $this->raw();
+        return $cap->ptr();
     }
 
     /** An enabled currency, or null. */

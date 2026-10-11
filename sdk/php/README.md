@@ -4,7 +4,7 @@
 # zedec/zxv: the PHP SDK for ZXV
 
 A small PHP 8.1+ wrapper of `libzxv`, the one C library every ZXV SDK shares
-(`sdk/libzxv/include/zxv_api.h`, ABI 1.1), over PHP's FFI extension. It
+(`sdk/libzxv/include/zxv_api.h`, ABI 1.2), over PHP's FFI extension. It
 follows `sdk/docs/SDK_DESIGN.md`, so its nouns match every other ZXV SDK.
 Every file uses `declare(strict_types=1)`.
 
@@ -22,7 +22,8 @@ require "/path/to/sdk/php/autoload.php";
 The library is found, in order: `Zxv::loadLibrary($path)`,
 `ZXV_LIBRARY_PATH`, a copy in this package's `lib/` directory, the
 in-repository build `sdk/libzxv/build/`, then the system loader path. A
-library whose ABI is not 1.x (x >= 1) is refused.
+library whose ABI is not 1.x (x >= 2) is refused (the SDK calls the `_cap`
+functions added in ABI 1.2).
 
 Tests run with plain PHP (no PHPUnit needed), against the real library and
 `sdk/conformance/vectors.json`:
@@ -43,7 +44,7 @@ use Zedec\Zxv\{Context, Ledger};
 
 $ctx = new Context();
 $cap = $ctx->rootCapability();                     // every gated call carries a capability
-$ctx->enableCurrency("NGN");
+$ctx->enableCurrency("NGN", cap: $cap);          // needs LEDGER_POST
 $ledger = new Ledger($cap);
 $bank = $ledger->openAccount("bank", "NGN", Ledger::ISSUER);
 $ada = $ledger->openAccount("ada", "NGN");
@@ -79,6 +80,18 @@ it and its descendants; `setAttestation(Truth::both())` blocks it. Every
 object that makes gated calls (`Ledger`, `Budgets`, `PhaseClock`, `Swarm`,
 `Attestations`, `Ed25519`, `MlDsa87`, `MlKem1024`, `Model`, `StateChannel`)
 takes a capability in its constructor. There is no global capability.
+
+Since ABI 1.2 every gated operation carries a capability:
+`$ctx->enableCurrency("NGN", cap: $cap)` and
+`$ctx->registerPrivateCurrency("VFV", 2, cap: $cap)` need `LEDGER_POST`, as
+does `Ledger::openAccount`; `Ledger::account`, `accountCount` and `journal`
+need `LEDGER_READ`; `new Message($cap, Message::PACS008)` needs
+`LEDGER_READ` and re-checks it on every call; `Budgets`, `PhaseClock`,
+`Attestations` and `Swarm` need `BUDGET`, `PHASE`, `ATTEST` and `SWARM` to be
+constructed. A capability of another context throws
+`CapabilityDeniedException`. The forms without a capability
+(`$ctx->enableCurrency("NGN")`, `new Message($ctx, ...)`) still work and
+raise `E_USER_DEPRECATED`.
 
 **Errors.** Every negative status maps through `zxv_status_class`
 (namespace `Zedec\Zxv\Exception`):
@@ -141,13 +154,13 @@ without the native library; `nativeBytes()` cross-checks against C and
 | PHP (`Zedec\Zxv\...`) | Wraps | Main methods |
 |---|---|---|
 | `Zxv` | version, features | `abiVersion`, `features`, `hasFeature`, `loadLibrary`, `randomBytes`, `setFatalPolicy` |
-| `Context` | `zxv_ctx` | `rootCapability`, `enableCurrency`, `registerPrivateCurrency`, `currency`, `halt`, `isPoisoned`, `close` |
+| `Context` | `zxv_ctx` | `rootCapability`, `enableCurrency(alpha, mu, cap:)`, `registerPrivateCurrency(code, mu, cap:)`, `currency`, `halt`, `isPoisoned`, `close` |
 | `Capability` | `zxv_cap` | `attenuate`, `revoke`, `check`, `allows`, `setAttestation`, `info` |
 | `Rational` | `zxv_rat_*` | `of`, `parse`, `from`, `fromDoubleExact`, `add sub mul div`, `compare`, `equals`, `__toString`, `toQ16` |
 | `Truth` | `zxv_lp_*` | `neither() true() false() both()`, `and`, `or`, `not`, `fromEvidence`, `isCertainlyTrue`, `toBool`, `requireTrue` |
-| `Ledger`, `Balance` | `zxv_ledger_*` | `openAccount`, `post`, `balance`, `check`, `journal`, `accountCount` |
+| `Ledger`, `Balance` | `zxv_ledger_*` | `openAccount`, `post`, `balance`, `check`, `journal`, `account`, `accountCount` |
 | `Iso4217`, `Currency` | ISO 4217 table | `lookup`, `byNumeric`, `name`, `codes`, `published` |
-| `Message` | `zxv_msg_*` | `set`, `amount`, `render` (pacs.008, camt.053) |
+| `Message` | `zxv_msg_*` | `new Message($cap, kind)`, `set`, `amount`, `render` (pacs.008, camt.053) |
 | `Attestations` | `zxv_lpres_*` | `attest`, `evidence`, `find`, `state`, `isGateClear` |
 | `Budgets`, `Budget` | `zxv_rmag_*` | `budget`; `consume`, `consumeAsync`, `release`, `setLimit`, `status`, `onExhausted` |
 | `PhaseClock`, `DeferredEvent` | `zxv_phase_*` | `now`, `advance`, `admit`, `setHealth`, `defer`, `nextDue`, `startRealtime`; `awaitCleared`, `cancel` |

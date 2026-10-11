@@ -34,7 +34,7 @@ func statusOf(err error) int32 {
 func TestABIVersion(t *testing.T) {
 	v := loadVectors(t)
 	major, minor, _ := zxv.Version()
-	if int(major) != v.ABI[0] || minor < 1 {
+	if int(major) != v.ABI[0] || minor < 2 {
 		t.Fatalf("ABI %d.%d", major, minor)
 	}
 }
@@ -363,7 +363,7 @@ func TestEVMStateEncoding(t *testing.T) {
 	if zxv.Keccak256(st.Encoding) != st.Digest {
 		t.Fatal("digest is keccak256(encoding)")
 	}
-	ok(t, ctx.EnableCurrencyWithMinor("USD", 2))
+	ok(t, ctx.EnableCurrencyWithMinorCap(cap, "USD", 2))
 	l := zxv.NewLedger(cap)
 	a := must[zxv.AccountID](t)(l.OpenAccount("a", "USD", zxv.Issuer))
 	b := must[zxv.AccountID](t)(l.OpenAccount("b", "USD", zxv.Holder))

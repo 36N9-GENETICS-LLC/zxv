@@ -13,12 +13,13 @@ from __future__ import annotations
 
 import enum
 from dataclasses import dataclass
-from typing import Any, List
+import warnings
+from typing import Any, List, Union
 
 from . import _native
 from ._handle import NativeHandle
 from ._native import ffi
-from .context import Context
+from .context import Capability, Context
 
 __all__ = [
     "MxKind", "MxField", "MxAmount", "CdtDbt", "EntryStatus", "MxMessage",
@@ -81,16 +82,33 @@ class EntryStatus(enum.IntEnum):
 class MxMessage(NativeHandle):
     """One ISO 20022 message under construction. Not thread-safe (R6).
 
-    >>> with MxMessage(ctx, MxKind.PACS008) as m:           # doctest: +SKIP
+    >>> with MxMessage(cap, MxKind.PACS008) as m:           # doctest: +SKIP
     ...     m.set_text(MxField.MSG_ID, "M1")
     ...     xml = m.render()
+
+    A message made from a :class:`Capability` (needs ``Cap.LEDGER_READ``)
+    re-checks it on every call: revoking the capability, or clearing its
+    attestation, stops the message. Closing the capability closes the
+    message first.
     """
 
-    def __init__(self, ctx: Context, kind: MxKind) -> None:
-        """Create a message of ``kind`` in ``ctx``."""
+    def __init__(self, owner: Union[Capability, Context], kind: MxKind) -> None:
+        """Create a message of ``kind`` through ``owner``, a :class:`Capability`.
+
+        Passing a :class:`Context` is deprecated since ABI 1.2 (no
+        capability) and emits a :class:`DeprecationWarning`.
+        """
         out = ffi.new("zxv_msg **")
-        _native.check(_native.lib().zxv_msg_create(ctx._handle(), int(MxKind(kind)), out), ctx)
-        super().__init__(out[0], ctx, ctx)
+        k = int(MxKind(kind))
+        if isinstance(owner, Capability):
+            ctx = owner.context
+            _native.check(_native.lib().zxv_msg_create_cap(owner._handle(), k, out), ctx)
+            super().__init__(out[0], owner, ctx)
+            return
+        warnings.warn("MxMessage(ctx, kind) is deprecated since ABI 1.2: pass a Capability "
+                      "with Cap.LEDGER_READ instead of the Context", DeprecationWarning, stacklevel=2)
+        _native.check(_native.lib().zxv_msg_create(owner._handle(), k, out), owner)
+        super().__init__(out[0], owner, owner)
 
     def _destroy(self, handle: Any) -> None:
         _native.lib().zxv_msg_destroy(handle)

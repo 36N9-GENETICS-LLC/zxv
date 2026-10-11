@@ -20,7 +20,7 @@ final class Swarm extends NativeHandle
     public function __construct(public readonly Capability $capability, int $levels, int $tokensPerCycle)
     {
         $out = Native::new("zxv_swarm*");
-        Native::check(Native::ffi()->zxv_swarm_create($capability->context->raw(), Native::uint32($levels, "levels"), Native::uint($tokensPerCycle, "tokensPerCycle"), \FFI::addr($out)), $capability->context);
+        Native::check(Native::ffi()->zxv_swarm_create_cap($capability->ptr(), Native::uint32($levels, "levels"), Native::uint($tokensPerCycle, "tokensPerCycle"), \FFI::addr($out)), $capability->context);
         parent::__construct($capability->context, $out, "zxv_swarm_destroy");
     }
 

@@ -270,7 +270,7 @@ void test_caps_ledger_fatal()
     }
     root.set_attestation(zxv::Truth::true_);
 
-    ctx.enable_currency("NGN", 2);
+    ctx.enable_currency(root, "NGN", 2);
     CHECK(ctx.enabled_currencies() == std::vector<std::string>{"NGN"});
     zxv::Ledger ledger(root);
     const auto issuer = ledger.open_account("issuer", "NGN", zxv::AccountKind::issuer);
@@ -289,8 +289,8 @@ void test_caps_ledger_fatal()
     CHECK(reader.account_name(bob) == "bob" && reader.account_currency(bob) == "NGN");
     ledger.check();
 
-    // ISO 20022 render through the same context
-    zxv::Message msg(ctx, zxv::MxKind::pacs008);
+    // ISO 20022 render through a LEDGER_READ capability
+    zxv::Message msg(ro, zxv::MxKind::pacs008);
     msg.set(zxv::MxField::msg_id, "M1").set(zxv::MxField::cre_dt_tm, "2026-10-11T00:00:00Z")
         .set(zxv::MxField::debtor_name, "Alice & Co").set(zxv::MxField::debtor_acct, "A1")
         .set(zxv::MxField::creditor_name, "Bob").set(zxv::MxField::creditor_acct, "B1")
@@ -298,7 +298,7 @@ void test_caps_ledger_fatal()
         .set_amount(zxv::MxAmount::settlement, 12075, 2);
     const std::string xml = msg.render();
     CHECK(xml.find("Alice &amp; Co") != std::string::npos && xml.find("120.75") != std::string::npos);
-    CHECK_THROWS_AS(zxv::Message(ctx, zxv::MxKind::pacs002), zxv::NotImplemented);
+    CHECK_THROWS_AS(zxv::Message(ro, zxv::MxKind::pacs002), zxv::NotImplemented);
     CHECK(zxv::iso4217("NGN").numeric == 566);
     CHECK(zxv::card_check_digit(zxv::CardNetwork::dragon, "4111111111111111"));
 
@@ -368,8 +368,14 @@ void test_attestations_budgets()
     CHECK(st.truth == zxv::Truth::both && st.positive == 2 && st.negative == 1);
     CHECK(!reg.gate());
     CHECK(reg.find("model.gguf") == i && !reg.find("nope"));
-    CHECK_THROWS_AS(zxv::Attestations(cap.attenuate(zxv::caps::ledger_read)).attest("x", zxv::Subject::source, zxv::Truth::true_, "a"),
-                    zxv::CapabilityDenied);
+    // ABI 1.2: creating a registry needs caps::attest, and so does using it.
+    CHECK_THROWS_AS(zxv::Attestations(cap.attenuate(zxv::caps::ledger_read)), zxv::CapabilityDenied);
+    {
+        auto at = cap.attenuate(zxv::caps::attest);
+        zxv::Attestations reg2(at);
+        at.revoke();
+        CHECK_THROWS_AS(reg2.attest("x", zxv::Subject::source, zxv::Truth::true_, "a"), zxv::CapabilityDenied);
+    }
 
     zxv::Budgets budgets(cap);
     auto b = budgets.create("tokens", zxv::Resource::tokens, 10);
@@ -400,7 +406,7 @@ void test_attestations_budgets()
     // INVALID fails immediately; timeout and cancellation
     CHECK_THROWS_AS(b.consume_async(-3).get(), zxv::UsageError);
     CHECK_THROWS_AS(b.consume_async(100, {}, std::chrono::milliseconds(20)).get(), zxv::BudgetExhausted);
-    std::stop_source stop;
+    zxv::stop_source stop;
     auto fut3 = b.consume_async(100, stop.get_token());
     stop.request_stop();
     CHECK_THROWS_AS(fut3.get(), zxv::OperationCancelled);
@@ -441,7 +447,13 @@ void test_phase()
     auto ev2 = clock.defer(clock.now() + 100);
     ev2.cancel();
     CHECK_THROWS_AS(ev2.await_cleared().get(), zxv::OperationCancelled);
-    CHECK_THROWS_AS(zxv::PhaseClock(cap.attenuate(zxv::caps::ledger_read)).advance(1), zxv::CapabilityDenied);
+    CHECK_THROWS_AS(zxv::PhaseClock(cap.attenuate(zxv::caps::ledger_read)), zxv::CapabilityDenied);
+    {
+        auto ph = cap.attenuate(zxv::caps::phase);
+        zxv::PhaseClock c3(ph);
+        ph.revoke();
+        CHECK_THROWS_AS(c3.advance(1), zxv::CapabilityDenied);
+    }
 
     // real-time driver: 100,000 ticks/s clears an event 2,000 ticks out
     auto until = clock.until_tick(clock.now() + 2000);
@@ -721,7 +733,7 @@ void test_evm()
     CHECK(zxv::to_hex(st.digest) == v["digest"].str());
     CHECK(zxv::Hashes::keccak256(st.encoding) == st.digest);
 
-    ctx.enable_currency("USD", 2);
+    ctx.enable_currency(cap, "USD", 2);
     zxv::Ledger ledger(cap);
     const std::uint32_t acc[2] = {ledger.open_account("a", "USD", zxv::AccountKind::issuer), ledger.open_account("b", "USD")};
     ledger.post(acc[0], acc[1], 250, "USD", "x");
@@ -730,6 +742,198 @@ void test_evm()
     CHECK(l.digest == ch.encode_state(id, 1, std::span(parties).first(2), bal).digest);
     CHECK_THROWS_AS(zxv::StateChannel(cap.attenuate(zxv::caps::ledger_read)).encode_state(id, 1, parties, balances),
                     zxv::CapabilityDenied);
+}
+
+// ---------------------------------------------------------------- ABI 1.2 cap forms
+void test_cap_forms()
+{
+    zxv::Context ctx;
+    auto root = ctx.root_capability();
+    auto post = root.attenuate(zxv::caps::ledger_post);
+    auto read = root.attenuate(zxv::caps::ledger_read);
+
+    // LEDGER_POST: currencies and opening accounts
+    ctx.enable_currency(post, "NGN");
+    ctx.enable_currency(post, "GHS", 2);
+    ctx.register_private_unit(post, "VFV", 2);
+    CHECK((ctx.enabled_currencies() == std::vector<std::string>{"NGN", "GHS", "VFV"}));
+    CHECK_THROWS_AS(ctx.enable_currency(read, "KES"), zxv::CapabilityDenied);
+    CHECK_THROWS_AS(ctx.enable_currency(read, "KES", 2), zxv::CapabilityDenied);
+    CHECK_THROWS_AS(ctx.register_private_unit(read, "VFX", 2), zxv::CapabilityDenied);
+    zxv::Ledger writer(post), reader(read);
+    const auto bank = writer.open_account("bank", "NGN", zxv::AccountKind::issuer);
+    const auto ada = writer.open_account("ada", "NGN");
+    CHECK_THROWS_AS(reader.open_account("x", "NGN"), zxv::CapabilityDenied);
+    writer.post(bank, ada, 7, "NGN", "R-1");
+
+    // LEDGER_READ: account metadata, journals and messages
+    CHECK(reader.account_count() == 2);
+    CHECK(reader.account_name(ada) == "ada" && reader.account_currency(ada) == "NGN");
+    CHECK(reader.account_kind(bank) == zxv::AccountKind::issuer && reader.account_kind(ada) == zxv::AccountKind::holder);
+    CHECK(reader.journal(ada).size() == 1 && reader.journal(ada)[0].reference == "R-1");
+    CHECK_THROWS_AS(writer.account_count(), zxv::CapabilityDenied);
+    CHECK_THROWS_AS(writer.account_name(ada), zxv::CapabilityDenied);
+    CHECK_THROWS_AS(writer.account_currency(ada), zxv::CapabilityDenied);
+    CHECK_THROWS_AS(writer.account_kind(ada), zxv::CapabilityDenied);
+    CHECK_THROWS_AS(writer.journal(ada), zxv::CapabilityDenied);
+    CHECK_THROWS_AS(zxv::Message(post, zxv::MxKind::pacs008), zxv::CapabilityDenied);
+    {
+        auto mcap = root.attenuate(zxv::caps::ledger_read);
+        zxv::Message m(mcap, zxv::MxKind::pacs008);
+        m.set(zxv::MxField::msg_id, "M-1");
+        mcap.set_attestation(zxv::Truth::neither); // re-checked on every message call
+        CHECK_THROWS_AS(m.set(zxv::MxField::msg_id, "M-2"), zxv::CapabilityDenied);
+    }
+    {
+        // the message keeps its capability alive after the Capability object is gone
+        std::optional<zxv::Message> m;
+        {
+            auto tmp = root.attenuate(zxv::caps::ledger_read);
+            m.emplace(tmp, zxv::MxKind::pacs008);
+        }
+        m->set(zxv::MxField::msg_id, "M-3");
+    }
+
+    // handle creation: BUDGET, PHASE, ATTEST, SWARM
+    CHECK_THROWS_AS(zxv::Budgets{read}, zxv::CapabilityDenied);
+    CHECK_THROWS_AS(zxv::PhaseClock{read}, zxv::CapabilityDenied);
+    CHECK_THROWS_AS(zxv::Attestations{read}, zxv::CapabilityDenied);
+    CHECK_THROWS_AS(zxv::Swarm(read, 2, 10), zxv::CapabilityDenied);
+    zxv::Budgets{root.attenuate(zxv::caps::budget)};
+    zxv::PhaseClock{root.attenuate(zxv::caps::phase)};
+    zxv::Attestations{root.attenuate(zxv::caps::attest)};
+    zxv::Swarm(root.attenuate(zxv::caps::swarm), 2, 10);
+    CHECK(true);
+}
+
+void test_cap_from_another_context()
+{
+    zxv::Context ctx, other;
+    auto foreign = other.root_capability();
+    for (int which = 0; which < 3; ++which) {
+        bool refused = false;
+        try {
+            if (which == 0) ctx.enable_currency(foreign, "NGN");
+            if (which == 1) ctx.enable_currency(foreign, "NGN", 2);
+            if (which == 2) ctx.register_private_unit(foreign, "VFV", 2);
+        } catch (const zxv::CapabilityDenied& e) {
+            refused = e.status() == ZXV_E_CAP && e.detail().find("different context") != std::string::npos;
+        }
+        CHECK(refused);
+    }
+    CHECK(ctx.enabled_currencies().empty());
+    CHECK(other.enabled_currencies().empty()); // nothing leaked into the cap's own context
+}
+
+void test_deprecated_no_cap_forms()
+{
+    zxv::Context ctx;
+#if defined(__GNUC__)
+#    pragma GCC diagnostic push
+#    pragma GCC diagnostic ignored "-Wdeprecated-declarations"
+#elif defined(_MSC_VER)
+#    pragma warning(push)
+#    pragma warning(disable : 4996)
+#endif
+    ctx.enable_currency("NGN");
+    ctx.enable_currency("GHS", 2);
+    ctx.register_private_unit("VFV", 2);
+    zxv::Message m(ctx, zxv::MxKind::pacs008);
+    m.set(zxv::MxField::msg_id, "M-1");
+#if defined(__GNUC__)
+#    pragma GCC diagnostic pop
+#elif defined(_MSC_VER)
+#    pragma warning(pop)
+#endif
+    CHECK((ctx.enabled_currencies() == std::vector<std::string>{"NGN", "GHS", "VFV"}));
+}
+
+// ---------------------------------------------------------------- stop tokens
+// zxv::stop_source / stop_token / stop_callback / jthread: the std types, or
+// the bundled fallback (ZXV_STOP_TOKEN_FALLBACK); the same behaviour either way.
+void test_stop_tokens()
+{
+    {
+        zxv::stop_token none;
+        CHECK(!none.stop_possible() && !none.stop_requested());
+        int ran = 0;
+        {
+            zxv::stop_callback cb(none, [&] { ++ran; });
+        }
+        CHECK(ran == 0);
+    }
+    {
+        zxv::stop_source src;
+        auto tok = src.get_token();
+        CHECK(tok.stop_possible() && !tok.stop_requested());
+        int a = 0, b = 0;
+        zxv::stop_callback ca(tok, [&] { ++a; });
+        {
+            zxv::stop_callback cb(tok, [&] { ++b; });
+        } // deregistered: never runs
+        CHECK(src.request_stop());
+        CHECK(!src.request_stop()); // only the first request counts
+        CHECK(tok.stop_requested() && a == 1 && b == 0);
+        int late = 0;
+        zxv::stop_callback cl(tok, [&] { ++late; }); // already stopped: runs at once
+        CHECK(late == 1);
+    }
+    {
+        // a callback registered on another thread runs on the requesting thread
+        zxv::stop_source src;
+        std::atomic<int> hits{0};
+        std::thread::id ran_on;
+        zxv::stop_callback cb(src.get_token(), [&] {
+            ran_on = std::this_thread::get_id();
+            ++hits;
+        });
+        std::thread([&] { src.request_stop(); }).join();
+        CHECK(hits == 1 && ran_on != std::this_thread::get_id());
+    }
+    {
+        // jthread: passes its token when the callable takes one; stops and joins on destruction
+        std::atomic<bool> saw_stop{false};
+        {
+            zxv::jthread t([&](zxv::stop_token st) {
+                while (!st.stop_requested()) std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                saw_stop = true;
+            });
+            CHECK(t.joinable());
+        }
+        CHECK(saw_stop);
+        std::atomic<int> plain{0};
+        {
+            zxv::jthread t([&](int add) { plain += add; }, 5);
+        }
+        CHECK(plain == 5);
+        zxv::jthread empty;
+        CHECK(!empty.joinable());
+        zxv::jthread moved([](zxv::stop_token) {});
+        empty = std::move(moved);
+        CHECK(empty.joinable() && !moved.joinable());
+    }
+    {
+        // a stop wakes a condition_variable_any wait through a stop_callback
+        std::mutex m;
+        std::condition_variable_any cv;
+        zxv::stop_source src;
+        std::atomic<bool> woke{false};
+        std::thread w([&] {
+            auto tok = src.get_token();
+            zxv::stop_callback wake(tok, [&] {
+                std::lock_guard g(m);
+                cv.notify_all();
+            });
+            std::unique_lock lk(m);
+            cv.wait(lk, [&] { return tok.stop_requested(); });
+            woke = true;
+        });
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        src.request_stop();
+        w.join();
+        CHECK(woke);
+    }
+    std::cout << "     stop tokens: " << (ZXV_STOP_TOKEN_FALLBACK ? "bundled fallback" : "std") << "\n";
 }
 
 } // namespace
@@ -752,6 +956,10 @@ int main(int argc, char** argv)
         {"engine", test_engine},
         {"lockstep", test_lockstep},
         {"evm", test_evm},
+        {"cap_forms", test_cap_forms},
+        {"cap_from_another_context", test_cap_from_another_context},
+        {"deprecated_no_cap_forms", test_deprecated_no_cap_forms},
+        {"stop_tokens", test_stop_tokens},
     };
     for (const auto& [name, fn] : tests) {
         const int before = g_failures;

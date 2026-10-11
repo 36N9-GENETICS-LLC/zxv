@@ -84,11 +84,11 @@ unsafe impl Send for Swarm<'_> {}
 unsafe impl Sync for Swarm<'_> {}
 
 impl<'a> Swarm<'a> {
-    /// A swarm of `levels` Fibonacci levels sharing `tokens_per_cycle`.
+    /// A swarm of `levels` Fibonacci levels sharing `tokens_per_cycle`
+    /// (needs [`Caps::SWARM`](crate::Caps::SWARM)).
     pub fn new(cap: &'a Capability<'a>, levels: u32, tokens_per_cycle: u64) -> Result<Swarm<'a>> {
         let mut raw = std::ptr::null_mut();
-        cap.context()
-            .call(|x| unsafe { sys::zxv_swarm_create(x, levels, tokens_per_cycle, &mut raw) })?;
+        cap.call(|x| unsafe { sys::zxv_swarm_create_cap(x, levels, tokens_per_cycle, &mut raw) })?;
         let raw = NonNull::new(raw)
             .ok_or_else(|| Error::with_detail(sys::ZXV_E_INTERNAL, "NULL swarm"))?;
         Ok(Swarm { raw, cap })

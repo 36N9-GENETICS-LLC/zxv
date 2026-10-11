@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // Package zxv is the Go SDK of the ZXV platform: a cgo binding to libzxv
-// (sdk/libzxv/include/zxv_api.h, ABI 1.1).
+// (sdk/libzxv/include/zxv_api.h, ABI 1.2).
 //
 // The essentials:
 //
@@ -94,12 +94,12 @@ var (
 )
 
 // checkVersion refuses a library whose major ABI differs or whose minor is
-// below 1.
+// below 2.
 func checkVersion() error {
 	versionOnce.Do(func() {
 		major, minor, _ := Version()
-		if major != C.ZXV_ABI_VERSION_MAJOR || minor < 1 {
-			versionErr = newError(StatusInternal, fmt.Sprintf("libzxv ABI %d.%d is not compatible with this SDK (needs 1.1+)", major, minor))
+		if major != C.ZXV_ABI_VERSION_MAJOR || minor < 2 {
+			versionErr = newError(StatusInternal, fmt.Sprintf("libzxv ABI %d.%d is not compatible with this SDK (needs 1.2+)", major, minor))
 		}
 	})
 	return versionErr

@@ -53,11 +53,11 @@ public final class PhaseClock: @unchecked Sendable {
     private let state = Locked(State())
     private let cLock = Locked(()) // serializes C calls with waiter settlement
 
-    /// A clock in the capability's context, at tick 0.
+    /// A clock in the capability's context, at tick 0 (needs `.phase`).
     public init(_ cap: Capability) throws(ZxvError) {
         self.cap = cap
         var p: OpaquePointer?
-        try cap.call { _ in zxv_phase_create(cap.context.handle, &p) }
+        try cap.call { zxv_phase_create_cap($0, &p) }
         handle = p!
     }
 

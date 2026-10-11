@@ -62,7 +62,7 @@ impl Context {
     /// Creates a context with the default [`FatalPolicy::Return`].
     ///
     /// Fails with a SYSTEM error if the loaded libzxv has a different major
-    /// ABI version, or a minor version below 1.
+    /// ABI version, or a minor version below 2.
     pub fn new() -> Result<Context> {
         Context::with_fatal_policy(FatalPolicy::Return)
     }
@@ -133,13 +133,58 @@ impl Context {
     }
 
     /// Enables an ISO 4217 currency for ledger accounts (minor units from
+    /// the ISO table) through `cap`, which needs [`Caps::LEDGER_POST`].
+    /// `ZXV_E_CURRENCY` if it is not payable; a capability of another
+    /// context is refused with `ZXV_E_CAP`.
+    pub fn enable_currency_cap(&self, cap: &Capability<'_>, alpha: &str) -> Result<()> {
+        self.own(cap)?;
+        let c = ffi::cstr(alpha)?;
+        cap.call(|x| unsafe { sys::zxv_ccy_enable_cap(x, c.as_ptr()) })
+    }
+
+    /// Enables an ISO 4217 currency asserting its minor units, through
+    /// `cap` ([`Caps::LEDGER_POST`]).
+    pub fn enable_currency_with_minor_cap(
+        &self,
+        cap: &Capability<'_>,
+        alpha: &str,
+        minor_units: u8,
+    ) -> Result<()> {
+        self.own(cap)?;
+        let c = ffi::cstr(alpha)?;
+        cap.call(|x| unsafe { sys::zxv_ccy_enable_with_minor_cap(x, c.as_ptr(), minor_units) })
+    }
+
+    /// Registers a platform-private unit (e.g. `"VFV"`) through `cap`
+    /// ([`Caps::LEDGER_POST`]): usable in ledger accounts, refused in
+    /// ISO 20022 messages.
+    pub fn register_private_currency_cap(
+        &self,
+        cap: &Capability<'_>,
+        code: &str,
+        minor_units: u8,
+    ) -> Result<()> {
+        self.own(cap)?;
+        let c = ffi::cstr(code)?;
+        cap.call(|x| unsafe { sys::zxv_ccy_register_private_cap(x, c.as_ptr(), minor_units) })
+    }
+
+    /// Enables an ISO 4217 currency for ledger accounts (minor units from
     /// the ISO table). `ZXV_E_CURRENCY` if it is not payable.
+    #[deprecated(
+        since = "1.2.0",
+        note = "use enable_currency_cap with a LEDGER_POST capability"
+    )]
     pub fn enable_currency(&self, alpha: &str) -> Result<()> {
         let c = ffi::cstr(alpha)?;
         self.call(|ctx| unsafe { sys::zxv_ccy_enable(ctx, c.as_ptr()) })
     }
 
     /// Enables an ISO 4217 currency asserting its minor units.
+    #[deprecated(
+        since = "1.2.0",
+        note = "use enable_currency_with_minor_cap with a LEDGER_POST capability"
+    )]
     pub fn enable_currency_with_minor(&self, alpha: &str, minor_units: u8) -> Result<()> {
         let c = ffi::cstr(alpha)?;
         self.call(|ctx| unsafe { sys::zxv_ccy_enable_with_minor(ctx, c.as_ptr(), minor_units) })
@@ -147,6 +192,10 @@ impl Context {
 
     /// Registers a platform-private unit (e.g. `"VFV"`): usable in ledger
     /// accounts, refused in ISO 20022 messages.
+    #[deprecated(
+        since = "1.2.0",
+        note = "use register_private_currency_cap with a LEDGER_POST capability"
+    )]
     pub fn register_private_currency(&self, code: &str, minor_units: u8) -> Result<()> {
         let c = ffi::cstr(code)?;
         self.call(|ctx| unsafe { sys::zxv_ccy_register_private(ctx, c.as_ptr(), minor_units) })
@@ -180,6 +229,10 @@ impl Context {
 
     /// Starts an ISO 20022 message of `kind` (validated against this
     /// context's currency rules).
+    #[deprecated(
+        since = "1.2.0",
+        note = "use Capability::new_message with a LEDGER_READ capability"
+    )]
     pub fn new_message(&self, kind: MessageKind) -> Result<Message<'_>> {
         Message::new(self, kind)
     }
@@ -192,8 +245,17 @@ impl Context {
 
     // ----- crate internals ---------------------------------------------
 
-    pub(crate) fn raw(&self) -> *mut sys::zxv_ctx {
-        self.raw.as_ptr()
+    /// Refuses a capability of another context (`ZXV_E_CAP`): the C cap
+    /// forms act on the cap's own context, not on `self`.
+    pub(crate) fn own(&self, cap: &Capability<'_>) -> Result<()> {
+        self.guard()?;
+        if !std::ptr::eq(cap.context(), self) {
+            return Err(Error::with_detail(
+                sys::ZXV_E_CAP,
+                "the capability belongs to a different context",
+            ));
+        }
+        Ok(())
     }
 
     /// Fails fast when the Rust handle is poisoned.

@@ -16,7 +16,7 @@ import {
   AccountKind, Attestations, BudgetExhaustedError, Budgets, Cap, CapabilityDeniedError, Decision, Ed25519, EventState,
   FloatRejectedError, Health, InsufficientFundsError, Iso20022Message, Ledger, MxAmount, MxField, MxKind, NettingCycle,
   NotImplementedError, PHASE_CYCLE, PhaseClock, Rational, SecretKey, StepFlag, Subject, Truth, type Zxv, ZxvError,
-  ZxvFatalError, ZxvRefusedError, ZxvUsageError,
+  ZxvFatalError, ZxvRefusedError, ZxvUsageError, Swarm,
 } from '../src/index.js';
 import { BACKENDS, load, pkgRoot } from './helpers.js';
 
@@ -74,7 +74,7 @@ for (const kind of BACKENDS) {
       assert.equal(root.info().attestation, Truth.BOTH);
       root.setAttestation(Truth.TRUE);
 
-      ctx.enableCurrency('NGN', 2);
+      ctx.enableCurrency(root, 'NGN', 2);
       const ledger = Ledger.of(root);
       const issuer = ledger.openAccount('issuer', 'NGN', AccountKind.ISSUER);
       const alice = ledger.openAccount('alice', 'NGN');
@@ -90,8 +90,8 @@ for (const kind of BACKENDS) {
     test('ledger: exact amounts, funds, journal, floats refused', () => {
       using ctx = zxv.createContext();
       const cap = ctx.rootCapability();
-      ctx.enableCurrency('USD');
-      ctx.registerPrivateUnit('VFV', 2);
+      ctx.enableCurrency(cap, 'USD');
+      ctx.registerPrivateUnit(cap, 'VFV', 2);
       assert.deepEqual(ctx.enabledCurrencies(), ['USD', 'VFV']);
       assert.equal(ctx.currency('USD').minorUnits, 2);
       const l = Ledger.of(cap);
@@ -115,7 +115,7 @@ for (const kind of BACKENDS) {
     test('FATAL: a halted context is poisoned and refuses everything', () => {
       const ctx = zxv.createContext();
       const cap = ctx.rootCapability();
-      ctx.enableCurrency('NGN');
+      ctx.enableCurrency(cap, 'NGN');
       const l = Ledger.of(cap);
       const a = l.openAccount('a', 'NGN', AccountKind.ISSUER);
       const b = l.openAccount('b', 'NGN');
@@ -283,7 +283,8 @@ for (const kind of BACKENDS) {
 
     test('ISO 20022, ISO 4217 and the pending kernel modules', () => {
       using ctx = zxv.createContext();
-      using m = Iso20022Message.create(ctx, MxKind.PACS008);
+      const root = ctx.rootCapability();
+      using m = Iso20022Message.create(root, MxKind.PACS008);
       m.setText(MxField.MSG_ID, 'MSG-0001').setText(MxField.CRE_DT_TM, '2026-10-09T12:00:00Z')
         .setText(MxField.DEBTOR_NAME, 'Ada & Sons <Lagos>').setText(MxField.DEBTOR_ACCT, 'NG0001')
         .setText(MxField.CREDITOR_NAME, 'Kwame Mensah').setText(MxField.CREDITOR_ACCT, 'GH0002')
@@ -302,8 +303,72 @@ for (const kind of BACKENDS) {
       assert.equal(zxv.iso4217.isAuMember('NG'), true);
       assert.equal(zxv.railNumeric(1), 777);
       assert.equal(zxv.cardCheckDigit(2, '79927398713'), true);
-      assert.throws(() => Iso20022Message.create(ctx, MxKind.PACS002), NotImplementedError);
+      assert.throws(() => Iso20022Message.create(root, MxKind.PACS002), NotImplementedError);
       assert.throws(() => NettingCycle.open(ctx, 'C1', 'NGN'), NotImplementedError);
+    });
+    test('ABI 1.2: the _cap forms need the right bit', () => {
+      using ctx = zxv.createContext();
+      const root = ctx.rootCapability();
+      const post = root.attenuate(Cap.LEDGER_POST);
+      const read = root.attenuate(Cap.LEDGER_READ);
+      const denied = (f: () => unknown) =>
+        assert.throws(f, (e: unknown) => e instanceof CapabilityDeniedError && e.statusName === 'ZXV_E_CAP');
+      ctx.enableCurrency(post, 'NGN');
+      ctx.enableCurrency(post, 'GHS', 2);
+      ctx.registerPrivateUnit(post, 'VFV', 2);
+      assert.deepEqual(ctx.enabledCurrencies(), ['NGN', 'GHS', 'VFV']);
+      denied(() => ctx.enableCurrency(read, 'KES'));
+      denied(() => ctx.enableCurrency(read, 'KES', 2));
+      denied(() => ctx.registerPrivateUnit(read, 'VFX', 2));
+      denied(() => Ledger.of(read).openAccount('x', 'NGN'));
+      const w = Ledger.of(post);
+      const bank = w.openAccount('bank', 'NGN', AccountKind.ISSUER);
+      const ada = w.openAccount('ada', 'NGN');
+      w.post(bank, ada, 7n, 'NGN', 'R-1');
+      const r = Ledger.of(read);
+      assert.equal(r.accountCount(), 2);
+      assert.deepEqual(r.account(ada), { id: ada, name: 'ada', currency: 'NGN', kind: AccountKind.HOLDER });
+      assert.equal(r.journal(ada)[0]?.reference, 'R-1');
+      denied(() => w.accountCount());
+      denied(() => w.account(ada));
+      denied(() => w.journal(ada));
+      denied(() => Iso20022Message.create(post, MxKind.PACS008));
+      const m = Iso20022Message.create(read, MxKind.PACS008);
+      m.setText(MxField.MSG_ID, 'M-1');
+      read.setAttestation(Truth.NEITHER);
+      denied(() => m.setText(MxField.MSG_ID, 'M-2'));
+      read.close();
+      assert.equal(m.closed, true, 'closing the cap closes its messages first');
+      denied(() => Budgets.open(post));
+      denied(() => PhaseClock.open(post));
+      denied(() => Attestations.create(post));
+      denied(() => Swarm.create(post, { levels: 2, tokensPerCycle: 10 }));
+      Budgets.open(root.attenuate(Cap.BUDGET)).close();
+      PhaseClock.open(root.attenuate(Cap.PHASE)).close();
+      Attestations.create(root.attenuate(Cap.ATTEST)).close();
+      Swarm.create(root.attenuate(Cap.SWARM), { levels: 2, tokensPerCycle: 10 }).close();
+    });
+
+    test('ABI 1.2: a capability of another context is refused', () => {
+      using ctx = zxv.createContext();
+      using other = zxv.createContext();
+      const foreign = other.rootCapability();
+      for (const f of [() => ctx.enableCurrency(foreign, 'NGN'), () => ctx.enableCurrency(foreign, 'NGN', 2),
+        () => ctx.registerPrivateUnit(foreign, 'VFV', 2)]) {
+        assert.throws(f, (e: unknown) => e instanceof CapabilityDeniedError && e.statusName === 'ZXV_E_CAP' &&
+          /different context/.test(e.detail));
+      }
+      assert.deepEqual(ctx.enabledCurrencies(), []);
+      assert.deepEqual(other.enabledCurrencies(), []);
+    });
+
+    test('ABI 1.2: the deprecated no-capability forms still work', () => {
+      using ctx = zxv.createContext();
+      ctx.enableCurrency('NGN');
+      ctx.enableCurrency('GHS', 2);
+      ctx.registerPrivateUnit('VFV', 2);
+      Iso20022Message.create(ctx, MxKind.PACS008).close();
+      assert.deepEqual(ctx.enabledCurrencies(), ['NGN', 'GHS', 'VFV']);
     });
   });
 }

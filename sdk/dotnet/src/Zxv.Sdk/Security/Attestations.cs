@@ -82,7 +82,7 @@ public sealed class Attestations : IDisposable
     {
         _cap = capability;
         capability.Enter("Attestations.Create");
-        int rc = NativeMethods.LpresCreate(capability.Context.Handle, out _handle);
+        int rc = NativeMethods.LpresCreateCap(capability.Handle, out _handle);
         if (rc != (int)ZxvStatus.Ok)
         {
             _handle.Dispose();

@@ -9,7 +9,7 @@ import { Zxv, Ledger, AccountKind, Cap, Rational } from '../src/index.js';
 const zxv = await Zxv.load();                       // native in Node, wasm in a browser
 using ctx = zxv.createContext();
 const root = ctx.rootCapability();                  // hand out root.attenuate(...) to the rest
-ctx.enableCurrency('NGN');
+ctx.enableCurrency(root, 'NGN');
 const ledger = Ledger.of(root);
 const bank = ledger.openAccount('bank', 'NGN', AccountKind.ISSUER);
 const ada = ledger.openAccount('ada', 'NGN');

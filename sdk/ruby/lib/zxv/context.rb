@@ -148,22 +148,35 @@ module Zxv
 
     # Enable an ISO 4217 currency for ledger accounts. +minor_units+ only
     # asserts the expected value (a mismatch raises ZXV_E_CURRENCY).
-    def enable_currency(alpha, minor_units: nil)
+    # +cap+ needs :ledger_post and must belong to this context (else
+    # CapabilityDeniedError). Without +cap+ this is deprecated since ABI 1.2.
+    def enable_currency(alpha, minor_units: nil, cap: nil)
       code = Call.text!(alpha, "alpha")
-      rc = if minor_units.nil?
-             Native.lib.zxv_ccy_enable(raw, code)
+      mu = minor_units.nil? ? nil : Call.int!(minor_units, "minor_units", min: 0, max: 255)
+      rc = if cap
+             c = own_cap!(cap)
+             mu.nil? ? Native.lib.zxv_ccy_enable_cap(c, code) : Native.lib.zxv_ccy_enable_with_minor_cap(c, code, mu)
            else
-             Native.lib.zxv_ccy_enable_with_minor(raw, code, Call.int!(minor_units, "minor_units", min: 0, max: 255))
+             deprecated_no_cap("enable_currency")
+             mu.nil? ? Native.lib.zxv_ccy_enable(raw, code) : Native.lib.zxv_ccy_enable_with_minor(raw, code, mu)
            end
       Call.check(rc, self)
       currency(code)
     end
 
     # Register a platform-private unit (e.g. "VFV", 2). Usable in ledger
-    # accounts, refused as an ISO 20022 currency.
-    def register_private_currency(code, minor_units)
+    # accounts, refused as an ISO 20022 currency. +cap+ needs :ledger_post;
+    # without it this is deprecated since ABI 1.2.
+    def register_private_currency(code, minor_units, cap: nil)
       c = Call.text!(code, "code")
-      Call.check(Native.lib.zxv_ccy_register_private(raw, c, Call.int!(minor_units, "minor_units", min: 0, max: 255)), self)
+      mu = Call.int!(minor_units, "minor_units", min: 0, max: 255)
+      rc = if cap
+             Native.lib.zxv_ccy_register_private_cap(own_cap!(cap), c, mu)
+           else
+             deprecated_no_cap("register_private_currency")
+             Native.lib.zxv_ccy_register_private(raw, c, mu)
+           end
+      Call.check(rc, self)
       currency(c)
     end
 
@@ -201,6 +214,22 @@ module Zxv
     private
 
     attr_reader :registry
+
+    # The pointer of +cap+, after checking it belongs to this context.
+    def own_cap!(cap)
+      raise ZxvUsageError.new(Status::E_ARG, "cap must be a Zxv::Capability") unless cap.is_a?(Capability)
+      unless cap.context.equal?(self)
+        raise CapabilityDeniedError.new(Status::E_CAP, "the capability belongs to a different context")
+      end
+
+      ensure_alive!
+      cap.ptr
+    end
+
+    def deprecated_no_cap(what)
+      warn("Zxv::Context##{what} without cap: is deprecated since ABI 1.2: pass cap: " \
+           "(a Capability with :ledger_post)", uplevel: 2, category: :deprecated)
+    end
 
     # Closed: a usage error. Dead (halted): ZxvFatal, raised by the SDK
     # itself, so even the few C calls that do not consult the poison flag

@@ -11,10 +11,13 @@ other C++ game engines use this SDK too (see [Game engines](#game-engines-unreal
 
 ## Install
 
-You need a C++20 compiler whose standard library has `std::jthread` and `<stop_token>`
-(gcc 13+, clang 18+ with libstdc++ or libc++, or Apple clang from Xcode 16.3+; tested with
-gcc 13 and clang 18 on Linux; CI also builds with the default Xcode on macOS 15), CMake 3.20 or later and a built
-`libzxv` (`make -C sdk/libzxv`).
+You need a C++20 compiler (gcc 13+, clang 18+ with libstdc++ or libc++, or Apple clang from
+Xcode 15 or later; tested with gcc 13 and clang 18 on Linux; CI also builds with the default
+Xcode on macOS 15), CMake 3.20 or later and a built `libzxv` (`make -C sdk/libzxv`). Where the
+standard library has no `std::jthread` or `<stop_token>` (Apple's libc++ in Xcode 15 and 16),
+`zxv.hpp` uses its bundled fallback `zxv::stop_source`, `zxv::stop_token`, `zxv::stop_callback`
+and `zxv::jthread`; elsewhere those names are the `std` types. `-DZXV_FORCE_STOP_TOKEN_FALLBACK`
+forces the fallback (the `test_zxv_stop_fallback` ctest target does this).
 
 ```sh
 cmake -S sdk/cpp -B build            # finds libzxv (see below)
@@ -37,7 +40,8 @@ target_link_libraries(my_app PRIVATE zxv::zxv)
 ```
 
 At run time the SDK calls `zxv_version` once. It refuses a library whose
-major version is not 1 or whose minor version is below 1.
+major version is not 1 or whose minor version is below 2 (ABI 1.2 added the
+capability-gated `*_cap` forms the SDK calls).
 
 ## Quickstart
 
@@ -45,7 +49,7 @@ major version is not 1 or whose minor version is below 1.
 #include <zxv.hpp>
 zxv::Context ctx;                                   // one platform instance
 zxv::Capability root = ctx.root_capability();       // all bits, attested TRUE
-ctx.enable_currency("NGN");
+ctx.enable_currency(root, "NGN");                  // needs caps::ledger_post
 zxv::Ledger ledger(root);
 auto bank = ledger.open_account("bank", "NGN", zxv::AccountKind::issuer);
 auto ada  = ledger.open_account("ada", "NGN");
@@ -63,13 +67,13 @@ std::cout << zxv::Rational::parse("0.1") + zxv::Rational::parse("0.2"); // 0.3
 | Handles | Move-only RAII classes (`Context`, `Capability`, `Budgets`, `PhaseClock`, `Model`, `Session`, `SecretKey`, ...). Children keep their parents alive through `shared_ptr` cores, so the C rule "destroy children before the context" (R6) cannot be broken. |
 | Errors | `zxv::Exception` (derives from `std::runtime_error`) carries `status()`, `status_name()` and `detail()`. Its subclasses are `UsageError` (and `FloatRejected`), `RefusedError` (`CapabilityDenied`, `BudgetExhausted`, `InsufficientFunds`, `VerificationFailed`, `NotImplemented`) and `SystemError`. |
 | Fail-closed | A FATAL status (`ZXV_E_POISONED` or `ZXV_E_INVARIANT`) marks the context dead and throws `zxv::FatalError`. `FatalError` does not derive from `std::exception`, so `catch (const std::exception&)` cannot swallow it. `zxv::set_fatal_policy(zxv::FatalPolicy::abort)` calls `std::abort()` instead, which no handler can stop. The C context is poisoned either way, so retrying cannot succeed. |
-| Capabilities | Each gated object (`Ledger`, `Budgets`, `MlDsa87`, ...) is built from a `Capability` and passes it on every call. You narrow a capability with `attenuate(zxv::caps::ledger_read)`. There is no global capability. |
+| Capabilities | Each gated object (`Ledger`, `Budgets`, `MlDsa87`, ...) is built from a `Capability` and passes it on every call, through the capability-gated `zxv_*_cap` C forms (ABI 1.2). Creating `Budgets`, `PhaseClock`, `Attestations` or `Swarm` needs its bit. `Context::enable_currency(cap, ...)` and `register_private_unit(cap, ...)` need `ledger_post`; a capability of another context throws `CapabilityDenied` (`ZXV_E_CAP`). `Message(cap, kind)` needs `ledger_read`, keeps the capability alive, and the library re-checks it on every call. You narrow a capability with `attenuate(zxv::caps::ledger_read)`. There is no global capability. The 1.0 forms without a capability (`enable_currency(alpha)`, `register_private_unit(code, mu)`, `Message(ctx, kind)`) still work but are `[[deprecated]]`. |
 | Exactness | `zxv::Rational` holds an int64 numerator over a positive int64 denominator, always reduced. The operators throw `UsageError(ZXV_E_RANGE)` when a result overflows, and `checked_add` and the other checked operations return `std::nullopt` instead. With gcc and clang the operations are `constexpr`. A `float` or `double` does not convert to `Rational` (that constructor is deleted). The only way in is `Rational::from_double_exact(x)`, which returns the exact value: 0.1 becomes 3602879701896397/36028797018963968. |
 | Four-valued logic | `enum class zxv::Truth { neither, true_, false_, both }` uses the C numbering. `&`, `|` and `~` follow the C tables. `Truth` has no conversion to `bool`. To get a `bool`, use `is_certainly_true`, `to_bool(t, on_both, on_neither)` or `require_true`. |
 | Buffers | Inputs are `std::span<const std::uint8_t>` (`zxv::as_bytes("text")` for strings). Outputs are `std::vector` or `std::array`. |
 | Secrets | `zxv::SecretKey` owns its bytes and wipes them with `zxv_secure_zero` when it is destroyed or move-assigned over. `bytes()` returns a view. `export_bytes_unsafe()` returns a copy that is not wiped. |
-| Budgets | `budget.consume(r)` throws `BudgetExhausted`. `consume_async(r, stop_token, timeout)` returns a `std::future<void>`. A worker waits on a condition variable that wakes when the C listener reports a replenishment (a `release` or a larger limit). |
-| Phase ticks | `PhaseClock::advance(n)` is the manual driver, for tests and lockstep. `start_realtime(ticks_per_second)` starts a `std::jthread` that advances the clock in real time. `defer(tick).await_cleared()` and `until_tick(t)` return a `std::shared_future<void>`. |
+| Budgets | `budget.consume(r)` throws `BudgetExhausted`. `consume_async(r, zxv::stop_token, timeout)` returns a `std::future<void>`. A worker waits on a condition variable that wakes when the C listener reports a replenishment (a `release` or a larger limit). |
+| Phase ticks | `PhaseClock::advance(n)` is the manual driver, for tests and lockstep. `start_realtime(ticks_per_second)` starts a `zxv::jthread` that advances the clock in real time. `defer(tick).await_cleared()` and `until_tick(t)` return a `std::shared_future<void>`. |
 | Generation | `session.generate(prompt, opts, on_token)` takes an optional `std::function` callback. `session.stream(prompt, opts)` returns a `TokenStream` that you can loop over with range-for. Sampling options are `Rational` values, converted to Q16.16. |
 
 ## API overview
@@ -77,12 +81,12 @@ std::cout << zxv::Rational::parse("0.1") + zxv::Rational::parse("0.2"); // 0.3
 | Type | Main members | Needs |
 |---|---|---|
 | free functions | `version()`, `features()`, `has_feature()`, `status_name()`, `status_class()`, `iso4217()`, `card_check_digit()`, `random_bytes()`, `to_hex()`, `from_hex()` | - |
-| `Context` | `root_capability(bits, pid, identity)`, `enable_currency`, `register_private_unit`, `enabled_currencies`, `halt`, `is_poisoned` | - |
+| `Context` | `root_capability(bits, pid, identity)`, `enable_currency(cap, ...)`, `register_private_unit(cap, ...)`, `enabled_currencies`, `halt`, `is_poisoned` | `ledger_post` for the currency calls |
 | `Capability` | `attenuate`, `revoke`, `set_attestation`, `info`, `check`, `require` | - |
 | `Rational` | `of`, `parse`, `from_q16`, `from_double_exact`, `+ - * /`, `<=>`, `checked_*`, `to_string`, `to_q16` | - |
 | `Truth` | `& | ~`, `truth_from_evidence`, `to_bool`, `is_certainly_true`, `require_true`, `to_string` | - |
-| `Ledger` | `open_account`, `post`, `balance`, `journal`, `check`, `account_name`, `account_currency` | `ledger_post` / `ledger_read` |
-| `Message` | `set`, `set_amount`, `set_tx_count`, `add_entry`, `render` (pacs.008, camt.053) | - |
+| `Ledger` | `open_account`, `post`, `balance`, `journal`, `check`, `account_name`, `account_currency`, `account_kind`, `account_count` | `ledger_post` / `ledger_read` |
+| `Message` | `Message(cap, kind)`, `set`, `set_amount`, `set_tx_count`, `add_entry`, `render` (pacs.008, camt.053) | `ledger_read` |
 | `Attestations` | `attest`, `evidence`, `find`, `state`, `gate` | `attest` |
 | `Budgets` / `Budget` | `create`; `consume`, `consume_wait`, `consume_async`, `release`, `set_limit`, `status`, `on_exhausted` | `budget` |
 | `PhaseClock` / `DeferredEvent` | `now`, `advance`, `admit`, `set_health`, `defer`, `until_tick`, `next_due`, `start_realtime`, `stop_realtime`; `await_cleared`, `cancel`, `state` | `phase` |
@@ -221,9 +225,6 @@ Every target compiles with `-Wall -Wextra -Werror -Wshadow -Wconversion -Wsign-c
 - **Async waits use threads.** `consume_async` runs one detached worker thread per pending wait.
   Destroying the `Budgets` owner cancels all of them. A `TokenStream` holds one worker thread, and so does a
   running `PhaseClock` real-time driver.
-- **Ledger metadata.** The C ABI has no capability-checked version of `open_account`,
-  `journal`, or the account name and currency calls. The SDK checks `ledger_read` itself before
-  reading, but `open_account` and the currency setup are not gated in C.
 - **Not built in this libzxv.** Netting, card issuing and VSS are pending in the kernel, and this SDK does not wrap them. Only the PAN check digit is
   wrapped. LoRA (`Model::load_lora`) throws `NotImplemented` while `ZXV_FEAT_LORA` is off.
 - **MSVC is untested.** Without `__int128`, `Rational` arithmetic calls the C

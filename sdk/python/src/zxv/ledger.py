@@ -6,11 +6,13 @@ from __future__ import annotations
 
 import enum
 from dataclasses import dataclass
+import warnings
 from typing import Any, List, Optional
 
 from . import _native
 from ._native import ffi
 from .context import Capability, Context
+from .errors import CapabilityDeniedError
 
 __all__ = [
     "AccountKind",
@@ -167,23 +169,61 @@ class Currencies:
     def __init__(self, ctx: Context) -> None:
         self._ctx = ctx
 
-    def enable(self, alpha: str, minor_units: Optional[int] = None) -> None:
-        """Enable an ISO 4217 currency; ``minor_units`` asserts the expected value."""
-        h = self._ctx._handle()
+    def _cap_for(self, cap: Optional[Capability], what: str) -> Optional[Capability]:
+        if cap is None:
+            warnings.warn(
+                f"Currencies.{what}() without cap= is deprecated since ABI 1.2: pass "
+                f"cap= (a Capability with Cap.LEDGER_POST)", DeprecationWarning, stacklevel=3)
+            return None
+        if not isinstance(cap, Capability):
+            raise TypeError("cap must be a zxv.Capability")
+        if cap.context is not self._ctx:
+            raise CapabilityDeniedError(-17, "ZXV_E_CAP",
+                                        "the capability belongs to a different context")
+        return cap
+
+    def enable(self, alpha: str, minor_units: Optional[int] = None, *,
+               cap: Optional[Capability] = None) -> None:
+        """Enable an ISO 4217 currency; ``minor_units`` asserts the expected value.
+
+        ``cap`` needs ``Cap.LEDGER_POST`` and must belong to this context
+        (else :class:`CapabilityDeniedError`). Calling without ``cap`` is
+        deprecated since ABI 1.2 and emits a :class:`DeprecationWarning`.
+        """
+        c = self._cap_for(cap, "enable")
         a = _native.to_cstr(alpha, "alpha")
         L = _native.lib()
-        if minor_units is None:
-            rc = L.zxv_ccy_enable(h, a)
+        if c is not None:
+            ch = c._handle()
+            if minor_units is None:
+                rc = L.zxv_ccy_enable_cap(ch, a)
+            else:
+                rc = L.zxv_ccy_enable_with_minor_cap(
+                    ch, a, _native.exact_int(minor_units, "minor_units", 0, 255))
         else:
-            rc = L.zxv_ccy_enable_with_minor(h, a, _native.exact_int(minor_units, "minor_units", 0, 255))
+            h = self._ctx._handle()
+            if minor_units is None:
+                rc = L.zxv_ccy_enable(h, a)
+            else:
+                rc = L.zxv_ccy_enable_with_minor(h, a, _native.exact_int(minor_units, "minor_units", 0, 255))
         _native.check(rc, self._ctx)
 
-    def register_private(self, code: str, minor_units: int) -> None:
-        """Register a platform-private unit (3..8 upper-case letters/digits)."""
-        h = self._ctx._handle()
-        _native.check(_native.lib().zxv_ccy_register_private(
-            h, _native.to_cstr(code, "code"), _native.exact_int(minor_units, "minor_units", 0, 255)),
-            self._ctx)
+    def register_private(self, code: str, minor_units: int, *,
+                         cap: Optional[Capability] = None) -> None:
+        """Register a platform-private unit (3..8 upper-case letters/digits).
+
+        ``cap`` needs ``Cap.LEDGER_POST`` and must belong to this context.
+        Calling without ``cap`` is deprecated since ABI 1.2.
+        """
+        c = self._cap_for(cap, "register_private")
+        cc = _native.to_cstr(code, "code")
+        mu = _native.exact_int(minor_units, "minor_units", 0, 255)
+        L = _native.lib()
+        if c is not None:
+            rc = L.zxv_ccy_register_private_cap(c._handle(), cc, mu)
+        else:
+            rc = L.zxv_ccy_register_private(self._ctx._handle(), cc, mu)
+        _native.check(rc, self._ctx)
 
     def get(self, code: str) -> Optional[EnabledCurrency]:
         """The enabled currency ``code``, or ``None`` if it is not enabled."""
@@ -254,11 +294,14 @@ class Ledger:
         return self._cap
 
     def open_account(self, name: str, currency: str, kind: AccountKind = AccountKind.HOLDER) -> int:
-        """Open an account (``name`` <= 63 bytes) in an enabled currency; returns its id."""
-        h = self._ctx._handle()
+        """Open an account (``name`` <= 63 bytes) in an enabled currency; returns its id.
+
+        Needs ``Cap.LEDGER_POST``.
+        """
+        c = self._cap._handle()
         out = ffi.new("uint32_t *")
-        _native.check(_native.lib().zxv_ledger_open_account(
-            h, _native.to_cstr(name, "name"), _native.to_cstr(currency, "currency"),
+        _native.check(_native.lib().zxv_ledger_open_account_cap(
+            c, _native.to_cstr(name, "name"), _native.to_cstr(currency, "currency"),
             int(AccountKind(kind)), out), self._ctx)
         return int(out[0])
 
@@ -298,48 +341,48 @@ class Ledger:
         _native.check(_native.lib().zxv_ledger_check_cap(self._cap._handle()), self._ctx)
 
     def accounts(self) -> List[int]:
-        """Every account id in the context."""
-        h = self._ctx._handle()
+        """Every account id in the context. Needs ``Cap.LEDGER_READ``."""
+        c = self._cap._handle()
         out = ffi.new("uint32_t *")
-        _native.check(_native.lib().zxv_ledger_account_count(h, out), self._ctx)
+        _native.check(_native.lib().zxv_ledger_account_count_cap(c, out), self._ctx)
         return list(range(out[0]))  # ids are 0 .. count-1
 
     def account_name(self, account: int) -> str:
         """The account's name."""
-        h = self._ctx._handle()
+        h = self._cap._handle()
         L = _native.lib()
         a = _native.exact_int(account, "account", *_native.U32)
-        return _native.read_text(lambda b, c, n: L.zxv_ledger_account_name(h, a, b, c, n), self._ctx)
+        return _native.read_text(lambda b, c, n: L.zxv_ledger_account_name_cap(h, a, b, c, n), self._ctx)
 
     def account_currency(self, account: int) -> str:
         """The account's currency code."""
-        h = self._ctx._handle()
+        h = self._cap._handle()
         L = _native.lib()
         a = _native.exact_int(account, "account", *_native.U32)
-        return _native.read_text(lambda b, c, n: L.zxv_ledger_account_ccy(h, a, b, c, n), self._ctx)
+        return _native.read_text(lambda b, c, n: L.zxv_ledger_account_ccy_cap(h, a, b, c, n), self._ctx)
 
     def account_kind(self, account: int) -> AccountKind:
         """The account's :class:`AccountKind`."""
-        h = self._ctx._handle()
+        h = self._cap._handle()
         out = ffi.new("int32_t *")
-        _native.check(_native.lib().zxv_ledger_account_kind(
+        _native.check(_native.lib().zxv_ledger_account_kind_cap(
             h, _native.exact_int(account, "account", *_native.U32), out), self._ctx)
         return AccountKind(out[0])
 
     def journal(self, account: int) -> List[JournalEntry]:
         """The account's journal, oldest first."""
-        h = self._ctx._handle()
+        h = self._cap._handle()
         L = _native.lib()
         a = _native.exact_int(account, "account", *_native.U32)
         cnt = ffi.new("uint32_t *")
-        _native.check(L.zxv_ledger_entry_count(h, a, cnt), self._ctx)
+        _native.check(L.zxv_ledger_entry_count_cap(h, a, cnt), self._ctx)
         out: List[JournalEntry] = []
         eid = ffi.new("uint64_t *")
         amt = ffi.new("int64_t *")
         cp = ffi.new("uint32_t *")
         for i in range(cnt[0]):
             def call(b: Any, c: int, n: Any, i: int = i) -> int:
-                return int(L.zxv_ledger_entry_at(h, a, i, eid, amt, cp, b, c, n))
+                return int(L.zxv_ledger_entry_at_cap(h, a, i, eid, amt, cp, b, c, n))
             ref = _native.read_text(call, self._ctx)
             out.append(JournalEntry(int(eid[0]), int(amt[0]), int(cp[0]), ref))
         return out

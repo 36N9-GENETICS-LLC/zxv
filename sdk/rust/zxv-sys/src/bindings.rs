@@ -6,8 +6,8 @@
 // Regenerate: cargo build -p zxv-sys --features regenerate
 
 pub const ZXV_ABI_VERSION_MAJOR: u32 = 1;
-pub const ZXV_ABI_VERSION_MINOR: u32 = 1;
-pub const ZXV_ABI_VERSION_PATCH: u32 = 1;
+pub const ZXV_ABI_VERSION_MINOR: u32 = 2;
+pub const ZXV_ABI_VERSION_PATCH: u32 = 0;
 pub const ZXV_OK: i32 = 0;
 pub const ZXV_E_ARG: i32 = -1;
 pub const ZXV_E_BUFFER: i32 = -2;
@@ -148,6 +148,11 @@ pub struct zxv_msg {
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
 pub struct zxv_netting {
+    _unused: [u8; 0],
+}
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct zxv_cap {
     _unused: [u8; 0],
 }
 unsafe extern "C" {
@@ -385,6 +390,9 @@ unsafe extern "C" {
     pub fn zxv_msg_create(ctx: *mut zxv_ctx, kind: i32, out_msg: *mut *mut zxv_msg) -> i32;
 }
 unsafe extern "C" {
+    pub fn zxv_msg_create_cap(cap: *const zxv_cap, kind: i32, out_msg: *mut *mut zxv_msg) -> i32;
+}
+unsafe extern "C" {
     pub fn zxv_msg_destroy(msg: *mut zxv_msg);
 }
 unsafe extern "C" {
@@ -600,11 +608,6 @@ unsafe extern "C" {
 unsafe extern "C" {
     pub fn zxv_lp_name(value: i32) -> *const ::core::ffi::c_char;
 }
-#[repr(C)]
-#[derive(Debug, Copy, Clone)]
-pub struct zxv_cap {
-    _unused: [u8; 0],
-}
 unsafe extern "C" {
     pub fn zxv_cap_create(
         ctx: *mut zxv_ctx,
@@ -661,6 +664,80 @@ unsafe extern "C" {
 unsafe extern "C" {
     pub fn zxv_ledger_check_cap(cap: *const zxv_cap) -> i32;
 }
+unsafe extern "C" {
+    pub fn zxv_ccy_enable_cap(cap: *const zxv_cap, alpha: *const ::core::ffi::c_char) -> i32;
+}
+unsafe extern "C" {
+    pub fn zxv_ccy_enable_with_minor_cap(
+        cap: *const zxv_cap,
+        alpha: *const ::core::ffi::c_char,
+        minor_units: u8,
+    ) -> i32;
+}
+unsafe extern "C" {
+    pub fn zxv_ccy_register_private_cap(
+        cap: *const zxv_cap,
+        code: *const ::core::ffi::c_char,
+        minor_units: u8,
+    ) -> i32;
+}
+unsafe extern "C" {
+    pub fn zxv_ledger_open_account_cap(
+        cap: *const zxv_cap,
+        name: *const ::core::ffi::c_char,
+        ccy: *const ::core::ffi::c_char,
+        kind: i32,
+        out_account_id: *mut u32,
+    ) -> i32;
+}
+unsafe extern "C" {
+    pub fn zxv_ledger_account_ccy_cap(
+        cap: *const zxv_cap,
+        account: u32,
+        buf: *mut ::core::ffi::c_char,
+        cap_len: usize,
+        out_len: *mut usize,
+    ) -> i32;
+}
+unsafe extern "C" {
+    pub fn zxv_ledger_account_name_cap(
+        cap: *const zxv_cap,
+        account: u32,
+        buf: *mut ::core::ffi::c_char,
+        cap_len: usize,
+        out_len: *mut usize,
+    ) -> i32;
+}
+unsafe extern "C" {
+    pub fn zxv_ledger_account_kind_cap(
+        cap: *const zxv_cap,
+        account: u32,
+        out_kind: *mut i32,
+    ) -> i32;
+}
+unsafe extern "C" {
+    pub fn zxv_ledger_account_count_cap(cap: *const zxv_cap, out_count: *mut u32) -> i32;
+}
+unsafe extern "C" {
+    pub fn zxv_ledger_entry_count_cap(
+        cap: *const zxv_cap,
+        account: u32,
+        out_count: *mut u32,
+    ) -> i32;
+}
+unsafe extern "C" {
+    pub fn zxv_ledger_entry_at_cap(
+        cap: *const zxv_cap,
+        account: u32,
+        index: u32,
+        out_entry_id: *mut u64,
+        out_signed_minor: *mut i64,
+        out_counterparty: *mut u32,
+        ref_buf: *mut ::core::ffi::c_char,
+        ref_cap: usize,
+        out_ref_len: *mut usize,
+    ) -> i32;
+}
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
 pub struct zxv_lpres {
@@ -668,6 +745,9 @@ pub struct zxv_lpres {
 }
 unsafe extern "C" {
     pub fn zxv_lpres_create(ctx: *mut zxv_ctx, out_reg: *mut *mut zxv_lpres) -> i32;
+}
+unsafe extern "C" {
+    pub fn zxv_lpres_create_cap(cap: *const zxv_cap, out_reg: *mut *mut zxv_lpres) -> i32;
 }
 unsafe extern "C" {
     pub fn zxv_lpres_destroy(reg: *mut zxv_lpres);
@@ -722,6 +802,9 @@ pub type zxv_rmag_listener = ::core::option::Option<
 >;
 unsafe extern "C" {
     pub fn zxv_rmag_create(ctx: *mut zxv_ctx, out_rmag: *mut *mut zxv_rmag) -> i32;
+}
+unsafe extern "C" {
+    pub fn zxv_rmag_create_cap(cap: *const zxv_cap, out_rmag: *mut *mut zxv_rmag) -> i32;
 }
 unsafe extern "C" {
     pub fn zxv_rmag_destroy(rmag: *mut zxv_rmag);
@@ -790,6 +873,9 @@ pub struct zxv_phase {
 }
 unsafe extern "C" {
     pub fn zxv_phase_create(ctx: *mut zxv_ctx, out_phase: *mut *mut zxv_phase) -> i32;
+}
+unsafe extern "C" {
+    pub fn zxv_phase_create_cap(cap: *const zxv_cap, out_phase: *mut *mut zxv_phase) -> i32;
 }
 unsafe extern "C" {
     pub fn zxv_phase_destroy(phase: *mut zxv_phase);
@@ -880,6 +966,14 @@ pub struct zxv_swarm {
 unsafe extern "C" {
     pub fn zxv_swarm_create(
         ctx: *mut zxv_ctx,
+        num_levels: u32,
+        tokens_per_cycle: u64,
+        out_swarm: *mut *mut zxv_swarm,
+    ) -> i32;
+}
+unsafe extern "C" {
+    pub fn zxv_swarm_create_cap(
+        cap: *const zxv_cap,
         num_levels: u32,
         tokens_per_cycle: u64,
         out_swarm: *mut *mut zxv_swarm,

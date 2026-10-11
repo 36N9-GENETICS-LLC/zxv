@@ -54,29 +54,29 @@ public static class OperatorApi
         ccy.MapGet("/{code}", (ZxvPlatform zxv, string code) =>
                 TypedResults.Ok(CurrencyDto.From(zxv.Currencies.IsEnabled(code) ? zxv.Currencies.GetEnabled(code) : zxv.Currencies.GetIso(code))))
             .WithName("getCurrency").WithSummary("One currency by ISO 4217 alpha code (or private unit code)");
-        ccy.MapPost("/enabled", (ZxvPlatform zxv, EnableCurrencyRequest body) =>
+        ccy.MapPost("/enabled", (ZxvPlatform zxv, GatewayState state, EnableCurrencyRequest body) =>
             {
-                Currency c = body.MinorUnits is int mu ? zxv.Currencies.Enable(body.Code, checked((byte)mu)) : zxv.Currencies.Enable(body.Code);
+                Currency c = body.MinorUnits is int mu ? zxv.Currencies.Enable(state.Operator, body.Code, checked((byte)mu)) : zxv.Currencies.Enable(state.Operator, body.Code);
                 return TypedResults.Created($"/v1/currencies/{c.Code}", CurrencyDto.From(c));
             })
             .WithName("enableCurrency").WithSummary("Enable an ISO 4217 currency for ledger accounts");
 
         // ----- Accounts -----
         RouteGroupBuilder acct = v1.MapGroup("/accounts").WithTags("Accounts");
-        acct.MapPost("/", (ZxvPlatform zxv, OpenAccountRequest body) =>
+        acct.MapPost("/", (ZxvPlatform zxv, GatewayState state, OpenAccountRequest body) =>
             {
-                Account a = zxv.Ledger.OpenAccount(body.Name, body.Currency, body.Kind);
+                Account a = state.Ledger.OpenAccount(body.Name, body.Currency, body.Kind);
                 return TypedResults.Created($"/v1/accounts/{a.Id}", ToDto(zxv, a));
             })
             .WithName("openAccount").WithSummary("Open a holder or issuer account");
-        acct.MapGet("/", (ZxvPlatform zxv) => TypedResults.Ok(zxv.Ledger.ListAccounts().Select(a => ToDto(zxv, a)).ToList()))
+        acct.MapGet("/", (ZxvPlatform zxv, GatewayState state) => TypedResults.Ok(state.Ledger.ListAccounts().Select(a => ToDto(zxv, a)).ToList()))
             .WithName("listAccounts").WithSummary("List accounts");
-        acct.MapGet("/{id}", (ZxvPlatform zxv, uint id) => TypedResults.Ok(ToDto(zxv, zxv.Ledger.GetAccount(new AccountId(id)))))
+        acct.MapGet("/{id}", (ZxvPlatform zxv, GatewayState state, uint id) => TypedResults.Ok(ToDto(zxv, state.Ledger.GetAccount(new AccountId(id)))))
             .WithName("getAccount").WithSummary("Get an account");
         acct.MapGet("/{id}/balances", (ZxvPlatform zxv, uint id) => TypedResults.Ok(BalancesDto.From(new AccountId(id), zxv.Ledger.GetBalances(new AccountId(id)))))
             .WithName("getBalances").WithSummary("DEBIT (555), CREDIT (777) and EQUITY (888) rail balances in exact minor units");
-        acct.MapGet("/{id}/entries", (ZxvPlatform zxv, uint id, int? start, int? count) =>
-                TypedResults.Ok(zxv.Ledger.GetEntries(new AccountId(id), start ?? 0, Math.Clamp(count ?? 100, 1, 1000)).Select(EntryDto.From).ToList()))
+        acct.MapGet("/{id}/entries", (GatewayState state, uint id, int? start, int? count) =>
+                TypedResults.Ok(state.Ledger.GetEntries(new AccountId(id), start ?? 0, Math.Clamp(count ?? 100, 1, 1000)).Select(EntryDto.From).ToList()))
             .WithName("listEntries").WithSummary("Journal lines, oldest first");
         acct.MapGet("/{id}/statement", (ZxvPlatform zxv, uint id, int? start, int? maxEntries) =>
                 TypedResults.Ok(StatementDto.From(zxv.Statements.BuildStatement(new AccountId(id), new StatementRequest
@@ -185,9 +185,9 @@ public static class OperatorApi
 
         // ----- Cards -----
         RouteGroupBuilder cards = v1.MapGroup("/cards").WithTags("Cards");
-        cards.MapPost("/", (ZxvPlatform zxv, IssueCardRequest body) =>
+        cards.MapPost("/", (ZxvPlatform zxv, GatewayState state, IssueCardRequest body) =>
             {
-                Account a = zxv.Ledger.GetAccount(new AccountId(body.Account));
+                Account a = state.Ledger.GetAccount(new AccountId(body.Account));
                 IssuedCard card = zxv.Cards.Issue(body.Network, a.Id, Money.FromMinorUnits(body.LimitMinorUnits, zxv.Currencies.GetEnabled(a.Currency)));
                 return TypedResults.Created($"/v1/cards/{card.CardId}", new CardDto(card.CardId, card.Network, card.Account.Value, card.MaskedPan));
             })

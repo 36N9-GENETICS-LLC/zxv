@@ -79,7 +79,7 @@ export class Budgets extends Resource {
   /** A new budget set in `cap`'s context. */
   static open(cap: Capability): Budgets {
     const c = cap.context;
-    return new Budgets(cap, newHandle(c._core, c._state, 'zxv_rmag_create', c._ptr()));
+    return new Budgets(cap, newHandle(c._core, c._state, 'zxv_rmag_create_cap', cap._ptr()));
   }
 
   /** @internal */

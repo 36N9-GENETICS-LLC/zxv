@@ -99,7 +99,7 @@ for (const kind of BACKENDS) {
   describe(`${kind} backend`, () => {
     let zxv: Zxv;
 
-    test('loads with ABI 1.1+', async () => {
+    test('loads with ABI 1.2+', async () => {
       zxv = await load(kind);
       assert.equal(zxv.backend, kind);
       assert.deepEqual([zxv.version.major, zxv.version.minor, zxv.version.patch], V.abi);

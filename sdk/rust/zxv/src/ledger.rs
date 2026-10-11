@@ -4,7 +4,9 @@
 
 use zxv_sys as sys;
 
-use crate::capability::{Capability, Caps};
+use crate::capability::Capability;
+#[cfg(doc)]
+use crate::capability::Caps;
 use crate::error::Result;
 use crate::ffi;
 
@@ -71,9 +73,9 @@ pub const AMOUNT_MAX: i64 = sys::ZXV_AMOUNT_MAX;
 
 /// The ledger of a context, used through a capability.
 ///
-/// Postings need [`Caps::LEDGER_POST`], reads [`Caps::LEDGER_READ`].
-/// Opening accounts and reading account metadata have no capability-gated
-/// form in the C ABI; this SDK checks the capability first anyway.
+/// Postings and opening accounts need [`Caps::LEDGER_POST`]; balances,
+/// account metadata and journals need [`Caps::LEDGER_READ`]. Every call
+/// goes through the capability-gated (`*_cap`) form of the C ABI.
 #[derive(Debug, Clone, Copy)]
 pub struct Ledger<'a> {
     cap: &'a Capability<'a>,
@@ -87,11 +89,10 @@ impl<'a> Ledger<'a> {
 
     /// Opens an account in an enabled currency (`name` <= 63 bytes).
     pub fn open_account(&self, name: &str, currency: &str, kind: AccountKind) -> Result<AccountId> {
-        self.cap.check(Caps::LEDGER_POST)?;
         let (n, c) = (ffi::cstr(name)?, ffi::cstr(currency)?);
         let mut id = 0u32;
-        self.cap.context().call(|ctx| unsafe {
-            sys::zxv_ledger_open_account(ctx, n.as_ptr(), c.as_ptr(), kind.raw(), &mut id)
+        self.cap.call(|cap| unsafe {
+            sys::zxv_ledger_open_account_cap(cap, n.as_ptr(), c.as_ptr(), kind.raw(), &mut id)
         })?;
         Ok(AccountId(id))
     }
@@ -145,16 +146,14 @@ impl<'a> Ledger<'a> {
 
     /// Name, currency and kind of an account.
     pub fn account(&self, account: AccountId) -> Result<AccountInfo> {
-        self.cap.check(Caps::LEDGER_READ)?;
-        let ctx = self.cap.context();
-        let name = self.text(|b, c, l| unsafe {
-            sys::zxv_ledger_account_name(ctx.raw(), account.0, b, c, l)
-        })?;
-        let currency = self.text(|b, c, l| unsafe {
-            sys::zxv_ledger_account_ccy(ctx.raw(), account.0, b, c, l)
-        })?;
+        let cap = self.cap.raw();
+        let name = self
+            .text(|b, c, l| unsafe { sys::zxv_ledger_account_name_cap(cap, account.0, b, c, l) })?;
+        let currency = self
+            .text(|b, c, l| unsafe { sys::zxv_ledger_account_ccy_cap(cap, account.0, b, c, l) })?;
         let mut k = 0i32;
-        ctx.call(|x| unsafe { sys::zxv_ledger_account_kind(x, account.0, &mut k) })?;
+        self.cap
+            .call(|x| unsafe { sys::zxv_ledger_account_kind_cap(x, account.0, &mut k) })?;
         let kind = if k == sys::ZXV_ACCT_ISSUER as i32 {
             AccountKind::Issuer
         } else {
@@ -169,35 +168,23 @@ impl<'a> Ledger<'a> {
 
     /// Number of accounts.
     pub fn account_count(&self) -> Result<u32> {
-        self.cap.check(Caps::LEDGER_READ)?;
         let mut n = 0u32;
         self.cap
-            .context()
-            .call(|x| unsafe { sys::zxv_ledger_account_count(x, &mut n) })?;
+            .call(|x| unsafe { sys::zxv_ledger_account_count_cap(x, &mut n) })?;
         Ok(n)
     }
 
     /// The journal of an account, oldest first.
     pub fn journal(&self, account: AccountId) -> Result<Vec<JournalLine>> {
-        self.cap.check(Caps::LEDGER_READ)?;
-        let ctx = self.cap.context();
+        let cap = self.cap.raw();
         let mut n = 0u32;
-        ctx.call(|x| unsafe { sys::zxv_ledger_entry_count(x, account.0, &mut n) })?;
+        self.cap
+            .call(|x| unsafe { sys::zxv_ledger_entry_count_cap(x, account.0, &mut n) })?;
         let mut out = Vec::with_capacity(n as usize);
         for i in 0..n {
             let (mut id, mut amt, mut cp) = (0u64, 0i64, 0u32);
             let reference = self.text(|b, c, l| unsafe {
-                sys::zxv_ledger_entry_at(
-                    ctx.raw(),
-                    account.0,
-                    i,
-                    &mut id,
-                    &mut amt,
-                    &mut cp,
-                    b,
-                    c,
-                    l,
-                )
+                sys::zxv_ledger_entry_at_cap(cap, account.0, i, &mut id, &mut amt, &mut cp, b, c, l)
             })?;
             out.push(JournalLine {
                 entry_id: id,

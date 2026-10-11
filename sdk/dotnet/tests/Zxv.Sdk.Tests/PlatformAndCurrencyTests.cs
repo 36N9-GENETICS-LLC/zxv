@@ -1,6 +1,10 @@
 // Copyright (c) 2024-2026 Michael Laurence Curzi and 36N9 Genetics, LLC
 // SPDX-License-Identifier: Apache-2.0
 
+// These tests keep the 1.0 context surface covered: it is deprecated since
+// ABI 1.2 (no capability) but must keep working (sdk/docs/STABILITY.md).
+#pragma warning disable CS0618
+
 using System;
 using System.Linq;
 using Zxv.Currencies;

@@ -80,9 +80,9 @@ public final class Budgets implements AutoCloseable {
     /** A new registry in the capability's context. */
     public static Budgets create(Capability cap) {
         ZxvContext ctx = Caps.ctx(cap);
-        try (Lease l = Lease.of(Caps.res(ctx)); Arena a = Arena.ofConfined()) {
+        try (Lease l = Lease.of(Caps.res(cap)); Arena a = Arena.ofConfined()) {
             MemorySegment out = a.allocate(ADDRESS);
-            Ffi.check(Ffi.call(Native.rmag_create, l.h(0), out), ctx);
+            Ffi.check(Ffi.call(Native.rmag_create_cap, l.h(0), out), ctx);
             return new Budgets(cap, ctx, out.get(ADDRESS, 0));
         }
     }

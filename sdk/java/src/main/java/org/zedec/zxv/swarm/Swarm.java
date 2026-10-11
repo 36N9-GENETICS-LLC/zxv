@@ -96,9 +96,9 @@ public final class Swarm implements AutoCloseable {
      */
     public static Swarm create(Capability cap, int numLevels, long tokensPerCycle) {
         ZxvContext ctx = Caps.ctx(cap);
-        try (Lease l = Lease.of(Caps.res(ctx)); Arena a = Arena.ofConfined()) {
+        try (Lease l = Lease.of(Caps.res(cap)); Arena a = Arena.ofConfined()) {
             MemorySegment out = a.allocate(ADDRESS);
-            Ffi.check(Ffi.call(Native.swarm_create, l.h(0), numLevels, tokensPerCycle, out), ctx);
+            Ffi.check(Ffi.call(Native.swarm_create_cap, l.h(0), numLevels, tokensPerCycle, out), ctx);
             return new Swarm(cap, ctx, out.get(ADDRESS, 0));
         }
     }

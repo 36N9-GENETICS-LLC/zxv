@@ -44,7 +44,8 @@ To depend on the package from another package:
 ```
 
 When you create the first `ZxvContext`, it checks the library's `zxv_version`. It refuses a
-library whose major version is not 1 or whose minor version is below 1.
+library whose major version is not 1 or whose minor version is below 2 (ABI 1.2 added the
+capability-gated `*_cap` forms the SDK calls).
 
 ## Quickstart
 
@@ -52,7 +53,7 @@ library whose major version is not 1 or whose minor version is below 1.
 import Zxv
 let ctx = try ZxvContext()
 let root = try ctx.rootCapability()                 // every bit, attested TRUE
-try ctx.enableCurrency("NGN")
+try ctx.enableCurrency("NGN", capability: root)     // needs .ledgerPost
 let ledger = Ledger(root)
 let bank = try ledger.openAccount("bank", currency: "NGN", kind: .issuer)
 let ada = try ledger.openAccount("ada", currency: "NGN")
@@ -71,7 +72,7 @@ streams tokens, and shows the fail-closed path.
 | Handles | `final class`es that free their C handle in `deinit`. Children hold strong references to their parents: a `Capability` keeps its `ZxvContext` alive, and a child capability keeps its parent alive. So the C destruction order (R6) always holds. |
 | Errors | Typed throws, one type per error class: `ZxvUsageError`, `ZxvRefusedError` (whose `reason` is `.capabilityDenied`, `.budgetExhausted`, `.insufficientFunds`, `.verificationFailed`, `.notImplemented` or `.other`), `ZxvFatalError` and `ZxvSystemError`. Calls that touch state throw `ZxvError`, an enum with one case per class. Pure functions such as `Rational` arithmetic can fail only through misuse, so they throw `ZxvUsageError` alone. Every error carries `status`, `statusName` and `detail`. Write `catch .refused(let e) where e.reason == .insufficientFunds`. |
 | Fail-closed | A FATAL status marks the context dead and throws `.fatal`. Every later call fails before it reaches C, and the C context is poisoned anyway. A thrown Swift error can always be caught, so `ZxvLibrary.fatalPolicy = .abort` is the uncatchable form: it prints the detail and calls `abort()`. |
-| Capabilities | `CapabilitySet` is an `OptionSet` (`.ledgerRead`, `.cryptoSign`, ...). Each gated object (`Ledger`, `Budgets`, `MlDsa87`, ...) takes a `Capability` and uses it on every call. Narrow a capability with `attenuate(_:)`. |
+| Capabilities | `CapabilitySet` is an `OptionSet` (`.ledgerRead`, `.cryptoSign`, ...). Each gated object (`Ledger`, `Budgets`, `MlDsa87`, ...) takes a `Capability` and uses it on every call, through the capability-gated `zxv_*_cap` C forms (ABI 1.2). Creating `Budgets`, `PhaseClock`, `Attestations` or `Swarm` needs its bit. `enableCurrency(_:minorUnits:capability:)` and `registerPrivateUnit(_:minorUnits:capability:)` need `.ledgerPost`; a capability of another context is refused (`.capabilityDenied`, `ZXV_E_CAP`). `Message(cap, kind:)` needs `.ledgerRead`, keeps the capability alive, and the library re-checks it on every call. The 1.0 forms without a capability (`enableCurrency(_:minorUnits:)`, `registerPrivateUnit(_:minorUnits:)`, `Message(ctx, kind:)`) still work but are `@available(*, deprecated)`. Narrow a capability with `attenuate(_:)`. |
 | Exactness | `Rational` is a value type holding an `Int64` numerator and denominator. Its `+ - * /` operators are `throws(ZxvUsageError)` (`ZXV_E_RANGE` on overflow). `adding(_:)` and the other named forms return `nil` on overflow instead. It also accepts integer literals. Only `Rational.fromDoubleExact(_:)` takes a `Double`. |
 | Four-valued logic | `enum Truth: UInt8 { case neither, true, false, both }` uses the C numbering. `and`, `or` and `not` match the C tables. There is no conversion to `Bool`. Use `isCertainlyTrue`, `toBool(onBoth:onNeither:)` or `requireTrue()`. |
 | Async | `budget.consumeAsync(_:timeout:)` suspends until the budget is replenished. `DeferredEvent.awaitCleared()` and `PhaseClock.untilTick(_:)` suspend until the clock reaches the tick. `session.generateAsync` runs generation off the cooperative thread pool. All of them support task cancellation. |
@@ -84,12 +85,12 @@ streams tokens, and shows the fail-closed path.
 | Type | Main members | Needs |
 |---|---|---|
 | `ZxvLibrary` | `version`, `features`, `fatalPolicy`, `ensureCompatible()`, `statusName(_:)` | - |
-| `ZxvContext` | `rootCapability(_:processId:identity:)`, `enableCurrency`, `registerPrivateUnit`, `enabledCurrencies`, `halt`, `isPoisoned` | - |
+| `ZxvContext` | `rootCapability(_:processId:identity:)`, `enableCurrency(_:minorUnits:capability:)`, `registerPrivateUnit(_:minorUnits:capability:)`, `enabledCurrencies`, `halt`, `isPoisoned` | `.ledgerPost` for the currency calls |
 | `Capability` | `attenuate`, `revoke`, `setAttestation`, `info`, `check`, `require` | - |
 | `Rational` | `init(_:_:)`, `init(_ text:)`, `fromQ16`, `fromDoubleExact`, `+ - * /`, `adding`..., `toQ16`, `description` | - |
 | `Truth` | `and`, `or`, `not`, `init(positive:negative:)`, `toBool`, `isCertainlyTrue`, `requireTrue` | - |
-| `Ledger` | `openAccount`, `post`, `balance`, `journal`, `check`, `accountName`, `accountCurrency` | `.ledgerPost` / `.ledgerRead` |
-| `Message` | `set`, `setAmount`, `render` (pacs.008, camt.053) | - |
+| `Ledger` | `openAccount`, `post`, `balance`, `journal`, `check`, `accountName`, `accountCurrency`, `accountKind`, `accountCount` | `.ledgerPost` / `.ledgerRead` |
+| `Message` | `init(_:kind:)` with a capability, `set`, `setAmount`, `render` (pacs.008, camt.053) | `.ledgerRead` |
 | `Attestations` | `attest`, `evidence`, `find`, `state`, `gate` | `.attest` |
 | `Budgets` / `Budget` | `create`, `close`; `consume`, `consumeAsync`, `release`, `setLimit`, `status`, `onExhausted` | `.budget` |
 | `PhaseClock` / `DeferredEvent` | `now`, `advance`, `admit`, `setHealth`, `defer(until:)`, `untilTick`, `nextDue`, `startRealtime`, `stopRealtime`, `close`; `awaitCleared`, `cancel`, `state` | `.phase` |
@@ -244,9 +245,6 @@ If you keep the conformance files elsewhere, set `ZXV_CONFORMANCE_DIR` to their 
 - **Threads.** `stream` and `generateAsync` each use a dedicated `Thread`, because the C
   generation call blocks. `Budgets` waiters wake on the C listener. `close()` cancels them, and
   `deinit` cannot run while a waiter still holds the registry.
-- **Ledger metadata.** `openAccount`, the journal and the account-name calls have no
-  capability-checked C variant. The SDK checks `.ledgerRead` itself before reading, but account
-  opening and currency setup are not gated in C.
 - **Not built in this libzxv.** Netting, card issuing and VSS are pending in the kernel and not wrapped here. Only the PAN
   check digit is available. `Model.loadLora` throws `.refused(.notImplemented)` while
   `Features.lora` is off.

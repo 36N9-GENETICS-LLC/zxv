@@ -35,7 +35,7 @@ final class Budgets extends NativeHandle
     public function __construct(public readonly Capability $capability)
     {
         $out = Native::new("zxv_rmag*");
-        Native::check(Native::ffi()->zxv_rmag_create($capability->context->raw(), \FFI::addr($out)), $capability->context);
+        Native::check(Native::ffi()->zxv_rmag_create_cap($capability->ptr(), \FFI::addr($out)), $capability->context);
         parent::__construct($capability->context, $out, "zxv_rmag_destroy");
         // Kept as a property: the C side holds this callback while the rmag lives.
         $this->listener = function ($user, int $budget, int $event): void {

@@ -64,7 +64,7 @@ public sealed class Swarm : IDisposable
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(levels);
         _cap = capability;
         capability.Enter("Swarm.Create");
-        int rc = NativeMethods.SwarmCreate(capability.Context.Handle, (uint)levels, tokensPerCycle, out _handle);
+        int rc = NativeMethods.SwarmCreateCap(capability.Handle, (uint)levels, tokensPerCycle, out _handle);
         if (rc != (int)ZxvStatus.Ok)
         {
             _handle.Dispose();

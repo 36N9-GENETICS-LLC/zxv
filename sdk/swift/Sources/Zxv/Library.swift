@@ -73,16 +73,16 @@ public enum ZxvLibrary {
 
     private static let compatibility: Result<Void, ZxvError> = {
         let v = version
-        if v.major != UInt32(ZXV_ABI_VERSION_MAJOR) || v.minor < 1 {
+        if v.major != UInt32(ZXV_ABI_VERSION_MAJOR) || v.minor < 2 {
             return .failure(.system(ZxvSystemError(
                 status: ZXV_E_INTERNAL,
-                detail: "libzxv ABI \(v) is not compatible with this SDK (needs 1.1 or later 1.x)")))
+                detail: "libzxv ABI \(v) is not compatible with this SDK (needs 1.2 or later 1.x)")))
         }
         return .success(())
     }()
 
     /// Refuse a library whose major version differs or whose minor is below
-    /// 1 (SDK_DESIGN.md section 1). Called once by `ZxvContext.init`.
+    /// 2 (SDK_DESIGN.md section 1; ABI 1.2 added the `*_cap` forms). Called once by `ZxvContext.init`.
     public static func ensureCompatible() throws(ZxvError) {
         if case .failure(let e) = compatibility { throw e }
     }

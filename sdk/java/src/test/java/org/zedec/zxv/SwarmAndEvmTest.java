@@ -80,7 +80,7 @@ class SwarmAndEvmTest {
             assertEquals("0x" + v.get("digest"), s.digestHex());
 
             // The ledger form equals the explicit form.
-            ctx.enableCurrency("USD", 2);
+            ctx.enableCurrency(cap, "USD", 2);
             Ledger ledger = Ledger.of(cap);
             Account a = ledger.openAccount("a", "USD", AccountKind.ISSUER);
             Account b = ledger.openAccount("b", "USD", AccountKind.HOLDER);

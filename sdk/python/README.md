@@ -3,7 +3,7 @@
 
 # ZXV for Python (`zxv-sdk`)
 
-The Python SDK for the ZXV platform core. It wraps `libzxv` (C ABI 1.1,
+The Python SDK for the ZXV platform core. It wraps `libzxv` (C ABI 1.2,
 `sdk/libzxv/include/zxv_api.h`) with [cffi](https://cffi.readthedocs.io) in
 ABI mode, so there is nothing to compile. It gives you:
 
@@ -39,7 +39,8 @@ pip install build && python -m build --wheel       # -> dist/zxv_sdk-1.1.0-py3-n
 
 The library is found in this order: a path passed to `zxv.load_library()`,
 then `ZXV_LIBRARY_PATH`, then the copy bundled in the wheel, then the system
-loader path. The SDK refuses a library whose ABI is not 1.x with x >= 1.
+loader path. The SDK refuses a library whose ABI is not 1.x with x >= 2 (it calls the
+`_cap` functions added in 1.2).
 `import zxv` never loads the library; the first call that needs it does, so
 the pure-Python parts (`Ubh168Frame`, `Truth`) work without it.
 
@@ -50,7 +51,7 @@ import zxv
 
 with zxv.Context() as ctx:
     cap = ctx.root_capability()
-    ctx.currencies.enable("NGN")
+    ctx.currencies.enable("NGN", cap=cap)
     ledger = zxv.Ledger(cap)
     bank = ledger.open_account("bank", "NGN", zxv.AccountKind.ISSUER)
     alice = ledger.open_account("alice", "NGN")
@@ -68,6 +69,18 @@ its currencies, its state). Every object that owns a native handle
 manager and has an idempotent `close()`; `__del__` closes as a backstop.
 Children keep their parent alive, and closing a parent closes its open
 children first, so close order never matters.
+
+**Capabilities on every gated call (ABI 1.2).** Every operation that
+changes or reads platform state goes through a `Capability`:
+`Ledger(cap)` opens accounts (`LEDGER_POST`) and reads accounts and
+journals (`LEDGER_READ`); `ctx.currencies.enable(..., cap=cap)` and
+`register_private(..., cap=cap)` need `LEDGER_POST`; `MxMessage(cap, kind)`
+needs `LEDGER_READ`; `Budgets`, `PhaseClock`, `Attestations` and `Swarm`
+need `BUDGET`, `PHASE`, `ATTEST` and `SWARM` to be created. A capability
+must belong to the context it is used on; one from another context raises
+`CapabilityDeniedError`. The 1.0 forms without a capability
+(`ctx.currencies.enable("NGN")`, `MxMessage(ctx, kind)`) still work and
+emit a `DeprecationWarning`.
 
 **Capabilities.** Every object that makes gated calls holds a `Capability`
 and passes it on every call; there is no global "current capability".
@@ -156,8 +169,8 @@ library (`to_bytes_native()`, `resolve_native()`).
 | Capability | `ctx.root_capability`, `Capability.attenuate/revoke/set_attestation/check/require/info`, `Cap` | checked every call |
 | Values | `Rational`, `Truth` | exact; no implicit bool |
 | Ledger | `Ledger(cap).open_account/post/balance/journal/check`, `AccountKind`, `Balance`, `Rail` | int minor units |
-| Currencies | `ctx.currencies.enable/register_private/get/enabled`, `zxv.iso4217.lookup/by_numeric/codes` | ISO 4217 |
-| ISO 20022 | `MxMessage(ctx, MxKind.PACS008).set_text/set_amount/add_entry/render` | pacs.008, camt.053 live |
+| Currencies | `ctx.currencies.enable(alpha, cap=cap)`, `.register_private(code, mu, cap=cap)`, `.get/enabled`, `zxv.iso4217.lookup/by_numeric/codes` | ISO 4217; `enable`/`register_private` need `LEDGER_POST`; without `cap=` they are deprecated |
+| ISO 20022 | `MxMessage(cap, MxKind.PACS008).set_text/set_amount/add_entry/render` | pacs.008, camt.053 live; needs `LEDGER_READ`, re-checked on every call; `MxMessage(ctx, ...)` is deprecated |
 | Pending 1.0 groups | `NettingCycle`, `Cards`, `Vss` | `ZxvNotImplementedError` in this build (card check digits work) |
 | Attestations | `Attestations(cap).attest/evidence/find/state/gate`, `Subject` | four-valued |
 | Budgets | `Budgets(cap).create`, `Budget.consume/try_consume/consume_async/consume_wait/release/set_limit/status`, `on_exhausted` | exact rationals |
@@ -215,7 +228,7 @@ declarations in `zxv/_cdef.py`.
 ## Honest limits
 
 - **CPU integer engine only.** There is no GPU or accelerator offload in
-  ABI 1.1. "Nodes" in the orchestration example are threads in one process.
+  ABI 1.2. "Nodes" in the orchestration example are threads in one process.
   What does carry over to real clusters is determinism: any node can re-run
   and check any other node's output bit for bit.
 - **Capabilities are least privilege, not a sandbox.** Code in the same

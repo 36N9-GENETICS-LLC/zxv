@@ -28,10 +28,11 @@ type Attestations struct {
 	cap *Capability
 }
 
-// NewAttestations creates an empty registry in cap's context.
+// NewAttestations creates an empty registry in cap's context (cap needs
+// CapAttest).
 func NewAttestations(cap *Capability) (*Attestations, error) {
 	var r *C.zxv_lpres
-	if err := cap.ctx.ctxCall(func(p *C.zxv_ctx) C.int32_t { return C.zxv_lpres_create(p, &r) }); err != nil {
+	if err := cap.gated(func(p *C.zxv_cap) C.int32_t { return C.zxv_lpres_create_cap(p, &r) }); err != nil {
 		return nil, err
 	}
 	a := &Attestations{cap: cap}

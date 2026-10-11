@@ -10,7 +10,7 @@ class TestContext < Minitest::Test
   include ZxvTest
 
   def ledger_setup(ctx, cap)
-    ctx.enable_currency("NGN", minor_units: 2)
+    ctx.enable_currency("NGN", minor_units: 2, cap: cap)
     ledger = Zxv::Ledger.new(cap)
     bank = ledger.open_account("bank", "NGN", kind: :issuer)
     alice = ledger.open_account("alice", "NGN")
@@ -38,8 +38,8 @@ class TestContext < Minitest::Test
   end
 
   def test_private_currency
-    with_context do |ctx, _cap|
-      vfv = ctx.register_private_currency("VFV", 2)
+    with_context do |ctx, cap|
+      vfv = ctx.register_private_currency("VFV", 2, cap: cap)
       assert vfv.private?
       assert_nil ctx.currency("XOF")
     end
@@ -130,8 +130,8 @@ class TestContext < Minitest::Test
   end
 
   def test_message_pacs008
-    with_context do |ctx, _cap|
-      msg = Zxv::Message.new(ctx, :pacs008)
+    with_context do |_ctx, cap|
+      msg = Zxv::Message.new(cap, :pacs008)
       { msg_id: "M1", cre_dt_tm: "2026-10-11T12:00:00Z", debtor_name: "Ada & Co", debtor_acct: "D1",
         creditor_name: "Kofi", creditor_acct: "C1", end_to_end_id: "E2E", ccy: "NGN" }.each { |k, v| msg[k] = v }
       msg.amount(:settlement, 150_075, 2)
@@ -139,7 +139,7 @@ class TestContext < Minitest::Test
       assert_includes xml, "Ada &amp; Co"
       assert_includes xml, "1500.75"
       msg.close
-      assert_raises(Zxv::NotImplementedError) { Zxv::Message.new(ctx, :pacs002) }
+      assert_raises(Zxv::NotImplementedError) { Zxv::Message.new(cap, :pacs002) }
     end
   end
 end

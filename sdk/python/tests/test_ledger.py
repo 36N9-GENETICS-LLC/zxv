@@ -7,10 +7,11 @@ from __future__ import annotations
 import pytest
 
 import zxv
+from zxv import Cap
 
 
 def test_post_balance_journal_check(ctx: zxv.Context, cap: zxv.Capability) -> None:
-    ctx.currencies.enable("NGN")
+    ctx.currencies.enable("NGN", cap=cap)
     assert "NGN" in ctx.currencies and ctx.currencies.enabled() == ["NGN"]
     ledger = zxv.Ledger(cap)
     bank = ledger.open_account("bank", "NGN", zxv.AccountKind.ISSUER)
@@ -36,8 +37,8 @@ def test_post_balance_journal_check(ctx: zxv.Context, cap: zxv.Capability) -> No
     ledger.check()
 
 
-def test_private_units_and_iso4217(ctx: zxv.Context) -> None:
-    ctx.currencies.register_private("VFV", 2)
+def test_private_units_and_iso4217(ctx: zxv.Context, cap: zxv.Capability) -> None:
+    ctx.currencies.register_private("VFV", 2, cap=cap)
     vfv = ctx.currencies.get("VFV")
     assert vfv is not None and zxv.CurrencyFlag.PRIVATE in vfv.flags
     assert zxv.iso4217.lookup("VFV") is None
@@ -51,8 +52,8 @@ def test_private_units_and_iso4217(ctx: zxv.Context) -> None:
     assert "NGN" in zxv.iso4217.codes()
 
 
-def test_pacs008_render(ctx: zxv.Context) -> None:
-    with zxv.MxMessage(ctx, zxv.MxKind.PACS008) as m:
+def test_pacs008_render(cap: zxv.Capability) -> None:
+    with zxv.MxMessage(cap, zxv.MxKind.PACS008) as m:
         (m.set_text(zxv.MxField.MSG_ID, "MSG-0001")
           .set_text(zxv.MxField.CRE_DT_TM, "2026-10-09T12:00:00Z")
           .set_text(zxv.MxField.DEBTOR_NAME, "Ada & Sons <Lagos>")
@@ -78,3 +79,79 @@ def test_pending_groups_raise_not_implemented(ctx: zxv.Context) -> None:
     if not zxv.has_feature(zxv.Feature.VSS):
         with pytest.raises(zxv.ZxvNotImplementedError):
             zxv.Vss(ctx).level()
+
+
+# ------------------------------------------------- ABI 1.2: the _cap forms
+
+
+def test_cap_forms_need_the_right_bit(ctx: zxv.Context, cap: zxv.Capability) -> None:
+    post = cap.attenuate(Cap.LEDGER_POST)
+    read = cap.attenuate(Cap.LEDGER_READ)
+    # LEDGER_POST: enable, register_private, open_account
+    ctx.currencies.enable("NGN", cap=post)
+    ctx.currencies.enable("GHS", 2, cap=post)
+    ctx.currencies.register_private("VFV", 2, cap=post)
+    assert ctx.currencies.enabled() == ["NGN", "GHS", "VFV"]
+    for call in (lambda: ctx.currencies.enable("KES", cap=read),
+                 lambda: ctx.currencies.enable("KES", 2, cap=read),
+                 lambda: ctx.currencies.register_private("VFX", 2, cap=read),
+                 lambda: zxv.Ledger(read).open_account("x", "NGN")):
+        with pytest.raises(zxv.CapabilityDeniedError) as e:
+            call()
+        assert e.value.status_name == "ZXV_E_CAP"
+    a = zxv.Ledger(post).open_account("bank", "NGN", zxv.AccountKind.ISSUER)
+    b = zxv.Ledger(post).open_account("alice", "NGN")
+    zxv.Ledger(post).post(a, b, 7, "NGN", "R-1")
+    # LEDGER_READ: account metadata and journals
+    r = zxv.Ledger(read)
+    assert r.accounts() == [a, b] and r.account_name(b) == "alice"
+    assert r.account_currency(b) == "NGN" and r.account_kind(a) is zxv.AccountKind.ISSUER
+    assert [x.reference for x in r.journal(b)] == ["R-1"]
+    p = zxv.Ledger(post)
+    for call in (p.accounts, lambda: p.account_name(b), lambda: p.account_currency(b),
+                 lambda: p.account_kind(b), lambda: p.journal(b)):
+        with pytest.raises(zxv.CapabilityDeniedError):
+            call()
+    # messages need LEDGER_READ and re-check the cap on every call
+    with pytest.raises(zxv.CapabilityDeniedError):
+        zxv.MxMessage(post, zxv.MxKind.PACS008)
+    m = zxv.MxMessage(read, zxv.MxKind.PACS008)
+    m.set_text(zxv.MxField.MSG_ID, "M-1")
+    read.set_attestation(zxv.Truth.BOTH)
+    with pytest.raises(zxv.CapabilityDeniedError):
+        m.set_text(zxv.MxField.MSG_ID, "M-2")
+    read.close()
+    assert m.closed  # closing the cap closes the message first
+    # handle creation needs BUDGET / PHASE / ATTEST / SWARM
+    for ctor, bit in ((zxv.Budgets, Cap.BUDGET), (zxv.PhaseClock, Cap.PHASE),
+                      (zxv.Attestations, Cap.ATTEST)):
+        with pytest.raises(zxv.CapabilityDeniedError):
+            ctor(post)
+        ctor(cap.attenuate(bit)).close()
+    with pytest.raises(zxv.CapabilityDeniedError):
+        zxv.Swarm(post, 2, 10)
+    zxv.Swarm(cap.attenuate(Cap.SWARM), 2, 10).close()
+
+
+def test_cap_from_another_context_is_refused(ctx: zxv.Context) -> None:
+    with zxv.Context() as other:
+        foreign = other.root_capability()
+        for call in (lambda: ctx.currencies.enable("NGN", cap=foreign),
+                     lambda: ctx.currencies.enable("NGN", 2, cap=foreign),
+                     lambda: ctx.currencies.register_private("VFV", 2, cap=foreign)):
+            with pytest.raises(zxv.CapabilityDeniedError) as e:
+                call()
+            assert e.value.status_name == "ZXV_E_CAP" and "different context" in e.value.detail
+        assert ctx.currencies.enabled() == [] and other.currencies.enabled() == []
+
+
+def test_no_cap_forms_are_deprecated(ctx: zxv.Context) -> None:
+    with pytest.warns(DeprecationWarning):
+        ctx.currencies.enable("NGN")
+    with pytest.warns(DeprecationWarning):
+        ctx.currencies.enable("GHS", 2)
+    with pytest.warns(DeprecationWarning):
+        ctx.currencies.register_private("VFV", 2)
+    with pytest.warns(DeprecationWarning):
+        zxv.MxMessage(ctx, zxv.MxKind.PACS008).close()
+    assert ctx.currencies.enabled() == ["NGN", "GHS", "VFV"]

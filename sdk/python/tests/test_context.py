@@ -50,7 +50,7 @@ def test_contradictory_attestation_blocks_with_detail(ctx: zxv.Context, cap: zxv
 
 
 def test_capability_denial_on_ledger_and_revocation(ctx: zxv.Context, cap: zxv.Capability) -> None:
-    ctx.currencies.enable("NGN", 2)
+    ctx.currencies.enable("NGN", 2, cap=cap)
     ledger = zxv.Ledger(cap)
     a = ledger.open_account("issuer", "NGN", zxv.AccountKind.ISSUER)
     b = ledger.open_account("alice", "NGN")
@@ -67,7 +67,7 @@ def test_capability_denial_on_ledger_and_revocation(ctx: zxv.Context, cap: zxv.C
 
 
 def test_fatal_path_via_halt(ctx: zxv.Context, cap: zxv.Capability) -> None:
-    ctx.currencies.enable("NGN", 2)
+    ctx.currencies.enable("NGN", 2, cap=cap)
     ledger = zxv.Ledger(cap)
     a = ledger.open_account("issuer", "NGN", zxv.AccountKind.ISSUER)
     b = ledger.open_account("alice", "NGN")
@@ -114,7 +114,7 @@ def test_fatal_policy_abort_terminates_the_process() -> None:
 
 def test_closing_parent_closes_children(ctx: zxv.Context) -> None:
     root = ctx.root_capability()
-    child = root.attenuate(Cap.LEDGER_READ)
+    child = root.attenuate(Cap.LEDGER_READ | Cap.BUDGET)
     grandchild = child.attenuate(Cap.LEDGER_READ)
     b = zxv.Budgets(child)
     root.close()

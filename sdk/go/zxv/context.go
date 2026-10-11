@@ -55,7 +55,7 @@ type EnabledCurrency struct {
 }
 
 // NewContext creates a context. It fails if the loaded libzxv is not ABI
-// 1.x with x >= 1.
+// 1.x with x >= 2.
 func NewContext(opts ...ContextOption) (*Context, error) {
 	if err := checkVersion(); err != nil {
 		return nil, err
@@ -126,8 +126,73 @@ func (c *Context) RootCapability(processID uint32, identity *[21]byte, caps Caps
 	return newCapability(c, nil, out), nil
 }
 
+// EnableCurrencyCap enables an ISO 4217 currency for ledger accounts
+// (minor units from the ISO table) through cap, which needs CapLedgerPost.
+// A capability of another context is refused with ErrCapabilityDenied.
+func (c *Context) EnableCurrencyCap(cap *Capability, alpha string) error {
+	if err := c.ownCap(cap); err != nil {
+		return err
+	}
+	a, err := cstring(alpha)
+	if err != nil {
+		return err
+	}
+	defer freeC(a)
+	return cap.gated(func(p *C.zxv_cap) C.int32_t { return C.zxv_ccy_enable_cap(p, a) })
+}
+
+// EnableCurrencyWithMinorCap enables an ISO 4217 currency asserting its
+// minor units, through cap (CapLedgerPost).
+func (c *Context) EnableCurrencyWithMinorCap(cap *Capability, alpha string, minorUnits uint8) error {
+	if err := c.ownCap(cap); err != nil {
+		return err
+	}
+	a, err := cstring(alpha)
+	if err != nil {
+		return err
+	}
+	defer freeC(a)
+	return cap.gated(func(p *C.zxv_cap) C.int32_t {
+		return C.zxv_ccy_enable_with_minor_cap(p, a, C.uint8_t(minorUnits))
+	})
+}
+
+// RegisterPrivateCurrencyCap registers a platform-private unit (e.g.
+// "VFV") through cap (CapLedgerPost): usable in ledger accounts, refused in
+// ISO 20022 messages.
+func (c *Context) RegisterPrivateCurrencyCap(cap *Capability, code string, minorUnits uint8) error {
+	if err := c.ownCap(cap); err != nil {
+		return err
+	}
+	a, err := cstring(code)
+	if err != nil {
+		return err
+	}
+	defer freeC(a)
+	return cap.gated(func(p *C.zxv_cap) C.int32_t {
+		return C.zxv_ccy_register_private_cap(p, a, C.uint8_t(minorUnits))
+	})
+}
+
+// ownCap refuses a nil capability or one of another context: the C cap
+// forms act on the capability's own context, not on c.
+func (c *Context) ownCap(cap *Capability) error {
+	if err := c.guard(); err != nil {
+		return err
+	}
+	if cap == nil {
+		return newError(StatusArg, "nil capability")
+	}
+	if cap.ctx != c {
+		return newError(StatusCap, "the capability belongs to a different context")
+	}
+	return nil
+}
+
 // EnableCurrency enables an ISO 4217 currency for ledger accounts (minor
 // units from the ISO table).
+//
+// Deprecated: use EnableCurrencyCap with a CapLedgerPost capability.
 func (c *Context) EnableCurrency(alpha string) error {
 	a, err := cstring(alpha)
 	if err != nil {
@@ -138,6 +203,8 @@ func (c *Context) EnableCurrency(alpha string) error {
 }
 
 // EnableCurrencyWithMinor enables an ISO 4217 currency asserting its minor units.
+//
+// Deprecated: use EnableCurrencyWithMinorCap with a CapLedgerPost capability.
 func (c *Context) EnableCurrencyWithMinor(alpha string, minorUnits uint8) error {
 	a, err := cstring(alpha)
 	if err != nil {
@@ -149,6 +216,8 @@ func (c *Context) EnableCurrencyWithMinor(alpha string, minorUnits uint8) error 
 
 // RegisterPrivateCurrency registers a platform-private unit (e.g. "VFV"):
 // usable in ledger accounts, refused in ISO 20022 messages.
+//
+// Deprecated: use RegisterPrivateCurrencyCap with a CapLedgerPost capability.
 func (c *Context) RegisterPrivateCurrency(code string, minorUnits uint8) error {
 	a, err := cstring(code)
 	if err != nil {

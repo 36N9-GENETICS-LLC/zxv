@@ -34,10 +34,11 @@ public struct JournalLine: Sendable, Equatable {
 }
 
 /// The triple ledger, used through a capability. Amounts are exact `Int64`
-/// minor units. Posting needs `.ledgerPost`; reading needs `.ledgerRead`.
+/// minor units. Posting and opening accounts need `.ledgerPost`; balances,
+/// account metadata and journals need `.ledgerRead`. Every call is the
+/// capability-gated `*_cap` C form.
 public final class Ledger: @unchecked Sendable {
     private let cap: Capability
-    private var ctx: OpaquePointer { cap.context.handle }
 
     /// A ledger acting with `cap`.
     public init(_ cap: Capability) { self.cap = cap }
@@ -45,7 +46,7 @@ public final class Ledger: @unchecked Sendable {
     /// Open an account in an enabled currency. `name` <= 63 bytes.
     public func openAccount(_ name: String, currency: String, kind: AccountKind = .holder) throws(ZxvError) -> UInt32 {
         var id: UInt32 = 0
-        try cap.call { _ in zxv_ledger_open_account(ctx, name, currency, kind.rawValue, &id) }
+        try cap.call { zxv_ledger_open_account_cap($0, name, currency, kind.rawValue, &id) }
         return id
     }
 
@@ -71,13 +72,13 @@ public final class Ledger: @unchecked Sendable {
 
     /// Journal of an account, oldest first.
     public func journal(_ account: UInt32) throws(ZxvError) -> [JournalLine] {
-        try cap.require(.ledgerRead) // the C call takes the context; the SDK still gates it
         var n: UInt32 = 0
-        try cap.call { _ in zxv_ledger_entry_count(ctx, account, &n) }
+        try cap.call { zxv_ledger_entry_count_cap($0, account, &n) }
+        let c = cap.handle
         var out: [JournalLine] = []
         for i in 0..<n {
             var id: UInt64 = 0, amt: Int64 = 0, cp: UInt32 = 0
-            let ref = try readText(cap.context) { zxv_ledger_entry_at(ctx, account, i, &id, &amt, &cp, $0, $1, $2) }
+            let ref = try readText(cap.context) { zxv_ledger_entry_at_cap(c, account, i, &id, &amt, &cp, $0, $1, $2) }
             out.append(JournalLine(entryId: id, amount: amt, counterparty: cp, reference: ref))
         }
         return out
@@ -85,14 +86,30 @@ public final class Ledger: @unchecked Sendable {
 
     /// Name of an account.
     public func accountName(_ account: UInt32) throws(ZxvError) -> String {
-        try cap.require(.ledgerRead)
-        return try readText(cap.context) { zxv_ledger_account_name(ctx, account, $0, $1, $2) }
+        try cap.context.ensureAlive()
+        let c = cap.handle
+        return try readText(cap.context) { zxv_ledger_account_name_cap(c, account, $0, $1, $2) }
     }
 
     /// Currency of an account.
     public func accountCurrency(_ account: UInt32) throws(ZxvError) -> String {
-        try cap.require(.ledgerRead)
-        return try readText(cap.context) { zxv_ledger_account_ccy(ctx, account, $0, $1, $2) }
+        try cap.context.ensureAlive()
+        let c = cap.handle
+        return try readText(cap.context) { zxv_ledger_account_ccy_cap(c, account, $0, $1, $2) }
+    }
+
+    /// Kind of an account.
+    public func accountKind(_ account: UInt32) throws(ZxvError) -> AccountKind {
+        var k: Int32 = 0
+        try cap.call { zxv_ledger_account_kind_cap($0, account, &k) }
+        return AccountKind(rawValue: k) ?? .holder
+    }
+
+    /// Number of accounts in the context.
+    public func accountCount() throws(ZxvError) -> UInt32 {
+        var n: UInt32 = 0
+        try cap.call { zxv_ledger_account_count_cap($0, &n) }
+        return n
     }
 }
 
@@ -160,13 +177,28 @@ public enum MxAmount: Int32, Sendable {
 }
 
 /// One ISO 20022 message under construction. Not thread-safe (not Sendable).
+/// Made through a capability (`.ledgerRead`), which the library re-checks on
+/// every call and which the message keeps alive.
 public final class Message {
     private let context: ZxvContext
+    private let capability: Capability? // the cap a *_cap message re-checks; outlives handle
     private let handle: OpaquePointer
 
+    /// Create a message through `capability` (`.ledgerRead`). Pending kinds
+    /// throw `.refused` (notImplemented).
+    public init(_ capability: Capability, kind: MxKind) throws(ZxvError) {
+        context = capability.context
+        self.capability = capability
+        var m: OpaquePointer?
+        try capability.call { zxv_msg_create_cap($0, kind.rawValue, &m) }
+        handle = m!
+    }
+
     /// Create a message. Pending kinds throw `.refused` (notImplemented).
+    @available(*, deprecated, message: "ABI 1.2: create messages through a .ledgerRead capability: Message(_:kind:)")
     public init(_ context: ZxvContext, kind: MxKind) throws(ZxvError) {
         self.context = context
+        capability = nil
         var m: OpaquePointer?
         try context.call { zxv_msg_create(context.handle, kind.rawValue, &m) }
         handle = m!
@@ -176,17 +208,20 @@ public final class Message {
     /// Set a text field (plain UTF-8; the serializer escapes XML).
     @discardableResult
     public func set(_ field: MxField, _ text: String) throws(ZxvError) -> Message {
-        try check(zxv_msg_set_text(handle, field.rawValue, text))
+        try context.ensureAlive()
+        try check(zxv_msg_set_text(handle, field.rawValue, text), context)
         return self
     }
     /// Set an amount: exact units with `fractionDigits` decimal places.
     @discardableResult
     public func setAmount(_ field: MxAmount, units: Int64, fractionDigits: UInt8) throws(ZxvError) -> Message {
-        try check(zxv_msg_set_amount(handle, field.rawValue, units, fractionDigits))
+        try context.ensureAlive()
+        try check(zxv_msg_set_amount(handle, field.rawValue, units, fractionDigits), context)
         return self
     }
     /// Serialize to XML.
     public func render() throws(ZxvError) -> String {
-        try readText { zxv_msg_render(handle, $0, $1, $2) }
+        try context.ensureAlive()
+        return try readText(context) { zxv_msg_render(handle, $0, $1, $2) }
     }
 }

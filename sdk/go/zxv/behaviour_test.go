@@ -22,7 +22,7 @@ import (
 
 func TestFatalPathPoisonsContextAndHandles(t *testing.T) {
 	ctx, cap := env(t)
-	ok(t, ctx.EnableCurrencyWithMinor("NGN", 2))
+	ok(t, ctx.EnableCurrencyWithMinorCap(cap, "NGN", 2))
 	l := zxv.NewLedger(cap)
 	bank := must[zxv.AccountID](t)(l.OpenAccount("bank", "NGN", zxv.Issuer))
 	alice := must[zxv.AccountID](t)(l.OpenAccount("alice", "NGN", zxv.Holder))
@@ -43,7 +43,7 @@ func TestFatalPathPoisonsContextAndHandles(t *testing.T) {
 	if _, err := cap.Attenuate(zxv.CapLedgerRead); !errors.Is(err, zxv.ErrFatal) {
 		t.Fatal(err)
 	}
-	if err := ctx.EnableCurrency("USD"); !errors.Is(err, zxv.ErrFatal) {
+	if err := ctx.EnableCurrencyCap(cap, "USD"); !errors.Is(err, zxv.ErrFatal) {
 		t.Fatal(err)
 	}
 	if _, err := zxv.NewBudgets(cap); !errors.Is(err, zxv.ErrFatal) {
@@ -105,7 +105,7 @@ func TestCapabilityDenialAttenuationRevocation(t *testing.T) {
 		t.Fatalf("%+v", info)
 	}
 
-	ok(t, ctx.EnableCurrencyWithMinor("NGN", 2))
+	ok(t, ctx.EnableCurrencyWithMinorCap(root, "NGN", 2))
 	l, rl := zxv.NewLedger(root), zxv.NewLedger(ro)
 	a := must[zxv.AccountID](t)(l.OpenAccount("issuer", "NGN", zxv.Issuer))
 	b := must[zxv.AccountID](t)(l.OpenAccount("alice", "NGN", zxv.Holder))
@@ -144,8 +144,8 @@ func TestCloseOrderIsEnforced(t *testing.T) {
 
 func TestLedgerAndCurrencies(t *testing.T) {
 	ctx, cap := env(t)
-	ok(t, ctx.EnableCurrency("NGN"))
-	ok(t, ctx.RegisterPrivateCurrency("VFV", 2))
+	ok(t, ctx.EnableCurrencyCap(cap, "NGN"))
+	ok(t, ctx.RegisterPrivateCurrencyCap(cap, "VFV", 2))
 	if c := must[zxv.EnabledCurrency](t)(ctx.Currency("VFV")); c.Flags&zxv.CcyPrivate == 0 {
 		t.Fatal("VFV private")
 	}
@@ -214,8 +214,8 @@ func TestISOReferenceDataAndMessages(t *testing.T) {
 		t.Fatal("luhn")
 	}
 
-	ctx, _ := env(t)
-	m := must[*zxv.Message](t)(ctx.NewMessage(zxv.Pacs008))
+	_, cap := env(t)
+	m := must[*zxv.Message](t)(cap.NewMessage(zxv.Pacs008))
 	defer m.Close()
 	for f, v := range map[zxv.TextField]string{
 		zxv.FieldMsgID: "MSG-1", zxv.FieldCreDtTm: "2026-10-11T12:00:00Z", zxv.FieldDebtorName: "Ada & Co",
@@ -229,7 +229,7 @@ func TestISOReferenceDataAndMessages(t *testing.T) {
 	if !strings.Contains(xml, "125.50") || !strings.Contains(xml, "Ada &amp; Co") {
 		t.Fatal(xml)
 	}
-	if _, err := ctx.NewMessage(zxv.Pacs002); !errors.Is(err, zxv.ErrNotImplemented) {
+	if _, err := cap.NewMessage(zxv.Pacs002); !errors.Is(err, zxv.ErrNotImplemented) {
 		t.Fatal(err)
 	}
 }
@@ -279,10 +279,17 @@ func TestBudgetExhaustionAndInvalid(t *testing.T) {
 	if st := must[zxv.BudgetStatus](t)(b.Status()); !st.Remaining.Equal(rat(t, [2]int64{1, 2})) || st.Epoch != 1 {
 		t.Fatalf("%+v", st)
 	}
+	// Creating a budget set needs CapBudget (ABI 1.2), and so does using it.
 	ro := must[*zxv.Capability](t)(cap.Attenuate(zxv.CapLedgerRead))
 	defer ro.Close()
-	nb := must[*zxv.Budgets](t)(zxv.NewBudgets(ro))
+	if _, err := zxv.NewBudgets(ro); !errors.Is(err, zxv.ErrCapabilityDenied) {
+		t.Fatal(err)
+	}
+	bc := must[*zxv.Capability](t)(cap.Attenuate(zxv.CapBudget))
+	defer bc.Close()
+	nb := must[*zxv.Budgets](t)(zxv.NewBudgets(bc))
 	defer nb.Close()
+	ok(t, bc.Revoke())
 	if _, err := nb.Create("x", zxv.ResEnergy, zxv.RatOne, true); !errors.Is(err, zxv.ErrCapabilityDenied) {
 		t.Fatal(err)
 	}
@@ -386,8 +393,14 @@ func TestPhaseDeferralManualDriver(t *testing.T) {
 	}
 	ro := must[*zxv.Capability](t)(cap.Attenuate(zxv.CapLedgerRead))
 	defer ro.Close()
-	pc2 := must[*zxv.PhaseClock](t)(zxv.NewPhaseClock(ro))
+	if _, err := zxv.NewPhaseClock(ro); !errors.Is(err, zxv.ErrCapabilityDenied) {
+		t.Fatal(err)
+	}
+	ph := must[*zxv.Capability](t)(cap.Attenuate(zxv.CapPhase))
+	defer ph.Close()
+	pc2 := must[*zxv.PhaseClock](t)(zxv.NewPhaseClock(ph))
 	defer pc2.Close()
+	ok(t, ph.Revoke())
 	if _, _, err := pc2.Advance(1); !errors.Is(err, zxv.ErrCapabilityDenied) {
 		t.Fatal(err)
 	}

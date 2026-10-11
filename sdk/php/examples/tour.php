@@ -27,7 +27,7 @@ $ctx = new Context();
 $root = $ctx->rootCapability();
 
 // Ledger through a capability.
-$ctx->enableCurrency("NGN");
+$ctx->enableCurrency("NGN", cap: $root);
 $ledger = new Ledger($root);
 $bank = $ledger->openAccount("bank", "NGN", Ledger::ISSUER);
 $ada = $ledger->openAccount("ada", "NGN");

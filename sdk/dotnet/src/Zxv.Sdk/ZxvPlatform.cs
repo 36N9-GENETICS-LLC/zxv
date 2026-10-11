@@ -230,7 +230,7 @@ public sealed class ZxvPlatform : IDisposable
     {
         foreach (string code in o.Currencies)
         {
-            Currency c = o.MinorUnits.TryGetValue(code, out byte mu) ? Currencies.Enable(code, mu) : Currencies.Enable(code);
+            Currency c = Currencies.EnableUnchecked(code, o.MinorUnits.TryGetValue(code, out byte mu) ? mu : null);
             Log.CurrencyEnabled(_logger, c.Code, c.MinorUnits);
         }
 
@@ -244,7 +244,7 @@ public sealed class ZxvPlatform : IDisposable
 
         foreach (PrivateUnitOptions p in o.PrivateUnits)
         {
-            Currencies.RegisterPrivateUnit(p.Code, p.MinorUnits);
+            Currencies.RegisterPrivateUnitUnchecked(p.Code, p.MinorUnits);
         }
     }
 }

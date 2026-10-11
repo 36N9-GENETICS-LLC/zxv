@@ -92,9 +92,9 @@ public final class PhaseClock implements AutoCloseable {
     /** A new clock at tick 0 in the capability's context. */
     public static PhaseClock create(Capability cap) {
         ZxvContext ctx = Caps.ctx(cap);
-        try (Lease l = Lease.of(Caps.res(ctx)); Arena a = Arena.ofConfined()) {
+        try (Lease l = Lease.of(Caps.res(cap)); Arena a = Arena.ofConfined()) {
             MemorySegment out = a.allocate(ADDRESS);
-            Ffi.check(Ffi.call(Native.phase_create, l.h(0), out), ctx);
+            Ffi.check(Ffi.call(Native.phase_create_cap, l.h(0), out), ctx);
             return new PhaseClock(cap, ctx, out.get(ADDRESS, 0));
         }
     }

@@ -26,7 +26,7 @@ using ctx = zxv.createContext();
 const root = ctx.rootCapability();
 const readOnly = root.attenuate(Cap.LEDGER_READ);
 
-ctx.enableCurrency('NGN');
+ctx.enableCurrency(root, 'NGN');
 const ledger = Ledger.of(root);
 const bank = ledger.openAccount('bank', 'NGN', AccountKind.ISSUER);
 const ada = ledger.openAccount('ada', 'NGN');

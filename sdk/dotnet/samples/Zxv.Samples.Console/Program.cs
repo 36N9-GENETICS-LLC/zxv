@@ -45,11 +45,14 @@ Console.WriteLine($"  Rail jurisdictions: DEBIT {CurrencyService.GetRailJurisdic
 Console.WriteLine($"  Caveat 777: {zxv.Currencies.GetCaveat(777)}");
 Console.WriteLine();
 
-// 2. Ledger: an issuer (settlement) account funds two holders.
+// 2. Ledger: an issuer (settlement) account funds two holders. Opening
+// accounts and reading the journal go through a capability (ABI 1.2).
+using Capability teller = zxv.CreateRootCapability(CapabilityRights.LedgerRead | CapabilityRights.LedgerPost);
+CapabilityLedger ledger = zxv.Ledger.WithCapability(teller);
 Currency ngn = zxv.Currencies.GetEnabled("NGN");
-Account settlement = zxv.Ledger.OpenAccount("Lagos settlement NGN", "NGN", AccountKind.Issuer);
-Account ada = zxv.Ledger.OpenAccount("Adébáyọ̀ Okonkwo", "NGN");
-Account chidi = zxv.Ledger.OpenAccount("Chidi Eze", "NGN");
+Account settlement = ledger.OpenAccount("Lagos settlement NGN", "NGN", AccountKind.Issuer);
+Account ada = ledger.OpenAccount("Adébáyọ̀ Okonkwo", "NGN");
+Account chidi = ledger.OpenAccount("Chidi Eze", "NGN");
 zxv.Ledger.Post(new Transfer(settlement.Id, ada.Id, Money.FromDecimal(150_000.75m, ngn), "FUND-0001"));
 
 // 3. Payment: book on the ledger and emit pacs.008 (transport: none in the sample).
@@ -106,4 +109,4 @@ foreach ((string name, Action probe) in new (string, Action)[]
 }
 
 Console.WriteLine();
-Console.WriteLine($"Accounts: {zxv.Ledger.ListAccounts().Count}; enabled currencies: {string.Join(", ", zxv.Currencies.ListEnabled().Select(c => c.Code))}");
+Console.WriteLine($"Accounts: {ledger.ListAccounts().Count}; enabled currencies: {string.Join(", ", zxv.Currencies.ListEnabled().Select(c => c.Code))}");

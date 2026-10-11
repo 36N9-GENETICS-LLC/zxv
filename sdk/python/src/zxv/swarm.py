@@ -89,8 +89,8 @@ class Swarm(NativeHandle):
         """Create a swarm with ``levels`` Fibonacci levels."""
         ctx = cap.context
         out = ffi.new("zxv_swarm **")
-        _native.check(_native.lib().zxv_swarm_create(
-            ctx._handle(), _native.exact_int(levels, "levels", *_native.U32),
+        _native.check(_native.lib().zxv_swarm_create_cap(
+            cap._handle(), _native.exact_int(levels, "levels", *_native.U32),
             _native.exact_int(tokens_per_cycle, "tokens_per_cycle", *_native.U64), out), ctx)
         self._cap = cap
         super().__init__(out[0], cap, ctx)

@@ -54,11 +54,11 @@ type Swarm struct {
 }
 
 // NewSwarm creates a swarm of levels Fibonacci levels sharing
-// tokensPerCycle each cycle.
+// tokensPerCycle each cycle (cap needs CapSwarm).
 func NewSwarm(cap *Capability, levels uint32, tokensPerCycle uint64) (*Swarm, error) {
 	var s *C.zxv_swarm
-	if err := cap.ctx.ctxCall(func(p *C.zxv_ctx) C.int32_t {
-		return C.zxv_swarm_create(p, C.uint32_t(levels), C.uint64_t(tokensPerCycle), &s)
+	if err := cap.gated(func(p *C.zxv_cap) C.int32_t {
+		return C.zxv_swarm_create_cap(p, C.uint32_t(levels), C.uint64_t(tokensPerCycle), &s)
 	}); err != nil {
 		return nil, err
 	}

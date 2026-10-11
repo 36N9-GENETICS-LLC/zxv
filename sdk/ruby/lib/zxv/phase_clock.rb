@@ -36,7 +36,7 @@ module Zxv
     def initialize(capability)
       @capability = capability
       out = Call.out(:pointer)
-      Call.check(Native.lib.zxv_phase_create(capability.context.raw, out), capability.context)
+      Call.check(Native.lib.zxv_phase_create_cap(capability.ptr, out), capability.context)
       super(capability.context, out.read_pointer, :zxv_phase_destroy)
       @lock = Mutex.new
       @changed = ConditionVariable.new

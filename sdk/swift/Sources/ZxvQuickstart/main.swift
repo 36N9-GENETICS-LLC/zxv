@@ -14,7 +14,7 @@ struct Quickstart {
     static func main() async throws {
         let ctx = try ZxvContext()
         let root = try ctx.rootCapability()
-        try ctx.enableCurrency("NGN")
+        try ctx.enableCurrency("NGN", capability: root) // needs .ledgerPost
         let ledger = Ledger(root)
         let bank = try ledger.openAccount("bank", currency: "NGN", kind: .issuer)
         let ada = try ledger.openAccount("ada", currency: "NGN")

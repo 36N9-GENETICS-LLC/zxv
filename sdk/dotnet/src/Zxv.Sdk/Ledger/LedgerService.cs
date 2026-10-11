@@ -33,11 +33,12 @@ public sealed class LedgerService
         _logger = logger;
     }
 
-    /// <summary>Opens an account in an enabled currency.</summary>
+    /// <summary>Opens an account in an enabled currency, without a capability.</summary>
     /// <param name="name">Display name (UTF-8, at most 63 bytes).</param>
     /// <param name="currency">An enabled currency or private unit code.</param>
     /// <param name="kind">Holder (default) or issuer.</param>
     /// <returns>The new account.</returns>
+    [Obsolete("Deprecated since ABI 1.2 (no capability): use WithCapability(cap).OpenAccount, which needs LedgerPost.")]
     public Account OpenAccount(string name, string currency, AccountKind kind = AccountKind.Holder)
     {
         Guard.Text(name, nameof(name));
@@ -48,10 +49,14 @@ public sealed class LedgerService
         return new Account(new AccountId(id), name, currency, kind);
     }
 
-    /// <summary>Gets an account.</summary>
+    /// <summary>Gets an account, without a capability.</summary>
     /// <param name="id">The account id.</param>
     /// <returns>The account.</returns>
-    public unsafe Account GetAccount(AccountId id)
+    [Obsolete("Deprecated since ABI 1.2 (no capability): use WithCapability(cap).GetAccount, which needs LedgerRead.")]
+    public Account GetAccount(AccountId id) => GetAccountUnchecked(id);
+
+    /// <summary>The 1.0 context form, used by the platform services (payments, statements).</summary>
+    internal unsafe Account GetAccountUnchecked(AccountId id)
     {
         uint v = id.Value;
         string ccy = NativeCall.ReadText((byte* b, nuint c, out nuint l) => NativeMethods.LedgerAccountCcy(_ctx, v, b, c, out l), "Ledger.GetAccount");
@@ -60,15 +65,16 @@ public sealed class LedgerService
         return new Account(id, name, ccy, (AccountKind)kind);
     }
 
-    /// <summary>Lists all accounts in id order.</summary>
+    /// <summary>Lists all accounts in id order, without a capability.</summary>
     /// <returns>The accounts.</returns>
+    [Obsolete("Deprecated since ABI 1.2 (no capability): use WithCapability(cap).ListAccounts, which needs LedgerRead.")]
     public IReadOnlyList<Account> ListAccounts()
     {
         NativeCall.Check(NativeMethods.LedgerAccountCount(_ctx, out uint count), "Ledger.ListAccounts");
         var list = new List<Account>((int)count);
         for (uint i = 0; i < count; i++)
         {
-            list.Add(GetAccount(new AccountId(i)));
+            list.Add(GetAccountUnchecked(new AccountId(i)));
         }
 
         return list;
@@ -128,7 +134,7 @@ public sealed class LedgerService
     /// <returns>DEBIT 555, CREDIT 777 and EQUITY 888 balances.</returns>
     public RailBalances GetBalances(AccountId id)
     {
-        Account account = GetAccount(id);
+        Account account = GetAccountUnchecked(id);
         NativeCall.Check(NativeMethods.LedgerBalance(_ctx, id.Value, out long d, out long c, out long e), "Ledger.GetBalances");
         byte scale = ScaleOf(account.Currency);
         return new RailBalances(new Money(d, account.Currency, scale), new Money(c, account.Currency, scale), new Money(e, account.Currency, scale));
@@ -139,26 +145,34 @@ public sealed class LedgerService
     /// <returns>The equity balance.</returns>
     public Money GetAvailable(AccountId id) => GetBalances(id).Equity;
 
-    /// <summary>Gets the number of journal lines of an account.</summary>
+    /// <summary>Gets the number of journal lines of an account, without a capability.</summary>
     /// <param name="id">The account id.</param>
     /// <returns>The line count.</returns>
-    public int GetEntryCount(AccountId id)
+    [Obsolete("Deprecated since ABI 1.2 (no capability): use WithCapability(cap).GetEntryCount, which needs LedgerRead.")]
+    public int GetEntryCount(AccountId id) => GetEntryCountUnchecked(id);
+
+    /// <summary>The 1.0 context form, used by the platform services (statements).</summary>
+    internal int GetEntryCountUnchecked(AccountId id)
     {
         NativeCall.Check(NativeMethods.LedgerEntryCount(_ctx, id.Value, out uint n), "Ledger.GetEntryCount");
         return checked((int)n);
     }
 
-    /// <summary>Reads journal lines of an account, oldest first.</summary>
+    /// <summary>Reads journal lines of an account, oldest first, without a capability.</summary>
     /// <param name="id">The account id.</param>
     /// <param name="start">Zero-based index of the first line.</param>
     /// <param name="count">Maximum lines to return; <see langword="null"/> for all remaining.</param>
     /// <returns>The lines.</returns>
-    public unsafe IReadOnlyList<LedgerEntry> GetEntries(AccountId id, int start = 0, int? count = null)
+    [Obsolete("Deprecated since ABI 1.2 (no capability): use WithCapability(cap).GetEntries, which needs LedgerRead.")]
+    public IReadOnlyList<LedgerEntry> GetEntries(AccountId id, int start = 0, int? count = null) => GetEntriesUnchecked(id, start, count);
+
+    /// <summary>The 1.0 context form, used by the platform services (statements).</summary>
+    internal unsafe IReadOnlyList<LedgerEntry> GetEntriesUnchecked(AccountId id, int start = 0, int? count = null)
     {
         ArgumentOutOfRangeException.ThrowIfNegative(start);
-        Account account = GetAccount(id);
+        Account account = GetAccountUnchecked(id);
         byte scale = ScaleOf(account.Currency);
-        int total = GetEntryCount(id);
+        int total = GetEntryCountUnchecked(id);
         int end = count is int c ? Math.Min(total, start + Math.Max(0, c)) : total;
         var list = new List<LedgerEntry>(Math.Max(0, end - start));
         for (int i = start; i < end; i++)

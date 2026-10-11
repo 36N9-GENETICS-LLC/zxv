@@ -16,16 +16,15 @@ import org.zedec.zxv.internal.Caps;
 import org.zedec.zxv.internal.Ffi;
 import org.zedec.zxv.internal.Lease;
 import org.zedec.zxv.internal.Native;
-import org.zedec.zxv.internal.NativeResource;
 
 /**
  * The exact triple ledger of a context, seen through one capability.
  * Amounts are {@code long} minor units (cents, kobo, ...), never floats;
  * the largest accepted amount and balance is {@link #AMOUNT_MAX} (2^53 - 1).
  *
- * <p>Posting needs {@code LEDGER_POST}; reading balances and checking the
- * invariants need {@code LEDGER_READ}. Opening accounts and listing journals
- * are context operations (not gated in ABI 1.1).
+ * <p>Posting and opening accounts need {@code LEDGER_POST}; reading
+ * balances, accounts and journals and checking the invariants need
+ * {@code LEDGER_READ} (ABI 1.2: every call goes through the capability).
  *
  * <pre>{@code
  * Ledger ledger = Ledger.of(cap);
@@ -57,41 +56,37 @@ public final class Ledger {
         return cap;
     }
 
-    private NativeResource ctxRes() {
-        return Caps.res(ctx);
-    }
-
     /**
-     * Opens an account in an enabled currency.
+     * Opens an account in an enabled currency. Needs {@code LEDGER_POST}.
      *
      * @param name at most 63 bytes of UTF-8
      */
     public Account openAccount(String name, String currency, AccountKind kind) {
-        try (Lease l = Lease.of(ctxRes()); Arena a = Arena.ofConfined()) {
+        try (Lease l = Lease.of(Caps.res(cap)); Arena a = Arena.ofConfined()) {
             MemorySegment id = a.allocate(JAVA_INT);
-            Ffi.check(Ffi.call(Native.ledger_open_account, l.h(0), Ffi.cstr(a, name), Ffi.cstr(a, currency),
+            Ffi.check(Ffi.call(Native.ledger_open_account_cap, l.h(0), Ffi.cstr(a, name), Ffi.cstr(a, currency),
                     kind.ordinal(), id), ctx);
             return new Account(id.get(JAVA_INT, 0), name, currency, kind);
         }
     }
 
-    /** The account with this id. */
+    /** The account with this id. Needs {@code LEDGER_READ}. */
     public Account account(int id) {
-        try (Lease l = Lease.of(ctxRes()); Arena a = Arena.ofConfined()) {
-            String name = Ffi.text(ctx, (b, c, n) -> Ffi.call(Native.ledger_account_name, l.h(0), id, b, c, n));
-            String ccy = Ffi.text(ctx, (b, c, n) -> Ffi.call(Native.ledger_account_ccy, l.h(0), id, b, c, n));
+        try (Lease l = Lease.of(Caps.res(cap)); Arena a = Arena.ofConfined()) {
+            String name = Ffi.text(ctx, (b, c, n) -> Ffi.call(Native.ledger_account_name_cap, l.h(0), id, b, c, n));
+            String ccy = Ffi.text(ctx, (b, c, n) -> Ffi.call(Native.ledger_account_ccy_cap, l.h(0), id, b, c, n));
             MemorySegment k = a.allocate(JAVA_INT);
-            Ffi.check(Ffi.call(Native.ledger_account_kind, l.h(0), id, k), ctx);
+            Ffi.check(Ffi.call(Native.ledger_account_kind_cap, l.h(0), id, k), ctx);
             return new Account(id, name, ccy, AccountKind.fromCode(k.get(JAVA_INT, 0)));
         }
     }
 
-    /** Every account, in id order. */
+    /** Every account, in id order. Needs {@code LEDGER_READ}. */
     public List<Account> accounts() {
         int n;
-        try (Lease l = Lease.of(ctxRes()); Arena a = Arena.ofConfined()) {
+        try (Lease l = Lease.of(Caps.res(cap)); Arena a = Arena.ofConfined()) {
             MemorySegment c = a.allocate(JAVA_INT);
-            Ffi.check(Ffi.call(Native.ledger_account_count, l.h(0), c), ctx);
+            Ffi.check(Ffi.call(Native.ledger_account_count_cap, l.h(0), c), ctx);
             n = c.get(JAVA_INT, 0);
         }
         List<Account> out = new ArrayList<>(n);
@@ -136,17 +131,17 @@ public final class Ledger {
         }
     }
 
-    /** The journal of an account, oldest first. */
+    /** The journal of an account, oldest first. Needs {@code LEDGER_READ}. */
     public List<JournalEntry> journal(Account account) {
         int id = account.id();
-        try (Lease l = Lease.of(ctxRes()); Arena a = Arena.ofConfined()) {
+        try (Lease l = Lease.of(Caps.res(cap)); Arena a = Arena.ofConfined()) {
             MemorySegment cnt = a.allocate(JAVA_INT);
-            Ffi.check(Ffi.call(Native.ledger_entry_count, l.h(0), id, cnt), ctx);
+            Ffi.check(Ffi.call(Native.ledger_entry_count_cap, l.h(0), id, cnt), ctx);
             List<JournalEntry> out = new ArrayList<>();
             MemorySegment eid = a.allocate(JAVA_LONG), amt = a.allocate(JAVA_LONG), cp = a.allocate(JAVA_INT);
             for (int i = 0; i < cnt.get(JAVA_INT, 0); i++) {
                 final int idx = i;
-                String ref = Ffi.text(ctx, (b, c, n) -> Ffi.call(Native.ledger_entry_at, l.h(0), id, idx,
+                String ref = Ffi.text(ctx, (b, c, n) -> Ffi.call(Native.ledger_entry_at_cap, l.h(0), id, idx,
                         eid, amt, cp, b, c, n));
                 out.add(new JournalEntry(eid.get(JAVA_LONG, 0), amt.get(JAVA_LONG, 0), cp.get(JAVA_INT, 0), ref));
             }

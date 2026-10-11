@@ -227,9 +227,28 @@ const (
 type Message struct {
 	h   *handle
 	ctx *Context
+	cap *Capability
+}
+
+// NewMessage starts a message of kind through c, which needs
+// CapLedgerRead. The library re-checks c on every message call, so
+// revoking it stops the message too; c cannot be closed while the message
+// is open.
+func (c *Capability) NewMessage(kind MessageKind) (*Message, error) {
+	var m *C.zxv_msg
+	if err := c.gated(func(p *C.zxv_cap) C.int32_t { return C.zxv_msg_create_cap(p, C.int32_t(kind), &m) }); err != nil {
+		return nil, err
+	}
+	msg := &Message{ctx: c.ctx, cap: c}
+	msg.h = newHandle("message", unsafe.Pointer(m), func(p unsafe.Pointer) { C.zxv_msg_destroy((*C.zxv_msg)(p)) }, c.ctx.h, c.h)
+	msg.h.exclusive = true
+	runtime.SetFinalizer(msg, func(m *Message) { _ = m.h.close() })
+	return msg, nil
 }
 
 // NewMessage starts a message of kind in ctx.
+//
+// Deprecated: use (*Capability).NewMessage with a CapLedgerRead capability.
 func (c *Context) NewMessage(kind MessageKind) (*Message, error) {
 	var m *C.zxv_msg
 	if err := c.ctxCall(func(p *C.zxv_ctx) C.int32_t { return C.zxv_msg_create(p, C.int32_t(kind), &m) }); err != nil {

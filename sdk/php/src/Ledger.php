@@ -31,11 +31,11 @@ final class Ledger
     {
     }
 
-    /** Open an account in an enabled currency; returns its id. */
+    /** Open an account in an enabled currency; returns its id. Needs LEDGER_POST. */
     public function openAccount(string $name, string $currency, int $kind = self::HOLDER): int
     {
         $out = Native::new("uint32_t");
-        Native::check(Native::ffi()->zxv_ledger_open_account($this->ctx()->raw(), Native::utf8($name, "name"), $currency, Native::int($kind, "kind", 0, 1), \FFI::addr($out)), $this->ctx());
+        Native::check(Native::ffi()->zxv_ledger_open_account_cap($this->capability->ptr(), Native::utf8($name, "name"), $currency, Native::int($kind, "kind", 0, 1), \FFI::addr($out)), $this->ctx());
         return $out->cdata;
     }
 
@@ -69,33 +69,50 @@ final class Ledger
         return true;
     }
 
+    /** Number of accounts. Needs LEDGER_READ. */
     public function accountCount(): int
     {
         $n = Native::new("uint32_t");
-        Native::check(Native::ffi()->zxv_ledger_account_count($this->ctx()->raw(), \FFI::addr($n)), $this->ctx());
+        Native::check(Native::ffi()->zxv_ledger_account_count_cap($this->capability->ptr(), \FFI::addr($n)), $this->ctx());
         return $n->cdata;
     }
 
     /**
      * The journal of one account, oldest first: entry id, signed amount
-     * (+ received, - sent), counterparty, reference.
+     * (+ received, - sent), counterparty, reference. Needs LEDGER_READ.
      * @return list<array{entryId:int, amount:int, counterparty:int, reference:string}>
      */
     public function journal(int $account): array
     {
         $a = Native::uint32($account, "account");
         $n = Native::new("uint32_t");
-        Native::check(Native::ffi()->zxv_ledger_entry_count($this->ctx()->raw(), $a, \FFI::addr($n)), $this->ctx());
+        Native::check(Native::ffi()->zxv_ledger_entry_count_cap($this->capability->ptr(), $a, \FFI::addr($n)), $this->ctx());
         $out = [];
         for ($i = 0; $i < $n->cdata; $i++) {
             $id = Native::new("uint64_t");
             $amt = Native::new("int64_t");
             $cp = Native::new("uint32_t");
-            [$rc, $ref] = Native::text(fn ($b, $c, $l) => Native::ffi()->zxv_ledger_entry_at($this->ctx()->raw(), $a, $i, \FFI::addr($id), \FFI::addr($amt), \FFI::addr($cp), $b, $c, $l));
+            [$rc, $ref] = Native::text(fn ($b, $c, $l) => Native::ffi()->zxv_ledger_entry_at_cap($this->capability->ptr(), $a, $i, \FFI::addr($id), \FFI::addr($amt), \FFI::addr($cp), $b, $c, $l));
             Native::check($rc, $this->ctx());
             $out[] = ["entryId" => $id->cdata, "amount" => $amt->cdata, "counterparty" => $cp->cdata, "reference" => (string) $ref];
         }
         return $out;
+    }
+
+    /**
+     * Name, currency and kind of an account. Needs LEDGER_READ.
+     * @return array{id:int, name:string, currency:string, kind:int}
+     */
+    public function account(int $id): array
+    {
+        $a = Native::uint32($id, "account");
+        [$rc, $name] = Native::text(fn ($b, $c, $l) => Native::ffi()->zxv_ledger_account_name_cap($this->capability->ptr(), $a, $b, $c, $l));
+        Native::check($rc, $this->ctx());
+        [$rc, $ccy] = Native::text(fn ($b, $c, $l) => Native::ffi()->zxv_ledger_account_ccy_cap($this->capability->ptr(), $a, $b, $c, $l));
+        Native::check($rc, $this->ctx());
+        $k = Native::new("int32_t");
+        Native::check(Native::ffi()->zxv_ledger_account_kind_cap($this->capability->ptr(), $a, \FFI::addr($k)), $this->ctx());
+        return ["id" => $a, "name" => (string) $name, "currency" => (string) $ccy, "kind" => $k->cdata];
     }
 
     private function ctx(): Context

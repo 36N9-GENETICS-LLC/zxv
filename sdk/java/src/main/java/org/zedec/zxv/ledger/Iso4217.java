@@ -61,7 +61,8 @@ public final class Iso4217 {
     public static Optional<Currency> byNumeric(int numeric) {
         try (Arena a = Arena.ofConfined()) {
             MemorySegment mu = a.allocate(JAVA_BYTE), fl = a.allocate(JAVA_INT);
-            short n = (short) numeric;
+            if (numeric < 0 || numeric > 0xFFFF) return Optional.empty(); // not a uint16_t: no such code
+            int n = numeric; // passed as an int 0..65535 (see Native: no sign extension)
             int st = Ffi.call(Native.iso4217_by_numeric, n, MemorySegment.NULL, 0L, a.allocate(8), mu, fl);
             if (st == -4) return Optional.empty();
             String alpha = Ffi.text(null, (b, c, len) -> Ffi.call(Native.iso4217_by_numeric, n, b, c, len, mu, fl));

@@ -45,11 +45,11 @@ public final class Budgets: @unchecked Sendable {
     }
     private let state = Locked(State())
 
-    /// A registry in the capability's context.
+    /// A registry in the capability's context (needs `.budget`).
     public init(_ cap: Capability) throws(ZxvError) {
         self.cap = cap
         var r: OpaquePointer?
-        try cap.call { _ in zxv_rmag_create(cap.context.handle, &r) }
+        try cap.call { zxv_rmag_create_cap($0, &r) }
         handle = r!
         // The listener holds an unretained pointer; deinit removes it first.
         zxv_rmag_listen(handle, { user, budget, event in

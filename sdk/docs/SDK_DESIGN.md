@@ -16,7 +16,8 @@ guess the names in another.
   passes, the `ZXV_LIBRARY_PATH` environment variable, the copy bundled
   with the package, then the system loader path.
 - Each SDK checks `zxv_version` at load time and refuses a library whose
-  major version differs, or whose minor version is below 1.
+  major version differs, or whose minor version is below 2 (ABI 1.2 added
+  the capability-gated `*_cap` forms every SDK now calls).
 
 ## 2. Names
 

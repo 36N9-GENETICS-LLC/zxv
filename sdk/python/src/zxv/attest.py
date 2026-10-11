@@ -60,7 +60,7 @@ class Attestations(NativeHandle):
         """Create an empty registry in ``cap.context``, used through ``cap``."""
         ctx = cap.context
         out = ffi.new("zxv_lpres **")
-        _native.check(_native.lib().zxv_lpres_create(ctx._handle(), out), ctx)
+        _native.check(_native.lib().zxv_lpres_create_cap(cap._handle(), out), ctx)
         self._cap = cap
         super().__init__(out[0], cap, ctx)
 

@@ -85,8 +85,8 @@ public sealed class PaymentService
 
         string e2e = request.EndToEndId ?? _ids.NextEndToEndId();
         DateTimeOffset now = _time.GetUtcNow();
-        Account from = _ledger.GetAccount(request.From);
-        Account to = _ledger.GetAccount(request.To);
+        Account from = _ledger.GetAccountUnchecked(request.From);
+        Account to = _ledger.GetAccountUnchecked(request.To);
         var message = new Pacs008Message(
             _ids.NextMessageId(),
             now,
@@ -95,7 +95,7 @@ public sealed class PaymentService
             request.Amount,
             e2e);
 
-        MxDocument document = _messages.BuildPacs008(message);
+        MxDocument document = _messages.BuildPacs008Core(null, message);
         PostingReceipt posting = _ledger.Post(new Transfer(request.From, request.To, request.Amount, e2e));
         var receipt = new PaymentReceipt(e2e, posting.EntryId, request.Amount, request.From, request.To, now, document);
 

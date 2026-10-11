@@ -50,7 +50,10 @@ public sealed class EconomyTests : IDisposable
         Assert.Equal(new[] { BudgetEventKind.Denied, BudgetEventKind.Denied, BudgetEventKind.Invalid, BudgetEventKind.Replenished }, events);
 
         using Capability noBudget = _cap.Attenuate(CapabilityRights.LedgerRead);
-        using Budgets denied = _p.CreateBudgets(noBudget);
+        Assert.Throws<CapabilityDeniedException>(() => _p.CreateBudgets(noBudget)); // ABI 1.2: creating needs Budget
+        using Capability budget = _cap.Attenuate(CapabilityRights.Budget);
+        using Budgets denied = _p.CreateBudgets(budget);
+        budget.Revoke();
         Assert.Throws<CapabilityDeniedException>(() => denied.Create("x", BudgetResource.Energy, 1));
     }
 
@@ -117,7 +120,10 @@ public sealed class EconomyTests : IDisposable
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() => cancelled.WaitClearedAsync());
 
         using Capability noPhase = _cap.Attenuate(CapabilityRights.Budget);
-        using PhaseClock locked = _p.CreatePhaseClock(noPhase);
+        Assert.Throws<CapabilityDeniedException>(() => _p.CreatePhaseClock(noPhase)); // ABI 1.2: creating needs Phase
+        using Capability phase = _cap.Attenuate(CapabilityRights.Phase);
+        using PhaseClock locked = _p.CreatePhaseClock(phase);
+        phase.Revoke();
         Assert.Throws<CapabilityDeniedException>(() => locked.Advance(1));
     }
 

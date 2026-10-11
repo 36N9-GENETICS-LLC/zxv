@@ -37,7 +37,7 @@ final class PhaseClock extends NativeHandle
     public function __construct(public readonly Capability $capability)
     {
         $out = Native::new("zxv_phase*");
-        Native::check(Native::ffi()->zxv_phase_create($capability->context->raw(), \FFI::addr($out)), $capability->context);
+        Native::check(Native::ffi()->zxv_phase_create_cap($capability->ptr(), \FFI::addr($out)), $capability->context);
         parent::__construct($capability->context, $out, "zxv_phase_destroy");
     }
 

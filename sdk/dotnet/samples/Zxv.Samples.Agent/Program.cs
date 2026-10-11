@@ -26,7 +26,8 @@ if (args.Length > 0 && args[0] == "--fatal-failfast")
 {
     ZxvLibrary.FatalPolicy = FatalPolicy.FailFast;
     using ZxvPlatform doomed = ZxvPlatform.Create(o => o.Currencies.Add("NGN"));
-    Account a = doomed.Ledger.OpenAccount("a", "NGN", AccountKind.Issuer);
+    using Capability teller = doomed.CreateRootCapability(CapabilityRights.LedgerPost | CapabilityRights.LedgerRead);
+    Account a = doomed.Ledger.WithCapability(teller).OpenAccount("a", "NGN", AccountKind.Issuer);
     doomed.Halt("demonstrating FatalPolicy.FailFast");
     Console.WriteLine("halted; the next call ends the process");
     doomed.Ledger.GetBalances(a.Id); // Environment.FailFast: never returns

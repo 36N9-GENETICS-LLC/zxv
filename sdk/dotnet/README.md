@@ -5,7 +5,7 @@
 
 The .NET 8 SDK for the ZXV platform core. It wraps `libzxv`, the one C
 library every ZXV SDK shares (`sdk/libzxv/include/zxv_api.h`), and covers
-every group of ABI 1.1:
+every group of ABI 1.2:
 
 - **finance**: exact-minor-unit ledger, ISO 4217, ISO 20022 (pacs.008,
   camt.053), payments, statements, netting, cards, conformance;
@@ -43,7 +43,8 @@ The library is found in this order: `ZxvLibrary.UseLibraryPath(path)`, the
 `ZXV_LIBRARY_PATH` environment variable (or the older `ZXV_NATIVE_LIBRARY`),
 the copy next to the application, then the system loader path
 (`LD_LIBRARY_PATH`, `DYLD_LIBRARY_PATH`, `PATH`). A library whose ABI is not
-1.1 or a later 1.x is refused on first use.
+1.2 or a later 1.x is refused on first use (the SDK calls the `_cap`
+functions added in 1.2).
 
 ## Quick start
 
@@ -77,6 +78,25 @@ one. Objects that make gated calls (`Budgets`, `PhaseClock`, `Swarm`,
 the C library checks it each time (live, not revoked, right present,
 attestation `True`). There is no ambient "current capability". With DI,
 `services.AddZxvCapability(rights)` registers one narrow singleton.
+
+Since ABI 1.2 the ledger and currency surface take a capability too:
+
+| Call | Needs |
+|---|---|
+| `Currencies.Enable(cap, code[, minorUnits])`, `Currencies.RegisterPrivateUnit(cap, code, minorUnits)` | `LedgerPost` |
+| `Ledger.WithCapability(cap).OpenAccount(...)`, `.Post`, `.PostMany` | `LedgerPost` |
+| `Ledger.WithCapability(cap).GetAccount`, `.ListAccounts`, `.GetEntryCount`, `.GetEntries`, `.GetBalances`, `.GetAvailable`, `.Verify` | `LedgerRead` |
+| `Messages.BuildPacs008(cap, msg)`, `Messages.BuildCamt053(cap, msg)` (re-checked on every field) | `LedgerRead` |
+| `CreateBudgets`, `CreatePhaseClock`, `CreateAttestations`, `CreateSwarm` | `Budget`, `Phase`, `Attest`, `Swarm` |
+
+A capability of another platform is refused with `ArgumentException`. The
+1.0 forms without a capability (`Currencies.Enable(code)`,
+`Ledger.OpenAccount`, `Ledger.GetAccount`, `Ledger.ListAccounts`,
+`Ledger.GetEntryCount`, `Ledger.GetEntries`, `Messages.BuildPacs008(msg)`,
+`Messages.BuildCamt053(msg)`) keep working and are `[Obsolete]`. The
+platform services themselves (`ZxvOptions` currency configuration,
+`Payments`, `Statements`) still run on the context: they are the platform's
+own trusted code, not a capability holder.
 
 **No floats at the boundary.** No public method takes or returns `double` or
 `float`. `Rational` is a `readonly record struct` built with `Rational.Of(3, 4)`,

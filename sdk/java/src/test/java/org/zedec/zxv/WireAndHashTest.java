@@ -4,7 +4,10 @@ package org.zedec.zxv;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.zedec.zxv.Vectors.hex;
 import static org.zedec.zxv.Vectors.list;
 import static org.zedec.zxv.Vectors.map;
@@ -19,6 +22,7 @@ import org.junit.jupiter.api.Test;
 import org.zedec.zxv.crypto.Hashes;
 import org.zedec.zxv.internal.Ffi;
 import org.zedec.zxv.internal.Native;
+import org.zedec.zxv.ledger.Iso4217;
 import org.zedec.zxv.wire.Ubh168Frame;
 import org.zedec.zxv.wire.WireTruth;
 
@@ -40,7 +44,7 @@ class WireAndHashTest {
 
             // C cross-check: pack, unpack, resolve.
             byte[] cFrame = new byte[21];
-            Ffi.check(Ffi.call(Native.wire_pack, (byte) tag, MemorySegment.ofArray(p), MemorySegment.ofArray(m),
+            Ffi.check(Ffi.call(Native.wire_pack, tag, MemorySegment.ofArray(p), MemorySegment.ofArray(m),
                     MemorySegment.ofArray(cFrame)), null);
             assertArrayEquals(expected, cFrame, "libzxv pack");
             byte[] t = new byte[1];
@@ -50,6 +54,38 @@ class WireAndHashTest {
             assertArrayEquals(p, p2);
             assertArrayEquals(m, m2);
             assertEquals(WireTruth.values()[(int) num(v.get("truth"))], f.resolve());
+        }
+    }
+
+    /**
+     * uint8_t arguments 128..255 must reach C unsigned: a signed JAVA_BYTE
+     * layout sign-extends them (0xC7 became 4294967239 on Apple arm64).
+     */
+    @Test
+    void highUint8ArgumentsAreNotSignExtended() {
+        int[] p = {0x01020304, 0x05060708, 0x090A0B0C};
+        int[] m = {0x0D0E0F10, 0x11121314};
+        for (int tag = 128; tag <= 199; tag++) {
+            byte[] cFrame = new byte[21];
+            int st = Ffi.call(Native.wire_pack, tag, MemorySegment.ofArray(p), MemorySegment.ofArray(m),
+                    MemorySegment.ofArray(cFrame));
+            assertEquals(0, st, "zxv_wire_pack(tag " + tag + ")");
+            assertArrayEquals(Ubh168Frame.of(tag, p, m).toBytes(), cFrame, "tag " + tag);
+        }
+        for (int tag = 200; tag <= 255; tag++) {
+            int st = Ffi.call(Native.wire_pack, tag, MemorySegment.ofArray(p), MemorySegment.ofArray(m),
+                    MemorySegment.ofArray(new byte[21]));
+            assertEquals(-1, st, "tag " + tag + " is ZXV_E_ARG");
+            assertTrue(Ffi.lastError().contains("tag " + tag + " "), Ffi.lastError());
+        }
+        try (ZxvContext ctx = ZxvContext.create(); Capability cap = ctx.rootCapability(Permission.all())) {
+            // 200 minor units: refused by the C rules, and reported as 200, not as a sign-extended value.
+            ZxvException e = assertThrows(ZxvException.class, () -> ctx.registerPrivateCurrency(cap, "VFV", 200));
+            assertFalse(e.detail().contains("4294967"), e.detail());
+            assertThrows(ZxvException.class, () -> ctx.enableCurrency(cap, "NGN", 200));
+            ctx.enableCurrency(cap, "NGN", 2);
+            assertTrue(Iso4217.byNumeric(65535).isEmpty(), "uint16_t 65535 passed unsigned");
+            assertTrue(Iso4217.byNumeric(40000).isEmpty());
         }
     }
 

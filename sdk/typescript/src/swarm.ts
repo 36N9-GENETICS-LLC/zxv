@@ -68,7 +68,7 @@ export class Swarm extends Resource {
   /** A new swarm in `cap`'s context. */
   static create(cap: Capability, options: SwarmOptions): Swarm {
     const c = cap.context;
-    return new Swarm(cap, newHandle(c._core, c._state, 'zxv_swarm_create', c._ptr(), u32('levels', options.levels),
+    return new Swarm(cap, newHandle(c._core, c._state, 'zxv_swarm_create_cap', cap._ptr(), u32('levels', options.levels),
       u64('tokensPerCycle', options.tokensPerCycle)));
   }
 

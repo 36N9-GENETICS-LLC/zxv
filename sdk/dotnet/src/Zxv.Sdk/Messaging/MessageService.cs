@@ -45,17 +45,51 @@ public sealed class MessageService
     public static string FormatDateTime(DateTimeOffset value) =>
         value.UtcDateTime.ToString("yyyy-MM-dd'T'HH:mm:ss'Z'", CultureInfo.InvariantCulture);
 
-    /// <summary>Builds a pacs.008.001.09 document.</summary>
+    /// <summary>
+    /// Builds a pacs.008.001.09 document through <paramref name="capability"/>
+    /// (needs <see cref="CapabilityRights.LedgerRead"/>; the native message
+    /// re-checks it on every field).
+    /// </summary>
+    /// <param name="capability">A capability of this platform.</param>
+    /// <param name="message">The content.</param>
+    /// <returns>The serialized document.</returns>
+    /// <exception cref="CapabilityDeniedException">The capability lacks <see cref="CapabilityRights.LedgerRead"/>, is revoked or is not attested.</exception>
+    /// <exception cref="ArgumentException">The capability belongs to a different platform.</exception>
+    /// <exception cref="ZxvException">A field is invalid, too long, or the currency is not a wire currency.</exception>
+    public MxDocument BuildPacs008(Capability capability, Pacs008Message message) => BuildPacs008Core(RequireOwn(capability), message);
+
+    /// <summary>
+    /// Builds a camt.053.001.08 document through <paramref name="capability"/>
+    /// (needs <see cref="CapabilityRights.LedgerRead"/>).
+    /// </summary>
+    /// <param name="capability">A capability of this platform.</param>
+    /// <param name="message">The content.</param>
+    /// <returns>The serialized document.</returns>
+    /// <exception cref="CapabilityDeniedException">The capability cannot read.</exception>
+    /// <exception cref="ArgumentException">The capability belongs to a different platform.</exception>
+    public MxDocument BuildCamt053(Capability capability, Camt053Message message) => BuildCamt053Core(RequireOwn(capability), message);
+
+    /// <summary>Builds a pacs.008.001.09 document, without a capability.</summary>
     /// <param name="message">The content.</param>
     /// <returns>The serialized document.</returns>
     /// <exception cref="ZxvException">A field is invalid, too long, or the currency is not a wire currency.</exception>
-    public MxDocument BuildPacs008(Pacs008Message message)
+    [Obsolete("Deprecated since ABI 1.2 (no capability): use BuildPacs008(Capability, Pacs008Message), which needs LedgerRead.")]
+    public MxDocument BuildPacs008(Pacs008Message message) => BuildPacs008Core(null, message);
+
+    /// <summary>Builds a camt.053.001.08 document, without a capability.</summary>
+    /// <param name="message">The content.</param>
+    /// <returns>The serialized document.</returns>
+    [Obsolete("Deprecated since ABI 1.2 (no capability): use BuildCamt053(Capability, Camt053Message), which needs LedgerRead.")]
+    public MxDocument BuildCamt053(Camt053Message message) => BuildCamt053Core(null, message);
+
+    /// <summary>pacs.008 through <paramref name="cap"/>, or the 1.0 context form when it is null (platform services).</summary>
+    internal MxDocument BuildPacs008Core(Capability? cap, Pacs008Message message)
     {
         ArgumentNullException.ThrowIfNull(message);
         ArgumentNullException.ThrowIfNull(message.Debtor);
         ArgumentNullException.ThrowIfNull(message.Creditor);
         ArgumentOutOfRangeException.ThrowIfLessThan(message.NumberOfTransactions, 1);
-        return Build(MxMessageKind.Pacs008, message.MessageId, msg =>
+        return Build(cap, MxMessageKind.Pacs008, message.MessageId, msg =>
         {
             SetText(msg, FldMsgId, message.MessageId, nameof(message.MessageId));
             SetText(msg, FldCreDtTm, FormatDateTime(message.CreatedAt), nameof(message.CreatedAt));
@@ -70,11 +104,9 @@ public sealed class MessageService
         });
     }
 
-    /// <summary>Builds a camt.053.001.08 document.</summary>
-    /// <param name="message">The content.</param>
-    /// <returns>The serialized document.</returns>
+    /// <summary>camt.053 through <paramref name="cap"/>, or the 1.0 context form when it is null (platform services).</summary>
     /// <exception cref="ZxvUsageException">Includes <see cref="ZxvStatus.InvalidField"/> when opening plus booked entries is not the closing balance (libzxv 1.1.1; 1.1.0 reported <see cref="ZxvStatus.InvariantViolated"/>, which the SDK also maps to a usage error because the context does not halt).</exception>
-    public MxDocument BuildCamt053(Camt053Message message)
+    internal MxDocument BuildCamt053Core(Capability? cap, Camt053Message message)
     {
         ArgumentNullException.ThrowIfNull(message);
         ArgumentNullException.ThrowIfNull(message.Entries);
@@ -83,7 +115,7 @@ public sealed class MessageService
             throw new ArgumentException($"A camt.053 page holds at most {MaxStatementEntries} entries; page the statement.", nameof(message));
         }
 
-        return Build(MxMessageKind.Camt053, message.MessageId, msg =>
+        return Build(cap, MxMessageKind.Camt053, message.MessageId, msg =>
         {
             SetText(msg, FldMsgId, message.MessageId, nameof(message.MessageId));
             SetText(msg, FldCreDtTm, FormatDateTime(message.CreatedAt), nameof(message.CreatedAt));
@@ -126,15 +158,43 @@ public sealed class MessageService
         NativeCall.Check(NativeMethods.MsgSetText(msg, field, value), "Messages.Set(" + name + ")");
     }
 
-    private unsafe MxDocument Build(MxMessageKind kind, string messageId, Action<ZxvMessageHandle> fill)
+    private Capability RequireOwn(Capability capability)
     {
-        // R6: a message must not outlive its context. Hold a reference on the
-        // context for the whole lifetime of the native message.
-        bool added = false;
+        ArgumentNullException.ThrowIfNull(capability);
+        if (!ReferenceEquals(capability.Context.Handle, _ctx))
+        {
+            throw new ArgumentException("The capability belongs to a different platform.", nameof(capability));
+        }
+
+        return capability;
+    }
+
+    private unsafe MxDocument Build(Capability? cap, MxMessageKind kind, string messageId, Action<ZxvMessageHandle> fill)
+    {
+        // R6: a message must not outlive its context, nor (ABI 1.2) the
+        // capability it was made with. Hold a reference on both for the whole
+        // lifetime of the native message.
+        bool added = false, capAdded = false;
         _ctx.DangerousAddRef(ref added);
         try
         {
-            NativeCall.Check(NativeMethods.MsgCreate(_ctx, (int)kind, out ZxvMessageHandle msg), "Messages.Create(" + kind + ")");
+            ZxvMessageHandle msg;
+            if (cap is null)
+            {
+                NativeCall.Check(NativeMethods.MsgCreate(_ctx, (int)kind, out msg), "Messages.Create(" + kind + ")");
+            }
+            else
+            {
+                cap.Enter("Messages.Create(" + kind + ")");
+                cap.Handle.DangerousAddRef(ref capAdded);
+                int crc = NativeMethods.MsgCreateCap(cap.Handle, (int)kind, out msg);
+                if (crc != (int)ZxvStatus.Ok)
+                {
+                    msg.Dispose();
+                    cap.Check(crc, "Messages.Create(" + kind + ")");
+                }
+            }
+
             using (msg)
             {
                 fill(msg);
@@ -153,6 +213,11 @@ public sealed class MessageService
         }
         finally
         {
+            if (capAdded)
+            {
+                cap!.Handle.DangerousRelease();
+            }
+
             if (added)
             {
                 _ctx.DangerousRelease();

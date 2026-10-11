@@ -24,7 +24,7 @@ final class ContextTest extends TestCase
     /** @return array{0:Ledger,1:int,2:int} */
     private function setup(Context $ctx, Capability $cap): array
     {
-        $ctx->enableCurrency("NGN", 2);
+        $ctx->enableCurrency("NGN", 2, cap: $cap);
         $l = new Ledger($cap);
         return [$l, $l->openAccount("bank", "NGN", Ledger::ISSUER), $l->openAccount("ada", "NGN")];
     }
@@ -46,7 +46,7 @@ final class ContextTest extends TestCase
             $e = $this->assertThrows(Exception\InsufficientFundsException::class, fn () => $l->post($bob, $ada, 1_000_000, "NGN", "E2E-3"));
             $this->assertSame("ZXV_E_FUNDS", $e->getStatusName());
             $this->assertThrows(Exception\FloatRejectedException::class, fn () => $l->post($bank, $ada, 1.5, "NGN", "E2E-4"));
-            $this->assertTrue($ctx->registerPrivateCurrency("VFV", 2)->isPrivate());
+            $this->assertTrue($ctx->registerPrivateCurrency("VFV", 2, cap: $cap)->isPrivate());
             $this->assertSame(null, $ctx->currency("XOF"));
         });
     }
@@ -146,7 +146,7 @@ final class ContextTest extends TestCase
             $this->assertSame($i, $att->find("model.gguf"));
             $this->assertSame(null, $att->find("nope"));
 
-            $m = new Message($ctx, Message::PACS008);
+            $m = new Message($cap, Message::PACS008);
             foreach ([Message::MSG_ID => "M1", Message::CRE_DT_TM => "2026-10-11T12:00:00Z", Message::DEBTOR_NAME => "Ada & Co",
                 Message::DEBTOR_ACCT => "D1", Message::CREDITOR_NAME => "Kofi", Message::CREDITOR_ACCT => "C1",
                 Message::END_TO_END_ID => "E2E", Message::CCY => "NGN"] as $f => $v) {
@@ -155,7 +155,7 @@ final class ContextTest extends TestCase
             $xml = $m->amount(Message::AMT_SETTLEMENT, 150_075, 2)->render();
             $this->assertTrue(str_contains($xml, "Ada &amp; Co"));
             $this->assertTrue(str_contains($xml, "1500.75"));
-            $this->assertThrows(Exception\NotImplementedException::class, fn () => new Message($ctx, Message::PACS002));
+            $this->assertThrows(Exception\NotImplementedException::class, fn () => new Message($cap, Message::PACS002));
         });
     }
 }

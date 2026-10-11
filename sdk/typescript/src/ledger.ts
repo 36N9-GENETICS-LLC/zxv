@@ -1,7 +1,7 @@
 // Copyright (c) 2024-2026 Michael Laurence Curzi and 36N9 Genetics, LLC
 // SPDX-License-Identifier: Apache-2.0
 
-import type { Capability, ZxvContext } from './context.js';
+import { Capability, type ZxvContext } from './context.js';
 import { type Ptr, cstr } from './internal/backend.js';
 import { i32, i64, type IntLike, str, u32, u64, u8 } from './internal/check.js';
 import { newHandle, Resource } from './internal/core.js';
@@ -50,8 +50,9 @@ export interface AccountInfo {
 }
 
 /**
- * The triple ledger of a context, used through one capability: posting
- * needs {@link Cap.LEDGER_POST}, reading balances {@link Cap.LEDGER_READ}.
+ * The triple ledger of a context, used through one capability: posting and
+ * opening accounts need {@link Cap.LEDGER_POST}; balances, accounts and
+ * journals need {@link Cap.LEDGER_READ} (ABI 1.2: every call is gated).
  * Amounts are exact integer minor units as bigint (cents, kobo, ...).
  */
 export class Ledger {
@@ -70,10 +71,10 @@ export class Ledger {
     return new Ledger(cap);
   }
 
-  /** Open an account in an enabled currency. `name` <= 63 bytes. */
+  /** Open an account in an enabled currency. `name` <= 63 bytes. Needs {@link Cap.LEDGER_POST}. */
   openAccount(name: string, currency: string, kind: AccountKind = AccountKind.HOLDER): number {
     const id = new Uint32Array(1);
-    this.#ctx._core.call(this.#ctx._state, 'zxv_ledger_open_account', this.#ctx._ptr(), cstr(str('name', name)),
+    this.#ctx._core.call(this.#ctx._state, 'zxv_ledger_open_account_cap', this.cap._ptr(), cstr(str('name', name)),
       cstr(str('currency', currency)), i32('kind', kind), id);
     return id[0] ?? 0;
   }
@@ -110,36 +111,36 @@ export class Ledger {
     this.#ctx._core.call(this.#ctx._state, 'zxv_ledger_check_cap', this.cap._ptr());
   }
 
-  /** Number of accounts. */
+  /** Number of accounts. Needs {@link Cap.LEDGER_READ}. */
   accountCount(): number {
     const n = new Uint32Array(1);
-    this.#ctx._core.call(this.#ctx._state, 'zxv_ledger_account_count', this.#ctx._ptr(), n);
+    this.#ctx._core.call(this.#ctx._state, 'zxv_ledger_account_count_cap', this.cap._ptr(), n);
     return n[0] ?? 0;
   }
 
-  /** Name, currency and kind of an account. */
+  /** Name, currency and kind of an account. Needs {@link Cap.LEDGER_READ}. */
   account(id: number): AccountInfo {
     const ctx = this.#ctx;
     const a = u32('account', id);
-    const name = ctx._core.text(ctx._state, 'zxv_ledger_account_name', (b, c, l) => [ctx._ptr(), a, b, c, l]);
-    const currency = ctx._core.text(ctx._state, 'zxv_ledger_account_ccy', (b, c, l) => [ctx._ptr(), a, b, c, l]);
+    const name = ctx._core.text(ctx._state, 'zxv_ledger_account_name_cap', (b, c, l) => [this.cap._ptr(), a, b, c, l]);
+    const currency = ctx._core.text(ctx._state, 'zxv_ledger_account_ccy_cap', (b, c, l) => [this.cap._ptr(), a, b, c, l]);
     const k = new Int32Array(1);
-    ctx._core.call(ctx._state, 'zxv_ledger_account_kind', ctx._ptr(), a, k);
+    ctx._core.call(ctx._state, 'zxv_ledger_account_kind_cap', this.cap._ptr(), a, k);
     return Object.freeze({ id: a, name, currency, kind: (k[0] ?? 0) as AccountKind });
   }
 
-  /** The account's journal, oldest first. */
+  /** The account's journal, oldest first. Needs {@link Cap.LEDGER_READ}. */
   journal(account: number): JournalEntry[] {
     const ctx = this.#ctx;
     const a = u32('account', account);
     const n = new Uint32Array(1);
-    ctx._core.call(ctx._state, 'zxv_ledger_entry_count', ctx._ptr(), a, n);
+    ctx._core.call(ctx._state, 'zxv_ledger_entry_count_cap', this.cap._ptr(), a, n);
     const out: JournalEntry[] = [];
     for (let i = 0; i < (n[0] ?? 0); i++) {
       const id = new BigUint64Array(1);
       const amt = new BigInt64Array(1);
       const cp = new Uint32Array(1);
-      const reference = ctx._core.text(ctx._state, 'zxv_ledger_entry_at', (b, c, l) => [ctx._ptr(), a, i, id, amt, cp, b, c, l]);
+      const reference = ctx._core.text(ctx._state, 'zxv_ledger_entry_at_cap', (b, c, l) => [this.cap._ptr(), a, i, id, amt, cp, b, c, l]);
       out.push(Object.freeze({ entryId: id[0] ?? 0n, amount: amt[0] ?? 0n, counterparty: cp[0] ?? 0, reference }));
     }
     return out;
@@ -178,22 +179,34 @@ export type EntryStatus = (typeof EntryStatus)[keyof typeof EntryStatus];
 /**
  * One ISO 20022 message under construction (pacs.008, camt.053; other
  * kinds report NotImplementedError until the kernel builder lands).
- * Not thread-safe; close it when done.
+ * Not thread-safe; close it when done. A message made through a capability
+ * (needs {@link Cap.LEDGER_READ}) re-checks it on every call, and closing
+ * the capability closes the message first.
  */
 export class Iso20022Message extends Resource {
   readonly #ctx: ZxvContext;
   #ptr: Ptr;
 
   /** @internal Use {@link Iso20022Message.create}. */
-  constructor(ctx: ZxvContext, ptr: Ptr) {
-    super(ctx);
+  constructor(ctx: ZxvContext, ptr: Ptr, parent: Capability | ZxvContext = ctx) {
+    super(parent);
     this.#ctx = ctx;
     this.#ptr = ptr;
   }
 
-  /** Start a message of `kind` in a context. */
-  static create(ctx: ZxvContext, kind: MxKind): Iso20022Message {
-    return new Iso20022Message(ctx, newHandle(ctx._core, ctx._state, 'zxv_msg_create', ctx._ptr(), i32('kind', kind)));
+  /** Start a message of `kind` through `cap` (needs {@link Cap.LEDGER_READ}). */
+  static create(cap: Capability, kind: MxKind): Iso20022Message;
+  /**
+   * Start a message of `kind` in a context, without a capability.
+   * @deprecated Since ABI 1.2 (no capability): use `Iso20022Message.create(cap, kind)`.
+   */
+  static create(ctx: ZxvContext, kind: MxKind): Iso20022Message;
+  static create(owner: Capability | ZxvContext, kind: MxKind): Iso20022Message {
+    if (owner instanceof Capability) {
+      const ctx = owner.context;
+      return new Iso20022Message(ctx, newHandle(ctx._core, ctx._state, 'zxv_msg_create_cap', owner._ptr(), i32('kind', kind)), owner);
+    }
+    return new Iso20022Message(owner, newHandle(owner._core, owner._state, 'zxv_msg_create', owner._ptr(), i32('kind', kind)));
   }
 
   #p(): Ptr {

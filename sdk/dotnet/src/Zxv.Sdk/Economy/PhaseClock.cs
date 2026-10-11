@@ -110,7 +110,7 @@ public sealed class PhaseClock : IDisposable
     {
         _cap = capability;
         capability.Enter("PhaseClock.Create");
-        int rc = NativeMethods.PhaseCreate(capability.Context.Handle, out _handle);
+        int rc = NativeMethods.PhaseCreateCap(capability.Handle, out _handle);
         if (rc != (int)ZxvStatus.Ok)
         {
             _handle.Dispose();

@@ -137,7 +137,7 @@ class PhaseClock(NativeHandle):
         """Create a clock at tick 0 in ``cap.context``."""
         ctx = cap.context
         out = ffi.new("zxv_phase **")
-        _native.check(_native.lib().zxv_phase_create(ctx._handle(), out), ctx)
+        _native.check(_native.lib().zxv_phase_create_cap(cap._handle(), out), ctx)
         self._cap = cap
         self._wlock = threading.Condition()
         self._waiters: Dict[int, List[Tuple[asyncio.AbstractEventLoop, "asyncio.Future[int]"]]] = {}

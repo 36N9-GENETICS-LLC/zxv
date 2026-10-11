@@ -22,7 +22,7 @@ module Zxv
     def initialize(capability)
       @capability = capability
       out = Call.out(:pointer)
-      Call.check(Native.lib.zxv_rmag_create(capability.context.raw, out), capability.context)
+      Call.check(Native.lib.zxv_rmag_create_cap(capability.ptr, out), capability.context)
       super(capability.context, out.read_pointer, :zxv_rmag_destroy)
       @budgets = {}
       @lock = Mutex.new

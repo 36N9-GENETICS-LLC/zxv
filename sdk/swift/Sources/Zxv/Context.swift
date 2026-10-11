@@ -61,8 +61,41 @@ public final class ZxvContext: @unchecked Sendable {
         try check(zxv_ctx_halt(handle, reason), self)
     }
 
+    /// Enable an ISO 4217 currency for ledger accounts ("NGN") through
+    /// `capability`, which needs `.ledgerPost`. Pass `minorUnits` to assert
+    /// the expected value. A capability of another context is refused
+    /// (`.capabilityDenied`, `ZXV_E_CAP`).
+    public func enableCurrency(_ alpha: String, minorUnits: UInt8? = nil,
+                               capability: Capability) throws(ZxvError) {
+        try own(capability)
+        if let minorUnits {
+            try capability.call { zxv_ccy_enable_with_minor_cap($0, alpha, minorUnits) }
+        } else {
+            try capability.call { zxv_ccy_enable_cap($0, alpha) }
+        }
+    }
+
+    /// Register a platform-private unit ("VFV") through `capability`
+    /// (`.ledgerPost`); never valid in ISO 20022.
+    public func registerPrivateUnit(_ code: String, minorUnits: UInt8,
+                                    capability: Capability) throws(ZxvError) {
+        try own(capability)
+        try capability.call { zxv_ccy_register_private_cap($0, code, minorUnits) }
+    }
+
+    /// Refuse a capability of another context: the C `*_cap` forms act on
+    /// the capability's own context, not on this one.
+    private func own(_ capability: Capability) throws(ZxvError) {
+        try ensureAlive()
+        if capability.context !== self {
+            throw .refused(ZxvRefusedError(status: ZXV_E_CAP,
+                                           detail: "the capability belongs to a different context"))
+        }
+    }
+
     /// Enable an ISO 4217 currency for ledger accounts ("NGN"). Pass
     /// `minorUnits` to assert the expected value.
+    @available(*, deprecated, message: "ABI 1.2: pass a .ledgerPost capability: enableCurrency(_:minorUnits:capability:)")
     public func enableCurrency(_ alpha: String, minorUnits: UInt8? = nil) throws(ZxvError) {
         if let minorUnits {
             try call { zxv_ccy_enable_with_minor(handle, alpha, minorUnits) }
@@ -72,6 +105,7 @@ public final class ZxvContext: @unchecked Sendable {
     }
 
     /// Register a platform-private unit ("VFV"); never valid in ISO 20022.
+    @available(*, deprecated, message: "ABI 1.2: pass a .ledgerPost capability: registerPrivateUnit(_:minorUnits:capability:)")
     public func registerPrivateUnit(_ code: String, minorUnits: UInt8) throws(ZxvError) {
         try call { zxv_ccy_register_private(handle, code, minorUnits) }
     }

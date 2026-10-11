@@ -82,7 +82,7 @@ export class PhaseClock extends Resource {
   /** A new clock (tick 0) in `cap`'s context. */
   static open(cap: Capability): PhaseClock {
     const c = cap.context;
-    return new PhaseClock(cap, newHandle(c._core, c._state, 'zxv_phase_create', c._ptr()));
+    return new PhaseClock(cap, newHandle(c._core, c._state, 'zxv_phase_create_cap', cap._ptr()));
   }
 
   /** @internal */

@@ -1,7 +1,7 @@
 // Copyright (c) 2024-2026 Michael Laurence Curzi and 36N9 Genetics, LLC
 // SPDX-License-Identifier: Apache-2.0
 
-import { type FatalPolicy, usage } from './errors.js';
+import { CapabilityDeniedError, type FatalPolicy, Status, usage } from './errors.js';
 import { type Ptr, cstr } from './internal/backend.js';
 import { bytes, str, u32, u64, u8 } from './internal/check.js';
 import { ContextState, type Core, newHandle, Resource } from './internal/core.js';
@@ -215,15 +215,55 @@ export class ZxvContext extends Resource {
     return new Capability(this, p, this);
   }
 
-  /** Enable an ISO 4217 currency for ledger accounts (minor units from the table, or asserted). */
-  enableCurrency(alpha: string, minorUnits?: number): void {
-    if (minorUnits === undefined) this._core.call(this._state, 'zxv_ccy_enable', this._ptr(), cstr(str('alpha', alpha)));
-    else this._core.call(this._state, 'zxv_ccy_enable_with_minor', this._ptr(), cstr(str('alpha', alpha)), u8('minorUnits', minorUnits));
+  /**
+   * Enable an ISO 4217 currency for ledger accounts (minor units from the
+   * table, or asserted), through `cap` (needs {@link Cap.LEDGER_POST}). A
+   * capability of another context throws {@link CapabilityDeniedError}.
+   */
+  enableCurrency(cap: Capability, alpha: string, minorUnits?: number): void;
+  /**
+   * Enable an ISO 4217 currency without a capability.
+   * @deprecated Since ABI 1.2 (no capability): use `enableCurrency(cap, alpha, minorUnits?)`.
+   */
+  enableCurrency(alpha: string, minorUnits?: number): void;
+  enableCurrency(a: Capability | string, b?: string | number, c?: number): void {
+    if (a instanceof Capability) {
+      const cp = this.#ownCap(a);
+      const alpha = cstr(str('alpha', b));
+      if (c === undefined) this._core.call(this._state, 'zxv_ccy_enable_cap', cp, alpha);
+      else this._core.call(this._state, 'zxv_ccy_enable_with_minor_cap', cp, alpha, u8('minorUnits', c));
+      return;
+    }
+    if (b !== undefined && typeof b !== 'number') throw usage('minorUnits must be a number');
+    if (b === undefined) this._core.call(this._state, 'zxv_ccy_enable', this._ptr(), cstr(str('alpha', a)));
+    else this._core.call(this._state, 'zxv_ccy_enable_with_minor', this._ptr(), cstr(str('alpha', a)), u8('minorUnits', b));
   }
 
-  /** Register a platform-private unit ("VFV"): ledger-only, refused in ISO 20022 messages. */
-  registerPrivateUnit(code: string, minorUnits: number): void {
-    this._core.call(this._state, 'zxv_ccy_register_private', this._ptr(), cstr(str('code', code)), u8('minorUnits', minorUnits));
+  /**
+   * Register a platform-private unit ("VFV"): ledger-only, refused in ISO
+   * 20022 messages. Through `cap` (needs {@link Cap.LEDGER_POST}).
+   */
+  registerPrivateUnit(cap: Capability, code: string, minorUnits: number): void;
+  /**
+   * Register a platform-private unit without a capability.
+   * @deprecated Since ABI 1.2 (no capability): use `registerPrivateUnit(cap, code, minorUnits)`.
+   */
+  registerPrivateUnit(code: string, minorUnits: number): void;
+  registerPrivateUnit(a: Capability | string, b: string | number, c?: number): void {
+    if (a instanceof Capability) {
+      this._core.call(this._state, 'zxv_ccy_register_private_cap', this.#ownCap(a), cstr(str('code', b)), u8('minorUnits', c));
+      return;
+    }
+    this._core.call(this._state, 'zxv_ccy_register_private', this._ptr(), cstr(str('code', a)), u8('minorUnits', b));
+  }
+
+  /** `cap`'s handle, after checking it was made from this context (else ZXV_E_CAP). */
+  #ownCap(cap: Capability): Ptr {
+    if (cap.context !== this) {
+      throw new CapabilityDeniedError(Status.E_CAP, 'ZXV_E_CAP', 'the capability belongs to a different context');
+    }
+    this._ptr();
+    return cap._ptr();
   }
 
   /** Minor units and flags of an enabled currency; ZXV_E_NOT_FOUND (usage) if not enabled. */

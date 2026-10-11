@@ -152,43 +152,116 @@ public sealed class CurrencyService
         _ => throw new ArgumentOutOfRangeException(nameof(rail), rail, "Unknown rail."),
     };
 
-    /// <summary>Enables an ISO 4217 currency for ledger accounts on this platform.</summary>
+    /// <summary>
+    /// Enables an ISO 4217 currency for ledger accounts on this platform,
+    /// through <paramref name="capability"/> (needs <see cref="CapabilityRights.LedgerPost"/>).
+    /// </summary>
+    /// <param name="capability">A capability of this platform.</param>
     /// <param name="code">Alpha-3 code.</param>
     /// <returns>The enabled currency.</returns>
+    /// <exception cref="CapabilityDeniedException">The capability lacks <see cref="CapabilityRights.LedgerPost"/>, is revoked or is not attested.</exception>
+    /// <exception cref="ArgumentException">The capability belongs to a different platform.</exception>
     /// <exception cref="ZxvException">Not ISO 4217, or not payable (e.g. XXX, XAU).</exception>
-    public Currency Enable(string code)
+    public Currency Enable(Capability capability, string code)
     {
+        Capability cap = RequireOwn(capability);
         Guard.Text(code, nameof(code));
-        NativeCall.Check(NativeMethods.CcyEnable(_ctx, code), "Currencies.Enable");
+        cap.Enter("Currencies.Enable");
+        cap.Check(NativeMethods.CcyEnableCap(cap.Handle, code), "Currencies.Enable");
         return GetEnabled(code);
     }
 
     /// <summary>
-    /// Enables an ISO 4217 currency, asserting its minor units. Required on
-    /// native builds without the ISO 4217 table; elsewhere a mismatch is refused.
+    /// Enables an ISO 4217 currency asserting its minor units, through
+    /// <paramref name="capability"/> (needs <see cref="CapabilityRights.LedgerPost"/>).
+    /// </summary>
+    /// <param name="capability">A capability of this platform.</param>
+    /// <param name="code">Alpha-3 code.</param>
+    /// <param name="minorUnits">Expected decimal places.</param>
+    /// <returns>The enabled currency.</returns>
+    /// <exception cref="CapabilityDeniedException">The capability cannot post.</exception>
+    /// <exception cref="ArgumentException">The capability belongs to a different platform.</exception>
+    public Currency Enable(Capability capability, string code, byte minorUnits)
+    {
+        Capability cap = RequireOwn(capability);
+        Guard.Text(code, nameof(code));
+        cap.Enter("Currencies.Enable");
+        cap.Check(NativeMethods.CcyEnableWithMinorCap(cap.Handle, code, minorUnits), "Currencies.Enable");
+        return GetEnabled(code);
+    }
+
+    /// <summary>
+    /// Registers a platform-private unit such as <c>VFV</c> through
+    /// <paramref name="capability"/> (needs <see cref="CapabilityRights.LedgerPost"/>).
+    /// It can be held on ledger accounts but is refused as an ISO 20022 message currency.
+    /// </summary>
+    /// <param name="capability">A capability of this platform.</param>
+    /// <param name="code">3 to 8 upper-case letters and digits, not an ISO 4217 code.</param>
+    /// <param name="minorUnits">Decimal places (0 to 8).</param>
+    /// <returns>The registered unit.</returns>
+    /// <exception cref="CapabilityDeniedException">The capability cannot post.</exception>
+    /// <exception cref="ArgumentException">The capability belongs to a different platform.</exception>
+    public Currency RegisterPrivateUnit(Capability capability, string code, byte minorUnits)
+    {
+        Capability cap = RequireOwn(capability);
+        Guard.Text(code, nameof(code));
+        cap.Enter("Currencies.RegisterPrivateUnit");
+        cap.Check(NativeMethods.CcyRegisterPrivateCap(cap.Handle, code, minorUnits), "Currencies.RegisterPrivateUnit");
+        return GetEnabled(code);
+    }
+
+    /// <summary>Enables an ISO 4217 currency for ledger accounts on this platform, without a capability.</summary>
+    /// <param name="code">Alpha-3 code.</param>
+    /// <returns>The enabled currency.</returns>
+    /// <exception cref="ZxvException">Not ISO 4217, or not payable (e.g. XXX, XAU).</exception>
+    [Obsolete("Deprecated since ABI 1.2 (no capability): use Enable(Capability, string).")]
+    public Currency Enable(string code) => EnableUnchecked(code, null);
+
+    /// <summary>
+    /// Enables an ISO 4217 currency, asserting its minor units, without a capability.
+    /// Required on native builds without the ISO 4217 table; elsewhere a mismatch is refused.
     /// </summary>
     /// <param name="code">Alpha-3 code.</param>
     /// <param name="minorUnits">Expected decimal places.</param>
     /// <returns>The enabled currency.</returns>
-    public Currency Enable(string code, byte minorUnits)
-    {
-        Guard.Text(code, nameof(code));
-        NativeCall.Check(NativeMethods.CcyEnableWithMinor(_ctx, code, minorUnits), "Currencies.Enable");
-        return GetEnabled(code);
-    }
+    [Obsolete("Deprecated since ABI 1.2 (no capability): use Enable(Capability, string, byte).")]
+    public Currency Enable(string code, byte minorUnits) => EnableUnchecked(code, minorUnits);
 
     /// <summary>
-    /// Registers a platform-private unit such as <c>VFV</c>. It can be held on
-    /// ledger accounts but is refused as an ISO 20022 message currency.
+    /// Registers a platform-private unit such as <c>VFV</c>, without a capability.
     /// </summary>
     /// <param name="code">3 to 8 upper-case letters and digits, not an ISO 4217 code.</param>
     /// <param name="minorUnits">Decimal places (0 to 8).</param>
     /// <returns>The registered unit.</returns>
-    public Currency RegisterPrivateUnit(string code, byte minorUnits)
+    [Obsolete("Deprecated since ABI 1.2 (no capability): use RegisterPrivateUnit(Capability, string, byte).")]
+    public Currency RegisterPrivateUnit(string code, byte minorUnits) => RegisterPrivateUnitUnchecked(code, minorUnits);
+
+    /// <summary>The 1.0 context form, kept for platform configuration (<see cref="ZxvOptions"/>).</summary>
+    internal Currency EnableUnchecked(string code, byte? minorUnits)
+    {
+        Guard.Text(code, nameof(code));
+        int rc = minorUnits is byte mu ? NativeMethods.CcyEnableWithMinor(_ctx, code, mu) : NativeMethods.CcyEnable(_ctx, code);
+        NativeCall.Check(rc, "Currencies.Enable");
+        return GetEnabled(code);
+    }
+
+    /// <summary>The 1.0 context form, kept for platform configuration (<see cref="ZxvOptions"/>).</summary>
+    internal Currency RegisterPrivateUnitUnchecked(string code, byte minorUnits)
     {
         Guard.Text(code, nameof(code));
         NativeCall.Check(NativeMethods.CcyRegisterPrivate(_ctx, code, minorUnits), "Currencies.RegisterPrivateUnit");
         return GetEnabled(code);
+    }
+
+    private Capability RequireOwn(Capability capability)
+    {
+        ArgumentNullException.ThrowIfNull(capability);
+        if (!ReferenceEquals(capability.Context.Handle, _ctx))
+        {
+            throw new ArgumentException("The capability belongs to a different platform.", nameof(capability));
+        }
+
+        return capability;
     }
 
     /// <summary>Gets an enabled currency or private unit.</summary>

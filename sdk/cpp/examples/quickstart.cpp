@@ -11,7 +11,7 @@ int main()
 {
     zxv::Context ctx;                                      // one platform instance
     zxv::Capability root = ctx.root_capability();          // every bit, attested TRUE
-    ctx.enable_currency("NGN");
+    ctx.enable_currency(root, "NGN");                     // needs caps::ledger_post
     zxv::Ledger ledger(root);
     auto bank = ledger.open_account("bank", "NGN", zxv::AccountKind::issuer);
     auto ada = ledger.open_account("ada", "NGN");

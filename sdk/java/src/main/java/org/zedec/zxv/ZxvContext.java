@@ -164,17 +164,65 @@ public final class ZxvContext implements AutoCloseable {
 
     /**
      * Enables an ISO 4217 currency for ledger accounts, with its minor units
-     * from the ISO 4217 table.
+     * from the ISO 4217 table. Needs {@code LEDGER_POST}.
      *
+     * @param cap a capability of this context
+     * @throws CapabilityDeniedException if {@code cap} lacks {@code LEDGER_POST}
+     *         or belongs to a different context
      * @throws ZxvUsageException {@code ZXV_E_CURRENCY} if it is not payable or not ISO 4217
      */
+    public void enableCurrency(Capability cap, String alpha) {
+        try (Lease l = Lease.of(ownCap(cap).res); Arena a = Arena.ofConfined()) {
+            Ffi.check(Ffi.call(Native.ccy_enable_cap, l.h(0), Ffi.cstr(a, alpha)), this);
+        }
+    }
+
+    /**
+     * Enables a currency asserting its minor units (a mismatch with the table
+     * is {@code ZXV_E_CURRENCY}). Needs {@code LEDGER_POST}.
+     *
+     * @param cap a capability of this context
+     */
+    public void enableCurrency(Capability cap, String alpha, int minorUnits) {
+        int mu = u8(minorUnits);
+        try (Lease l = Lease.of(ownCap(cap).res); Arena a = Arena.ofConfined()) {
+            Ffi.check(Ffi.call(Native.ccy_enable_with_minor_cap, l.h(0), Ffi.cstr(a, alpha), mu), this);
+        }
+    }
+
+    /**
+     * Registers a platform-private unit (for example {@code "VFV"}, 2 minor
+     * units): usable in ledger accounts, refused as an ISO 20022 currency.
+     * Needs {@code LEDGER_POST}.
+     *
+     * @param cap  a capability of this context
+     * @param code 3 to 8 upper-case letters or digits, not an ISO 4217 alpha
+     */
+    public void registerPrivateCurrency(Capability cap, String code, int minorUnits) {
+        int mu = u8(minorUnits);
+        try (Lease l = Lease.of(ownCap(cap).res); Arena a = Arena.ofConfined()) {
+            Ffi.check(Ffi.call(Native.ccy_register_private_cap, l.h(0), Ffi.cstr(a, code), mu), this);
+        }
+    }
+
+    /**
+     * Enables an ISO 4217 currency without a capability.
+     *
+     * @deprecated since ABI 1.2 (no capability): use {@link #enableCurrency(Capability, String)}.
+     */
+    @Deprecated(since = "1.2")
     public void enableCurrency(String alpha) {
         try (Lease l = Lease.of(res); Arena a = Arena.ofConfined()) {
             Ffi.check(Ffi.call(Native.ccy_enable, l.h(0), Ffi.cstr(a, alpha)), this);
         }
     }
 
-    /** Enables a currency asserting its minor units (a mismatch with the table is {@code ZXV_E_CURRENCY}). */
+    /**
+     * Enables a currency asserting its minor units, without a capability.
+     *
+     * @deprecated since ABI 1.2 (no capability): use {@link #enableCurrency(Capability, String, int)}.
+     */
+    @Deprecated(since = "1.2")
     public void enableCurrency(String alpha, int minorUnits) {
         try (Lease l = Lease.of(res); Arena a = Arena.ofConfined()) {
             Ffi.check(Ffi.call(Native.ccy_enable_with_minor, l.h(0), Ffi.cstr(a, alpha), u8(minorUnits)), this);
@@ -182,15 +230,25 @@ public final class ZxvContext implements AutoCloseable {
     }
 
     /**
-     * Registers a platform-private unit (for example {@code "VFV"}, 2 minor
-     * units): usable in ledger accounts, refused as an ISO 20022 currency.
+     * Registers a platform-private unit without a capability.
      *
-     * @param code 3 to 8 upper-case letters or digits, not an ISO 4217 alpha
+     * @deprecated since ABI 1.2 (no capability): use
+     *             {@link #registerPrivateCurrency(Capability, String, int)}.
      */
+    @Deprecated(since = "1.2")
     public void registerPrivateCurrency(String code, int minorUnits) {
         try (Lease l = Lease.of(res); Arena a = Arena.ofConfined()) {
             Ffi.check(Ffi.call(Native.ccy_register_private, l.h(0), Ffi.cstr(a, code), u8(minorUnits)), this);
         }
+    }
+
+    /** {@code cap}, after checking it was made from this context (else ZXV_E_CAP). */
+    private Capability ownCap(Capability cap) {
+        if (cap == null) throw Errors.usage(-1, "cap must not be null");
+        if (cap.context != this) {
+            throw Errors.raise(-17, "the capability belongs to a different context", this);
+        }
+        return cap;
     }
 
     /** The enabled currency {@code code}, or empty if it is not enabled here. */
@@ -219,9 +277,10 @@ public final class ZxvContext implements AutoCloseable {
         }
     }
 
-    private static byte u8(int v) {
+    /** A uint8_t argument, passed as an int 0..255 (never a signed byte: see Native). */
+    private static int u8(int v) {
         if (v < 0 || v > 255) throw Errors.usage(-1, "minor units must be 0..255");
-        return (byte) v;
+        return v;
     }
 
     /** Closes every object created from this context, then frees it. Idempotent. */

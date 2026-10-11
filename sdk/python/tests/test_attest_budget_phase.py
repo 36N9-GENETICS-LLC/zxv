@@ -31,8 +31,13 @@ def test_attestations_hold_contradictions(cap: zxv.Capability) -> None:
 
 def test_attest_needs_capability(cap: zxv.Capability) -> None:
     ro = cap.attenuate(Cap.LEDGER_READ)
-    with zxv.Attestations(ro) as reg, pytest.raises(zxv.CapabilityDeniedError):
-        reg.attest("x", zxv.Subject.DATA, Truth.TRUE, "me")
+    with pytest.raises(zxv.CapabilityDeniedError):
+        zxv.Attestations(ro)  # ABI 1.2: creating the registry needs ATTEST
+    rw = cap.attenuate(Cap.ATTEST)
+    with zxv.Attestations(rw) as reg:
+        rw.set_attestation(Truth.NEITHER)
+        with pytest.raises(zxv.CapabilityDeniedError):
+            reg.attest("x", zxv.Subject.DATA, Truth.TRUE, "me")
 
 
 # ------------------------------------------------------------------ budgets
@@ -62,8 +67,13 @@ def test_budget_exact_consume_exhaustion_invalid_release(cap: zxv.Capability) ->
 
 
 def test_budget_needs_capability(cap: zxv.Capability) -> None:
-    with zxv.Budgets(cap.attenuate(Cap.LEDGER_READ)) as budgets, pytest.raises(zxv.CapabilityDeniedError):
-        budgets.create("x", zxv.Resource.ENERGY, 1)
+    with pytest.raises(zxv.CapabilityDeniedError):
+        zxv.Budgets(cap.attenuate(Cap.LEDGER_READ))  # ABI 1.2: creating needs BUDGET
+    b = cap.attenuate(Cap.BUDGET)
+    with zxv.Budgets(b) as budgets:
+        b.revoke()
+        with pytest.raises(zxv.CapabilityDeniedError):
+            budgets.create("x", zxv.Resource.ENERGY, 1)
 
 
 async def test_consume_async_waits_for_replenish(cap: zxv.Capability) -> None:
@@ -141,8 +151,13 @@ def test_phase_admission(cap: zxv.Capability) -> None:
 
 
 def test_phase_needs_capability(cap: zxv.Capability) -> None:
-    with zxv.PhaseClock(cap.attenuate(Cap.LEDGER_READ)) as clock, pytest.raises(zxv.CapabilityDeniedError):
-        clock.advance(1)
+    with pytest.raises(zxv.CapabilityDeniedError):
+        zxv.PhaseClock(cap.attenuate(Cap.LEDGER_READ))  # ABI 1.2: creating needs PHASE
+    p = cap.attenuate(Cap.PHASE)
+    with zxv.PhaseClock(p) as clock:
+        p.revoke()
+        with pytest.raises(zxv.CapabilityDeniedError):
+            clock.advance(1)
 
 
 async def test_deferred_event_is_awaitable_with_manual_driver(cap: zxv.Capability) -> None:

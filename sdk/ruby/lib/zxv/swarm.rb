@@ -48,8 +48,8 @@ module Zxv
     def initialize(capability, levels:, tokens_per_cycle:)
       @capability = capability
       out = Call.out(:pointer)
-      Call.check(Native.lib.zxv_swarm_create(capability.context.raw, Call.uint32!(levels, "levels"),
-                                             Call.uint64!(tokens_per_cycle, "tokens_per_cycle"), out), capability.context)
+      Call.check(Native.lib.zxv_swarm_create_cap(capability.ptr, Call.uint32!(levels, "levels"),
+                                                 Call.uint64!(tokens_per_cycle, "tokens_per_cycle"), out), capability.context)
       super(capability.context, out.read_pointer, :zxv_swarm_destroy)
     end
 

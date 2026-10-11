@@ -11,6 +11,9 @@ namespace Zedec\Zxv;
  * An ISO 20022 message under construction (pacs.008, camt.053; other kinds
  * throw NotImplementedException until the kernel builds them).
  * Serialization only: libzxv has no network transport.
+ *
+ * Made through a Capability (needs LEDGER_READ), the message re-checks it
+ * on every call: revoking it, or clearing its attestation, stops the message.
  */
 final class Message extends NativeHandle
 {
@@ -36,11 +39,36 @@ final class Message extends NativeHandle
     public const AMT_OPENING = 2;
     public const AMT_CLOSING = 3;
 
-    public function __construct(Context $context, int $kind)
+    /** The capability the message re-checks on every call (null for the deprecated Context form). */
+    public readonly ?Capability $capability;
+
+    /**
+     * @param Capability|Context $owner a Capability with LEDGER_READ. Passing a
+     *     Context is deprecated since ABI 1.2 (no capability) and raises
+     *     E_USER_DEPRECATED.
+     */
+    public function __construct(Capability|Context $owner, int $kind)
     {
         $out = Native::new("zxv_msg*");
-        Native::check(Native::ffi()->zxv_msg_create($context->raw(), $kind, \FFI::addr($out)), $context);
-        parent::__construct($context, $out, "zxv_msg_destroy");
+        if ($owner instanceof Capability) {
+            $this->capability = $owner;
+            Native::check(Native::ffi()->zxv_msg_create_cap($owner->ptr(), $kind, \FFI::addr($out)), $owner->context);
+            parent::__construct($owner->context, $out, "zxv_msg_destroy");
+            return;
+        }
+        trigger_error("new Message(Context, kind) is deprecated since ABI 1.2: pass a Capability with LEDGER_READ", E_USER_DEPRECATED);
+        $this->capability = null;
+        Native::check(Native::ffi()->zxv_msg_create($owner->raw(), $kind, \FFI::addr($out)), $owner);
+        parent::__construct($owner, $out, "zxv_msg_destroy");
+    }
+
+    /** @internal */
+    public function ptr(): \FFI\CData
+    {
+        if ($this->capability !== null && $this->capability->isClosed()) {
+            throw new Exception\ZxvUsageException(Status::E_STATE, "the capability of this Message is closed");
+        }
+        return parent::ptr();
     }
 
     /** Set a text field (plain text; the serializer escapes XML). */

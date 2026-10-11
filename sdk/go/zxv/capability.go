@@ -131,6 +131,16 @@ func (c *Capability) Check(needed Caps) error {
 	return c.gated(func(p *C.zxv_cap) C.int32_t { return C.zxv_cap_check(p, C.uint64_t(needed)) })
 }
 
+// gatedSeq runs several gated calls under one use of this capability:
+// guard, f, fatal path. f maps statuses itself (call, readString).
+func (c *Capability) gatedSeq(f func(p *C.zxv_cap) error) error {
+	if err := c.ctx.guard(); err != nil {
+		return err
+	}
+	err := c.h.use(func(p unsafe.Pointer) error { return f((*C.zxv_cap)(p)) })
+	return c.ctx.fatal(err)
+}
+
 // gated runs a call with this capability: guard, call, fatal path.
 func (c *Capability) gated(f func(p *C.zxv_cap) C.int32_t) error {
 	if err := c.ctx.guard(); err != nil {

@@ -58,9 +58,9 @@ public final class Attestations implements AutoCloseable {
     /** A new, empty registry in the capability's context, recording through that capability. */
     public static Attestations create(Capability cap) {
         ZxvContext ctx = Caps.ctx(cap);
-        try (Lease l = Lease.of(Caps.res(ctx)); Arena a = Arena.ofConfined()) {
+        try (Lease l = Lease.of(Caps.res(cap)); Arena a = Arena.ofConfined()) {
             MemorySegment out = a.allocate(ADDRESS);
-            Ffi.check(Ffi.call(Native.lpres_create, l.h(0), out), ctx);
+            Ffi.check(Ffi.call(Native.lpres_create_cap, l.h(0), out), ctx);
             return new Attestations(cap, ctx, out.get(ADDRESS, 0));
         }
     }

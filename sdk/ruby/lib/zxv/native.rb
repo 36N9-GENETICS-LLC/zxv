@@ -51,6 +51,18 @@ module Zxv
       [:zxv_ledger_entry_count, %i[pointer uint32 pointer], :int32],
       [:zxv_ledger_entry_at, %i[pointer uint32 uint32 pointer pointer pointer pointer size_t pointer], :int32],
       [:zxv_ledger_post_cap, %i[pointer uint32 uint32 int64 string string pointer], :int32],
+      # ABI 1.2: the context surface through a capability.
+      [:zxv_ccy_enable_cap, %i[pointer string], :int32],
+      [:zxv_ccy_enable_with_minor_cap, %i[pointer string uint8], :int32],
+      [:zxv_ccy_register_private_cap, %i[pointer string uint8], :int32],
+      [:zxv_ledger_open_account_cap, %i[pointer string string int32 pointer], :int32],
+      [:zxv_ledger_account_ccy_cap, %i[pointer uint32 pointer size_t pointer], :int32],
+      [:zxv_ledger_account_name_cap, %i[pointer uint32 pointer size_t pointer], :int32],
+      [:zxv_ledger_account_kind_cap, %i[pointer uint32 pointer], :int32],
+      [:zxv_ledger_account_count_cap, %i[pointer pointer], :int32],
+      [:zxv_ledger_entry_count_cap, %i[pointer uint32 pointer], :int32],
+      [:zxv_ledger_entry_at_cap, %i[pointer uint32 uint32 pointer pointer pointer pointer size_t pointer], :int32],
+      [:zxv_msg_create_cap, %i[pointer int32 pointer], :int32],
       [:zxv_ledger_balance_cap, %i[pointer uint32 pointer pointer pointer], :int32],
       [:zxv_ledger_check_cap, %i[pointer], :int32],
       # ISO 20022 messages
@@ -89,6 +101,7 @@ module Zxv
       [:zxv_cap_destroy, %i[pointer], :void],
       # attestations
       [:zxv_lpres_create, %i[pointer pointer], :int32],
+      [:zxv_lpres_create_cap, %i[pointer pointer], :int32],
       [:zxv_lpres_destroy, %i[pointer], :void],
       [:zxv_lpres_attest, %i[pointer pointer string int32 int32 string pointer uint32 pointer], :int32],
       [:zxv_lpres_evidence, %i[pointer pointer uint32 int32], :int32],
@@ -97,6 +110,7 @@ module Zxv
       [:zxv_lpres_gate, %i[pointer pointer], :int32],
       # budgets
       [:zxv_rmag_create, %i[pointer pointer], :int32],
+      [:zxv_rmag_create_cap, %i[pointer pointer], :int32],
       [:zxv_rmag_destroy, %i[pointer], :void],
       [:zxv_rmag_budget, %i[pointer pointer string int32 int64 int64 int32 pointer], :int32],
       [:zxv_rmag_consume, %i[pointer pointer uint32 int64 int64], :int32],
@@ -105,6 +119,7 @@ module Zxv
       [:zxv_rmag_status, %i[pointer uint32 pointer pointer pointer pointer pointer], :int32],
       # phase
       [:zxv_phase_create, %i[pointer pointer], :int32],
+      [:zxv_phase_create_cap, %i[pointer pointer], :int32],
       [:zxv_phase_destroy, %i[pointer], :void],
       [:zxv_phase_now, %i[pointer pointer], :int32],
       [:zxv_phase_advance, %i[pointer pointer uint64 pointer pointer], :int32],
@@ -122,6 +137,7 @@ module Zxv
       [:zxv_wire_idle, %i[uint32 pointer], :int32],
       # swarm
       [:zxv_swarm_create, %i[pointer uint32 uint64 pointer], :int32],
+      [:zxv_swarm_create_cap, %i[pointer uint32 uint64 pointer], :int32],
       [:zxv_swarm_destroy, %i[pointer], :void],
       [:zxv_swarm_register, %i[pointer pointer uint32 uint32], :int32],
       [:zxv_swarm_set_active, %i[pointer pointer uint32 int32], :int32],
@@ -239,9 +255,9 @@ module Zxv
         zxv_version(maj, min, nil)
         major = maj.read_uint32
         minor = min.read_uint32
-        return if major == 1 && minor >= 1
+        return if major == 1 && minor >= 2
 
-        raise LoadError, "libzxv ABI #{major}.#{minor} is not compatible (need 1.x, x >= 1)"
+        raise LoadError, "libzxv ABI #{major}.#{minor} is not compatible (need 1.x, x >= 2)"
       end
     end
   end

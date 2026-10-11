@@ -12,7 +12,7 @@ import { Ledger, Zxv, ZxvError, ZxvFatalError } from '../src/index.js';
 const zxv = await Zxv.load();
 const ctx = zxv.createContext({ fatalPolicy: process.argv[2] === 'abort' ? 'abort' : 'throw' });
 const cap = ctx.rootCapability();
-ctx.enableCurrency('GHS');
+ctx.enableCurrency(cap, 'GHS');
 const ledger = Ledger.of(cap);
 const acct = ledger.openAccount('treasury', 'GHS');
 

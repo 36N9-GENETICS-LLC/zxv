@@ -17,7 +17,7 @@ func Example() {
 	defer ctx.Close()
 	root, _ := ctx.RootCapability(1, nil, zxv.CapAll)
 	defer root.Close()
-	_ = ctx.EnableCurrency("NGN")
+	_ = ctx.EnableCurrencyCap(root, "NGN")
 	ledger := zxv.NewLedger(root)
 	bank, _ := ledger.OpenAccount("bank", "NGN", zxv.Issuer)
 	alice, _ := ledger.OpenAccount("alice", "NGN", zxv.Holder)

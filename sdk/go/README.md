@@ -4,7 +4,7 @@
 # ZXV Go SDK
 
 Package `zxv` is a cgo binding to `libzxv`, the stable C ABI of the ZXV
-platform (`sdk/libzxv/include/zxv_api.h`, ABI 1.1).
+platform (`sdk/libzxv/include/zxv_api.h`, ABI 1.2).
 
 ```
 import "github.com/sykomiked/ZEDEC-XERO-VULPINE-V1.0.0/sdk/go/zxv"
@@ -39,7 +39,7 @@ if err != nil { log.Fatal(err) }
 defer ctx.Close()
 root, _ := ctx.RootCapability(1, nil, zxv.CapAll)       // what you may do
 defer root.Close()
-_ = ctx.EnableCurrency("NGN")
+_ = ctx.EnableCurrencyCap(root, "NGN")
 ledger := zxv.NewLedger(root)
 bank, _ := ledger.OpenAccount("bank", "NGN", zxv.Issuer)
 alice, _ := ledger.OpenAccount("alice", "NGN", zxv.Holder)
@@ -126,16 +126,34 @@ generation at the next token and returns the partial result with
 `ctx.Err()`. The same seed and inputs give the same tokens on every
 machine.
 
+## Capabilities on every gated call (ABI 1.2)
+
+Every gated operation takes a `*Capability`, and the SDK calls the
+capability-gated `zxv_*_cap` form of the C ABI:
+
+| Call | Needs |
+|---|---|
+| `ctx.EnableCurrencyCap`, `EnableCurrencyWithMinorCap`, `RegisterPrivateCurrencyCap` | `CapLedgerPost` |
+| `Ledger.OpenAccount`, `Post` | `CapLedgerPost` |
+| `Ledger.Balance`, `Account`, `AccountCount`, `Journal`; `cap.NewMessage` | `CapLedgerRead` |
+| `NewBudgets`, `NewPhaseClock`, `NewAttestations`, `NewSwarm` | `CapBudget`, `CapPhase`, `CapAttest`, `CapSwarm` |
+
+A capability of another context is refused with `ErrCapabilityDenied`
+(`ZXV_E_CAP`). A message keeps the capability it was made with open, and
+the library re-checks it on every call. The 1.0 forms
+`ctx.EnableCurrency`, `EnableCurrencyWithMinor`, `RegisterPrivateCurrency`
+and `ctx.NewMessage` still work but are marked `// Deprecated:`.
+
 ## API overview
 
 | Area | Types | Key calls |
 |---|---|---|
 | Library | `Version`, `LiveFeatures` | ABI version, feature bits |
-| Context | `Context`, `FatalPolicy` | `NewContext`, `RootCapability`, `Halt`, `EnableCurrency`, `NewMessage` |
-| Capability | `Capability`, `Caps` | `Attenuate`, `Revoke`, `SetAttestation`, `Check`, `Info` |
+| Context | `Context`, `FatalPolicy` | `NewContext`, `RootCapability`, `Halt`, `EnableCurrencyCap`, `EnableCurrencyWithMinorCap`, `RegisterPrivateCurrencyCap` |
+| Capability | `Capability`, `Caps` | `Attenuate`, `Revoke`, `SetAttestation`, `Check`, `Info`, `NewMessage` |
 | Exact numbers | `Rational` | `NewRational`, `ParseRational`, `Add`/`Sub`/`Mul`/`Div`, `ToQ16`, `FromFloat64Exact` |
 | Logic | `Truth` | `And`, `Or`, `Not`, `TruthFromEvidence`, `ToBool` |
-| Ledger | `Ledger`, `AccountID`, `Balance` | `OpenAccount`, `Post`, `Balance`, `Check`, `Journal` |
+| Ledger | `Ledger`, `AccountID`, `Balance` | `OpenAccount`, `Post`, `Balance`, `Check`, `Account`, `AccountCount`, `Journal` |
 | ISO data | `Currency`, `Message` | `CurrencyByAlpha`, `CurrencyByNumeric`, `SetText`, `SetAmount`, `Render` |
 | Attestations | `Attestations` | `Attest`, `Evidence`, `State`, `GateClear` |
 | Budgets | `Budgets`, `Budget` | `Create`, `Consume`, `ConsumeWait`, `ConsumeAsync`, `Release`, `SetLimit`, `OnExhausted` |

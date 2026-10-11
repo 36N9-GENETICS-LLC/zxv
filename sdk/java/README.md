@@ -4,7 +4,7 @@
 # ZXV SDK for the JVM
 
 Java bindings for `libzxv`, the one C surface of the ZXV platform
-(`sdk/libzxv/include/zxv_api.h`, ABI 1.1). It is built on the Java
+(`sdk/libzxv/include/zxv_api.h`, ABI 1.2). It is built on the Java
 **Foreign Function & Memory API** (`java.lang.foreign`, final since Java 22),
 not JNI: there is no glue library to compile, and downcalls, upcalls and
 off-heap memory are plain Java. Kotlin and Scala use it directly.
@@ -55,7 +55,8 @@ On first use the SDK loads `libzxv` from the first of:
 4. the copy bundled in the jar under `/native/<os>-<arch>/`, extracted to a temp file;
 5. `System.mapLibraryName("zxv")` (`libzxv.so`, `libzxv.dylib`, `zxv.dll`) on the system loader path.
 
-It refuses a library whose ABI major is not 1 or whose minor is below 1.
+It refuses a library whose ABI major is not 1 or whose minor is below 2
+(it calls the `_cap` functions added in ABI 1.2).
 `Zxv.libraryLocation()` tells you which one won.
 
 ## Quickstart
@@ -63,7 +64,7 @@ It refuses a library whose ABI major is not 1 or whose minor is below 1.
 ```java
 try (ZxvContext ctx = ZxvContext.create();
      Capability cap = ctx.rootCapability(Permission.all())) {
-    ctx.enableCurrency("NGN");
+    ctx.enableCurrency(cap, "NGN");
     Ledger ledger = Ledger.of(cap);
     Account bank = ledger.openAccount("bank", "NGN", AccountKind.ISSUER);
     Account ada  = ledger.openAccount("ada",  "NGN", AccountKind.HOLDER);
@@ -104,6 +105,16 @@ Ledger.of(teller).post(...);           // ok
 MlDsa87.with(teller).generateKeyPair(); // CapabilityDeniedException
 root.revoke();                          // teller is revoked too
 ```
+
+Since ABI 1.2 every gated operation takes a capability: currencies
+(`ctx.enableCurrency(cap, "NGN")`, `ctx.registerPrivateCurrency(cap, "VFV", 2)`)
+and opening accounts need `LEDGER_POST`; `Ledger.account/accounts/journal`
+need `LEDGER_READ`; `Budgets.create`, `PhaseClock.create`,
+`Attestations.create` and `Swarm.create` need `BUDGET`, `PHASE`, `ATTEST`
+and `SWARM`. A capability from a different context is refused with
+`CapabilityDeniedException` (`ZXV_E_CAP`). The 1.0 forms without a
+capability (`ctx.enableCurrency("NGN")`, ...) still work and are
+`@Deprecated(since = "1.2")`.
 
 **Exactness.** No public method takes or returns `float`/`double` except
 `Rational.fromDoubleExact(double)`, which returns the double's exact value
@@ -173,7 +184,7 @@ crosses into C.
 | Type | Package | What it does |
 |---|---|---|
 | `Zxv` | core | `load`, `version`, `features`, `statusName`, `statusClass` |
-| `ZxvContext` | core | create, `rootCapability`, currencies, `halt`, `isPoisoned` |
+| `ZxvContext` | core | create, `rootCapability`, `enableCurrency(cap, ...)`, `registerPrivateCurrency(cap, ...)`, `currency`, `enabledCurrencies`, `halt`, `isPoisoned` |
 | `Capability`, `Permission` | core | `attenuate`, `revoke`, `setAttestation`, `allows`, `require`, `info` |
 | `Rational` | core | exact `add`/`subtract`/`multiply`/`divide`/`compareTo`, `parse`, `from(BigDecimal)`, `fromDoubleExact`, `toQ16` |
 | `Truth` | core | four-valued `and`/`or`/`not`, `fromEvidence`, explicit-policy conversions |
@@ -254,7 +265,7 @@ import org.zedec.zxv.ledger.*
 fun main() {
     ZxvContext.create().use { ctx ->
         ctx.rootCapability(Permission.all()).use { cap ->
-            ctx.enableCurrency("NGN")
+            ctx.enableCurrency(cap, "NGN")
             val ledger = Ledger.of(cap)
             val bank = ledger.openAccount("bank", "NGN", AccountKind.ISSUER)
             val ada = ledger.openAccount("ada", "NGN", AccountKind.HOLDER)
@@ -289,7 +300,7 @@ import org.zedec.zxv.ledger.*
   Using.Manager { use =>
     val ctx = use(ZxvContext.create())
     val cap = use(ctx.rootCapability(Permission.all()))
-    ctx.enableCurrency("NGN")
+    ctx.enableCurrency(cap, "NGN")
     val ledger = Ledger.of(cap)
     val bank = ledger.openAccount("bank", "NGN", AccountKind.ISSUER)
     val ada  = ledger.openAccount("ada", "NGN", AccountKind.HOLDER)

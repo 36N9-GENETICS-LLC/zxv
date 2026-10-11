@@ -90,7 +90,7 @@ class TestEngineEvm < Minitest::Test
                             parties: v["addresses"].map { |a| "0x#{a}" }, balances: v["balances"])
       assert_equal st, st2
 
-      ctx.enable_currency("USD", minor_units: 2)
+      ctx.enable_currency("USD", minor_units: 2, cap: cap)
       ledger = Zxv::Ledger.new(cap)
       a = ledger.open_account("a", "USD", kind: :issuer)
       b = ledger.open_account("b", "USD")

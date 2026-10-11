@@ -10,7 +10,7 @@ from zxv import Cap, Rational, Truth
 
 with zxv.Context() as ctx:
     cap = ctx.root_capability()                     # every capability
-    ctx.currencies.enable("NGN")                    # ISO 4217, 2 minor units
+    ctx.currencies.enable("NGN", cap=cap)           # ISO 4217, 2 minor units
     ledger = zxv.Ledger(cap)
     bank = ledger.open_account("bank", "NGN", zxv.AccountKind.ISSUER)
     alice = ledger.open_account("alice", "NGN")

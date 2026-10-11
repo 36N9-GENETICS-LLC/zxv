@@ -20,7 +20,7 @@
 //!
 //! let ctx = Context::new()?;
 //! let root = ctx.root_capability(1, None, Caps::ALL)?;
-//! ctx.enable_currency("NGN")?;
+//! ctx.enable_currency_cap(&root, "NGN")?;
 //! let ledger = Ledger::new(&root);
 //! let bank = ledger.open_account("bank", "NGN", AccountKind::Issuer)?;
 //! let alice = ledger.open_account("alice", "NGN", AccountKind::Holder)?;
@@ -183,17 +183,17 @@ pub fn features() -> Features {
     Features(m)
 }
 
-/// Checks once that the loaded library speaks ABI 1.x with x >= 1.
+/// Checks once that the loaded library speaks ABI 1.x with x >= 2.
 pub(crate) fn ensure_compatible() -> Result<()> {
     static CHECK: OnceLock<Result<()>> = OnceLock::new();
     CHECK
         .get_or_init(|| {
             let (major, minor, _) = version();
-            if major != sys::ZXV_ABI_VERSION_MAJOR || minor < 1 {
+            if major != sys::ZXV_ABI_VERSION_MAJOR || minor < 2 {
                 return Err(Error::with_detail(
                     sys::ZXV_E_INTERNAL,
                     format!(
-                        "libzxv ABI {major}.{minor} is not compatible with this SDK (needs 1.1+)"
+                        "libzxv ABI {major}.{minor} is not compatible with this SDK (needs 1.2+)"
                     ),
                 ));
             }

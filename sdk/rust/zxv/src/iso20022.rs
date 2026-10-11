@@ -7,6 +7,7 @@ use std::ptr::NonNull;
 
 use zxv_sys as sys;
 
+use crate::capability::Capability;
 use crate::context::Context;
 use crate::error::{Error, Result};
 use crate::ffi;
@@ -102,10 +103,12 @@ pub enum EntryStatus {
 /// One ISO 20022 message under construction.
 ///
 /// `Send` but not `Sync` (R6: a message handle is used from one thread at
-/// a time); it borrows its [`Context`].
+/// a time); it borrows its [`Context`] and the [`Capability`] it was made
+/// with ([`Capability::new_message`]).
 pub struct Message<'c> {
     raw: NonNull<sys::zxv_msg>,
     ctx: &'c Context,
+    _cap: Option<&'c Capability<'c>>,
     _not_sync: PhantomData<std::cell::Cell<()>>,
 }
 
@@ -121,6 +124,20 @@ impl<'c> Message<'c> {
         Ok(Message {
             raw,
             ctx,
+            _cap: None,
+            _not_sync: PhantomData,
+        })
+    }
+
+    pub(crate) fn with_cap(cap: &'c Capability<'c>, kind: MessageKind) -> Result<Message<'c>> {
+        let mut raw = std::ptr::null_mut();
+        cap.call(|c| unsafe { sys::zxv_msg_create_cap(c, kind.raw(), &mut raw) })?;
+        let raw = NonNull::new(raw)
+            .ok_or_else(|| Error::with_detail(sys::ZXV_E_INTERNAL, "NULL message"))?;
+        Ok(Message {
+            raw,
+            ctx: cap.context(),
+            _cap: Some(cap),
             _not_sync: PhantomData,
         })
     }

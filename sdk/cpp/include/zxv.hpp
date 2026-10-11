@@ -50,12 +50,27 @@
 #include <ostream>
 #include <span>
 #include <stdexcept>
-#include <stop_token>
 #include <string>
 #include <string_view>
 #include <thread>
 #include <utility>
 #include <vector>
+#include <version>
+
+// std::jthread and <stop_token> are missing from some standard libraries
+// that otherwise do C++20 (Apple's libc++ in Xcode 15 and 16). zxv.hpp then
+// uses a small bundled stop_source / stop_token / stop_callback / jthread;
+// -DZXV_FORCE_STOP_TOKEN_FALLBACK selects it everywhere (CI tests both).
+#if defined(__cpp_lib_jthread) && !defined(ZXV_FORCE_STOP_TOKEN_FALLBACK)
+#    define ZXV_STOP_TOKEN_FALLBACK 0
+#    include <stop_token>
+#else
+/// 1 when zxv::jthread and friends are the bundled fallback, 0 when they
+/// are the std types.
+#    define ZXV_STOP_TOKEN_FALLBACK 1
+#    include <list>
+#    include <type_traits>
+#endif
 
 #if defined(__SIZEOF_INT128__)
 #    define ZXV_HAS_INT128 1
@@ -70,13 +85,242 @@
 namespace zxv {
 
 // ===========================================================================
+// Cooperative cancellation: std::stop_token and std::jthread, or a fallback
+// ===========================================================================
+
+#if !ZXV_STOP_TOKEN_FALLBACK
+using std::jthread;
+using std::nostopstate;
+using std::nostopstate_t;
+using std::stop_callback;
+using std::stop_source;
+using std::stop_token;
+#else
+namespace detail {
+/// Shared state of a stop_source: an atomic flag, plus the registered
+/// callbacks under a mutex. request_stop() runs them on the calling thread,
+/// outside the mutex; a callback being destroyed waits for its own run to
+/// finish when that run is on another thread (as std::stop_callback does).
+class StopState {
+public:
+    using Fn = std::function<void()>;
+    using Slot = std::list<Fn*>::iterator;
+
+    bool stop_requested() const noexcept { return stopped_.load(std::memory_order_acquire); }
+
+    bool request_stop()
+    {
+        std::unique_lock lk(m_);
+        if (stopped_.load(std::memory_order_relaxed)) return false;
+        stopped_.store(true, std::memory_order_release);
+        runner_ = std::this_thread::get_id();
+        while (!callbacks_.empty()) {
+            running_ = callbacks_.front();
+            callbacks_.pop_front();
+            lk.unlock();
+            (*running_)();
+            lk.lock();
+            running_ = nullptr;
+            done_.notify_all();
+        }
+        return true;
+    }
+
+    /// Registers fn; false (nothing registered) if stop was already requested.
+    bool add(Fn* fn, Slot& slot)
+    {
+        std::lock_guard lk(m_);
+        if (stopped_.load(std::memory_order_relaxed)) return false;
+        slot = callbacks_.insert(callbacks_.end(), fn);
+        return true;
+    }
+
+    void remove(Fn* fn, Slot slot)
+    {
+        std::unique_lock lk(m_);
+        if (!stopped_.load(std::memory_order_relaxed)) {
+            callbacks_.erase(slot);
+            return;
+        }
+        for (auto it = callbacks_.begin(); it != callbacks_.end(); ++it)
+            if (*it == fn) {
+                callbacks_.erase(it);
+                return;
+            }
+        // Already run, or running now: wait unless it is running on this thread.
+        if (running_ == fn && runner_ != std::this_thread::get_id())
+            done_.wait(lk, [&] { return running_ != fn; });
+    }
+
+private:
+    std::atomic<bool> stopped_{false};
+    std::mutex m_;
+    std::condition_variable done_;
+    std::list<Fn*> callbacks_;
+    Fn* running_ = nullptr;
+    std::thread::id runner_;
+};
+} // namespace detail
+
+/// Tag for a stop_source without a stop state (as std::nostopstate_t).
+struct nostopstate_t {
+    explicit nostopstate_t() = default;
+};
+/// The nostopstate tag value.
+inline constexpr nostopstate_t nostopstate{};
+
+/// Fallback std::stop_token: a view of a stop_source's state.
+class stop_token {
+public:
+    stop_token() noexcept = default;
+    /// True once the associated stop_source requested stop.
+    [[nodiscard]] bool stop_requested() const noexcept { return state_ && state_->stop_requested(); }
+    /// True if a stop can still be (or already was) requested.
+    [[nodiscard]] bool stop_possible() const noexcept { return state_ != nullptr; }
+    /// Same stop state (or both without one).
+    friend bool operator==(const stop_token& a, const stop_token& b) noexcept { return a.state_ == b.state_; }
+    /// Exchange states.
+    void swap(stop_token& o) noexcept { state_.swap(o.state_); }
+
+private:
+    friend class stop_source;
+    template <class Callback>
+    friend class stop_callback;
+    explicit stop_token(std::shared_ptr<detail::StopState> s) noexcept : state_(std::move(s)) {}
+    std::shared_ptr<detail::StopState> state_;
+};
+
+/// Fallback std::stop_source: owns a stop state and requests the stop.
+class stop_source {
+public:
+    stop_source() : state_(std::make_shared<detail::StopState>()) {}
+    /// A source without a stop state.
+    explicit stop_source(nostopstate_t) noexcept {}
+    /// A token observing this source.
+    [[nodiscard]] stop_token get_token() const noexcept { return stop_token(state_); }
+    /// Request stop; true if this call made the request (runs the callbacks).
+    bool request_stop() { return state_ && state_->request_stop(); }
+    /// True once stop was requested.
+    [[nodiscard]] bool stop_requested() const noexcept { return state_ && state_->stop_requested(); }
+    /// True if this source has a stop state.
+    [[nodiscard]] bool stop_possible() const noexcept { return state_ != nullptr; }
+    /// Same stop state (or both without one).
+    friend bool operator==(const stop_source& a, const stop_source& b) noexcept { return a.state_ == b.state_; }
+    /// Exchange states.
+    void swap(stop_source& o) noexcept { state_.swap(o.state_); }
+
+private:
+    std::shared_ptr<detail::StopState> state_;
+};
+
+/// Fallback std::stop_callback: runs `Callback` once when stop is requested
+/// (at once, in the constructor, if it already was). Not copyable or movable.
+template <class Callback>
+class stop_callback {
+public:
+    /// The callback type.
+    using callback_type = Callback;
+    /// Register `cb` with the stop state of `st`.
+    template <class C>
+    explicit stop_callback(const stop_token& st, C&& cb) : cb_(std::forward<C>(cb)), fn_([this] { cb_(); })
+    {
+        if (st.state_ && st.state_->add(&fn_, slot_))
+            state_ = st.state_;
+        else if (st.stop_requested())
+            cb_();
+    }
+    ~stop_callback()
+    {
+        if (state_) state_->remove(&fn_, slot_);
+    }
+    stop_callback(const stop_callback&) = delete;
+    stop_callback& operator=(const stop_callback&) = delete;
+    stop_callback(stop_callback&&) = delete;
+    stop_callback& operator=(stop_callback&&) = delete;
+
+private:
+    Callback cb_;
+    std::function<void()> fn_;
+    std::shared_ptr<detail::StopState> state_;
+    detail::StopState::Slot slot_{};
+};
+/// Deduce stop_callback<C> from the callable.
+template <class C>
+stop_callback(stop_token, C) -> stop_callback<C>;
+
+/// Fallback std::jthread: passes its stop_token as the first argument when
+/// the callable accepts one; requests stop and joins on destruction.
+class jthread {
+public:
+    using id = std::thread::id; ///< thread id type
+    jthread() noexcept : src_(nostopstate) {}
+    /// Start a thread running f(token, args...) or f(args...).
+    template <class F, class... Args>
+        requires(!std::is_same_v<std::remove_cvref_t<F>, jthread>)
+    explicit jthread(F&& f, Args&&... args)
+    {
+        if constexpr (std::is_invocable_v<std::decay_t<F>, stop_token, std::decay_t<Args>...>)
+            t_ = std::thread(std::forward<F>(f), src_.get_token(), std::forward<Args>(args)...);
+        else
+            t_ = std::thread(std::forward<F>(f), std::forward<Args>(args)...);
+    }
+    jthread(jthread&&) noexcept = default; ///< move
+    /// Move-assign: stops and joins the current thread first.
+    jthread& operator=(jthread&& o) noexcept
+    {
+        if (this != &o) {
+            stop_and_join();
+            src_ = std::move(o.src_);
+            t_ = std::move(o.t_);
+        }
+        return *this;
+    }
+    jthread(const jthread&) = delete;
+    jthread& operator=(const jthread&) = delete;
+    ~jthread() { stop_and_join(); }
+
+    [[nodiscard]] bool joinable() const noexcept { return t_.joinable(); } ///< as std::thread
+    void join() { t_.join(); }                                             ///< as std::thread
+    void detach() { t_.detach(); }                                         ///< as std::thread
+    [[nodiscard]] id get_id() const noexcept { return t_.get_id(); }      ///< as std::thread
+    /// Request stop of the thread's stop_token.
+    bool request_stop() noexcept
+    {
+        try {
+            return src_.request_stop();
+        } catch (...) { // a callback threw; std::stop_callback would terminate
+            std::terminate();
+        }
+    }
+    [[nodiscard]] stop_source get_stop_source() const noexcept { return src_; } ///< its stop_source
+    [[nodiscard]] stop_token get_stop_token() const noexcept { return src_.get_token(); } ///< its token
+    void swap(jthread& o) noexcept
+    {
+        std::swap(src_, o.src_);
+        t_.swap(o.t_);
+    } ///< exchange
+
+private:
+    void stop_and_join() noexcept
+    {
+        if (t_.joinable()) {
+            request_stop();
+            t_.join();
+        }
+    }
+    stop_source src_; // declared first: the thread's token comes from it
+    std::thread t_;
+};
+#endif
+
+// ===========================================================================
 // Version and features
 // ===========================================================================
 
 /// The ABI version this header was written against.
 inline constexpr std::uint32_t header_abi_major = ZXV_ABI_VERSION_MAJOR;
-/// Minimum ABI minor version this SDK needs (ABI 1.1 groups).
-inline constexpr std::uint32_t header_abi_minor = 1;
+/// Minimum ABI minor version this SDK needs (ABI 1.2: the *_cap forms).
+inline constexpr std::uint32_t header_abi_minor = 2;
 
 /// One harmonic fundamental, in ticks (27,720 = lcm(1..11)).
 inline constexpr std::uint64_t phase_cycle = ZXV_PHASE_CYCLE;
@@ -412,7 +656,7 @@ inline std::uint32_t features()
 /// True if every bit of `mask` (zxv::feature::*) is live in this build.
 inline bool has_feature(std::uint32_t mask) { return (features() & mask) == mask; }
 
-/// Refuse a library whose major version differs or whose minor is below 1
+/// Refuse a library whose major version differs or whose minor is below 2
 /// (SDK_DESIGN.md section 1). Called once, automatically, by Context.
 inline void ensure_compatible()
 {
@@ -420,7 +664,7 @@ inline void ensure_compatible()
     if (v.major != header_abi_major || v.minor < header_abi_minor)
         throw SystemError(ZXV_E_INTERNAL, "libzxv ABI " + std::to_string(v.major) + "." +
                                               std::to_string(v.minor) + " is not compatible with " +
-                                              "this SDK (needs 1.1 or later 1.x)");
+                                              "this SDK (needs 1.2 or later 1.x)");
 }
 
 // ===========================================================================
@@ -782,6 +1026,9 @@ inline std::ostream& operator<<(std::ostream& os, const Rational& r) { return os
 // ===========================================================================
 
 class Capability;
+namespace detail {
+struct CapCore;
+} // namespace detail
 
 /// One platform instance: a ledger, its currencies, and everything created
 /// from it. Move-only. Its C handle lives until the last child (capability,
@@ -825,18 +1072,32 @@ public:
         detail::check(zxv_ctx_halt(core_->ctx, reason.empty() ? nullptr : reason.c_str()), core_.get());
     }
 
+    /// Enable an ISO 4217 currency for ledger accounts ("NGN") through
+    /// `cap`, which needs caps::ledger_post. A capability of another
+    /// context throws CapabilityDenied (ZXV_E_CAP).
+    void enable_currency(const Capability& cap, const std::string& alpha);
+    /// Enable a currency asserting its minor units, through `cap`
+    /// (caps::ledger_post); a mismatch with the ISO table is ZXV_E_CURRENCY.
+    void enable_currency(const Capability& cap, const std::string& alpha, std::uint8_t minor_units);
+    /// Register a platform-private unit ("VFV") through `cap`
+    /// (caps::ledger_post). Never valid in ISO 20022.
+    void register_private_unit(const Capability& cap, const std::string& code, std::uint8_t minor_units);
+
     /// Enable an ISO 4217 currency for ledger accounts ("NGN").
+    [[deprecated("ABI 1.2: pass a capability with caps::ledger_post: enable_currency(cap, alpha)")]]
     void enable_currency(const std::string& alpha)
     {
         call([&] { return zxv_ccy_enable(core_->ctx, alpha.c_str()); });
     }
     /// Enable a currency asserting its minor units (for builds without the
     /// ISO 4217 table; a mismatch with the table is ZXV_E_CURRENCY).
+    [[deprecated("ABI 1.2: pass a capability with caps::ledger_post: enable_currency(cap, alpha, minor_units)")]]
     void enable_currency(const std::string& alpha, std::uint8_t minor_units)
     {
         call([&] { return zxv_ccy_enable_with_minor(core_->ctx, alpha.c_str(), minor_units); });
     }
     /// Register a platform-private unit ("VFV"). Never valid in ISO 20022.
+    [[deprecated("ABI 1.2: pass a capability with caps::ledger_post: register_private_unit(cap, code, minor_units)")]]
     void register_private_unit(const std::string& code, std::uint8_t minor_units)
     {
         call([&] { return zxv_ccy_register_private(core_->ctx, code.c_str(), minor_units); });
@@ -867,6 +1128,9 @@ private:
         detail::ensure_alive(core_.get());
         detail::check(f(), core_.get());
     }
+    /// The cap's core, after refusing a capability of another context (the
+    /// C *_cap forms act on the capability's own context, not on this one).
+    const detail::CapCore& own(const Capability& cap) const;
     std::shared_ptr<detail::CtxCore> core_;
 };
 
@@ -972,6 +1236,31 @@ private:
     std::shared_ptr<detail::CapCore> core_;
 };
 
+inline const detail::CapCore& Context::own(const Capability& cap) const
+{
+    detail::ensure_alive(core_.get());
+    if (cap.core()->ctx != core_) throw CapabilityDenied(ZXV_E_CAP, "the capability belongs to a different context");
+    return *cap.core();
+}
+
+inline void Context::enable_currency(const Capability& cap, const std::string& alpha)
+{
+    const detail::CapCore& c = own(cap);
+    c.call([&] { return zxv_ccy_enable_cap(c.cap, alpha.c_str()); });
+}
+
+inline void Context::enable_currency(const Capability& cap, const std::string& alpha, std::uint8_t minor_units)
+{
+    const detail::CapCore& c = own(cap);
+    c.call([&] { return zxv_ccy_enable_with_minor_cap(c.cap, alpha.c_str(), minor_units); });
+}
+
+inline void Context::register_private_unit(const Capability& cap, const std::string& code, std::uint8_t minor_units)
+{
+    const detail::CapCore& c = own(cap);
+    c.call([&] { return zxv_ccy_register_private_cap(c.cap, code.c_str(), minor_units); });
+}
+
 inline Capability Context::root_capability(std::uint64_t bits, std::uint32_t process_id,
                                            std::optional<std::array<std::uint8_t, ZXV_IDENTITY_BYTES>> identity) const
 {
@@ -1049,8 +1338,9 @@ struct JournalLine {
 };
 
 /// The triple ledger of a context, used through a capability. Amounts are
-/// exact int64 minor units (cents, kobo...). Posting needs caps::ledger_post,
-/// reading needs caps::ledger_read.
+/// exact int64 minor units (cents, kobo...). Posting and opening accounts
+/// need caps::ledger_post; balances, account metadata and journals need
+/// caps::ledger_read. Every call is the capability-gated *_cap C form.
 class Ledger {
 public:
     /// A ledger view acting with `cap`.
@@ -1061,8 +1351,8 @@ public:
                                AccountKind kind = AccountKind::holder)
     {
         std::uint32_t id = 0;
-        cap_->call([&] { return zxv_ledger_open_account(ctx(), name.c_str(), ccy.c_str(),
-                                                        static_cast<std::int32_t>(kind), &id); });
+        cap_->call([&] { return zxv_ledger_open_account_cap(cap_->cap, name.c_str(), ccy.c_str(),
+                                                            static_cast<std::int32_t>(kind), &id); });
         return id;
     }
 
@@ -1091,16 +1381,15 @@ public:
     /// Journal of one account, oldest first (needs caps::ledger_read).
     [[nodiscard]] std::vector<JournalLine> journal(std::uint32_t account) const
     {
-        read_gate();
         std::uint32_t n = 0;
-        cap_->call([&] { return zxv_ledger_entry_count(ctx(), account, &n); });
+        cap_->call([&] { return zxv_ledger_entry_count_cap(cap_->cap, account, &n); });
         std::vector<JournalLine> out(n);
         for (std::uint32_t i = 0; i < n; ++i) {
             JournalLine& l = out[i];
             l.reference = detail::read_text(
                 [&](char* b, std::size_t c, std::size_t* len) {
-                    return zxv_ledger_entry_at(ctx(), account, i, &l.entry_id, &l.amount,
-                                               &l.counterparty, b, c, len);
+                    return zxv_ledger_entry_at_cap(cap_->cap, account, i, &l.entry_id, &l.amount,
+                                                   &l.counterparty, b, c, len);
                 },
                 cap_->ctx.get());
         }
@@ -1110,26 +1399,38 @@ public:
     /// Currency of an account (needs caps::ledger_read).
     [[nodiscard]] std::string account_currency(std::uint32_t account) const
     {
-        read_gate();
+        detail::ensure_alive(cap_->ctx.get());
         return detail::read_text([&](char* b, std::size_t c, std::size_t* l) {
-            return zxv_ledger_account_ccy(ctx(), account, b, c, l);
+            return zxv_ledger_account_ccy_cap(cap_->cap, account, b, c, l);
         }, cap_->ctx.get());
     }
 
     /// Name of an account (needs caps::ledger_read).
     [[nodiscard]] std::string account_name(std::uint32_t account) const
     {
-        read_gate();
+        detail::ensure_alive(cap_->ctx.get());
         return detail::read_text([&](char* b, std::size_t c, std::size_t* l) {
-            return zxv_ledger_account_name(ctx(), account, b, c, l);
+            return zxv_ledger_account_name_cap(cap_->cap, account, b, c, l);
         }, cap_->ctx.get());
     }
 
+    /// Kind of an account (needs caps::ledger_read).
+    [[nodiscard]] AccountKind account_kind(std::uint32_t account) const
+    {
+        std::int32_t k = 0;
+        cap_->call([&] { return zxv_ledger_account_kind_cap(cap_->cap, account, &k); });
+        return static_cast<AccountKind>(k);
+    }
+
+    /// Number of accounts in the context (needs caps::ledger_read).
+    [[nodiscard]] std::uint32_t account_count() const
+    {
+        std::uint32_t n = 0;
+        cap_->call([&] { return zxv_ledger_account_count_cap(cap_->cap, &n); });
+        return n;
+    }
+
 private:
-    zxv_ctx* ctx() const noexcept { return cap_->ctx->ctx; }
-    // The C metadata/journal calls take the context, not a cap; the SDK
-    // still requires LEDGER_READ so the discipline is the same everywhere.
-    void read_gate() const { cap_->call([&] { return zxv_cap_check(cap_->cap, caps::ledger_read); }); }
     std::shared_ptr<detail::CapCore> cap_;
 };
 
@@ -1164,9 +1465,20 @@ enum class MxAmount : std::int32_t {
 };
 
 /// One ISO 20022 message under construction. Move-only; not thread-safe.
+/// Made through a capability (caps::ledger_read), which the library
+/// re-checks on every call and which the message keeps alive.
 class Message {
 public:
+    /// Create a message of `kind` through `cap` (caps::ledger_read). Pending
+    /// kinds throw NotImplemented.
+    Message(const Capability& cap, MxKind kind) : ctx_(cap.core()->ctx), cap_(cap.core())
+    {
+        zxv_msg* m = nullptr;
+        cap_->call([&] { return zxv_msg_create_cap(cap_->cap, static_cast<std::int32_t>(kind), &m); });
+        msg_.reset(m);
+    }
     /// Create a message of `kind` in `ctx`. Pending kinds throw NotImplemented.
+    [[deprecated("ABI 1.2: create messages through a capability with caps::ledger_read: Message(cap, kind)")]]
     Message(const Context& ctx, MxKind kind) : ctx_(ctx_core(ctx))
     {
         detail::ensure_alive(ctx_.get());
@@ -1177,26 +1489,27 @@ public:
     /// Set a text field (plain UTF-8; the serializer escapes XML).
     Message& set(MxField field, const std::string& utf8)
     {
-        detail::check(zxv_msg_set_text(msg_.get(), static_cast<std::int32_t>(field), utf8.c_str()));
+        detail::check(zxv_msg_set_text(msg_.get(), static_cast<std::int32_t>(field), utf8.c_str()), ctx_.get());
         return *this;
     }
     /// Set an amount: exact units with `frac_digits` decimal places.
     Message& set_amount(MxAmount field, std::int64_t units, std::uint8_t frac_digits)
     {
-        detail::check(zxv_msg_set_amount(msg_.get(), static_cast<std::int32_t>(field), units, frac_digits));
+        detail::check(zxv_msg_set_amount(msg_.get(), static_cast<std::int32_t>(field), units, frac_digits), ctx_.get());
         return *this;
     }
     /// pacs008 GrpHdr/NbOfTxs (default 1).
     Message& set_tx_count(std::uint32_t n)
     {
-        detail::check(zxv_msg_set_tx_count(msg_.get(), n));
+        detail::check(zxv_msg_set_tx_count(msg_.get(), n), ctx_.get());
         return *this;
     }
     /// Append a camt053 entry (magnitude, credit=true / debit=false, status).
     Message& add_entry(std::int64_t units, std::uint8_t frac_digits, bool credit,
                        std::int32_t status = ZXV_STS_BOOK)
     {
-        detail::check(zxv_msg_add_entry(msg_.get(), units, frac_digits, credit ? ZXV_CRDT : ZXV_DBIT, status));
+        detail::check(zxv_msg_add_entry(msg_.get(), units, frac_digits, credit ? ZXV_CRDT : ZXV_DBIT, status),
+                      ctx_.get());
         return *this;
     }
     /// Serialize to XML; validates mandatory fields and currency.
@@ -1204,7 +1517,7 @@ public:
     {
         return detail::read_text([&](char* b, std::size_t c, std::size_t* l) {
             return zxv_msg_render(msg_.get(), b, c, l);
-        });
+        }, ctx_.get());
     }
 
 private:
@@ -1213,6 +1526,7 @@ private:
     };
     static std::shared_ptr<detail::CtxCore> ctx_core(const Context& c);
     std::shared_ptr<detail::CtxCore> ctx_; // declared first: destroyed after msg_
+    std::shared_ptr<detail::CapCore> cap_; // the cap a *_cap message re-checks; outlives msg_
     std::unique_ptr<zxv_msg, Del> msg_;
 };
 
@@ -1238,11 +1552,11 @@ struct AttestationState {
 /// clear only when every attestation is certain: no BOTH, no NEITHER.
 class Attestations {
 public:
-    /// A registry in the capability's context.
+    /// A registry in the capability's context (needs caps::attest).
     explicit Attestations(const Capability& cap) : cap_(cap.core())
     {
         zxv_lpres* r = nullptr;
-        cap_->call([&] { return zxv_lpres_create(cap_->ctx->ctx, &r); });
+        cap_->call([&] { return zxv_lpres_create_cap(cap_->cap, &r); });
         reg_.reset(r);
     }
     /// Record an attestation. name, attester <= 31 bytes; digest <= 32 bytes.
@@ -1390,7 +1704,7 @@ public:
     /// (a release or larger limit). Throws OperationCancelled when `stop` is
     /// requested or the Budgets owner is destroyed, BudgetExhausted when
     /// `timeout` elapses, and UsageError at once for a malformed amount.
-    void consume_wait(Rational amount, std::stop_token stop = {},
+    void consume_wait(Rational amount, zxv::stop_token stop = {},
                       std::optional<std::chrono::milliseconds> timeout = std::nullopt) const
     {
         const auto deadline = timeout ? std::optional(std::chrono::steady_clock::now() + *timeout) : std::nullopt;
@@ -1407,13 +1721,22 @@ public:
             } catch (const BudgetExhausted&) {
                 // fall through to wait for a replenishment
             }
+            // A stop request notifies the cv under its mutex, so a waiter
+            // cannot miss it between testing the predicate and blocking.
+            // Registered before taking the lock (it may run at once) and
+            // destroyed after releasing it (its destructor may wait for it).
+            detail::BudgetsCore* c = core_.get();
+            zxv::stop_callback wake_on_stop(stop, [c] {
+                std::lock_guard g(c->m);
+                c->cv.notify_all();
+            });
             std::unique_lock lk(core_->m);
-            auto pred = [&] { return core_->closing || core_->replenish_count != seen; };
-            bool woke;
+            auto pred = [&] { return stop.stop_requested() || core_->closing || core_->replenish_count != seen; };
+            bool woke = true;
             if (deadline)
-                woke = core_->cv.wait_until(lk, stop, *deadline, pred);
+                woke = core_->cv.wait_until(lk, *deadline, pred);
             else
-                woke = core_->cv.wait(lk, stop, pred);
+                core_->cv.wait(lk, pred);
             if (stop.stop_requested()) throw OperationCancelled("consume_async was cancelled");
             if (core_->closing) throw OperationCancelled("the Budgets owner was destroyed");
             if (!woke) throw BudgetExhausted(ZXV_E_BUDGET, "timed out waiting for the budget to be replenished");
@@ -1422,7 +1745,7 @@ public:
 
     /// Asynchronous consume_wait on a worker thread. The future completes
     /// when the consume succeeds, or holds the exception consume_wait threw.
-    [[nodiscard]] std::future<void> consume_async(Rational amount, std::stop_token stop = {},
+    [[nodiscard]] std::future<void> consume_async(Rational amount, zxv::stop_token stop = {},
                                                   std::optional<std::chrono::milliseconds> timeout = std::nullopt) const
     {
         std::promise<void> p;
@@ -1482,11 +1805,11 @@ private:
 /// Destroying it cancels pending consume_async waits (OperationCancelled).
 class Budgets {
 public:
-    /// A registry in the capability's context.
+    /// A registry in the capability's context (needs caps::budget).
     explicit Budgets(const Capability& cap)
     {
         zxv_rmag* r = nullptr;
-        cap.core()->call([&] { return zxv_rmag_create(cap.core()->ctx->ctx, &r); });
+        cap.core()->call([&] { return zxv_rmag_create_cap(cap.core()->cap, &r); });
         core_ = std::make_shared<detail::BudgetsCore>(cap.core(), r);
     }
     Budgets(Budgets&&) noexcept = default; ///< move
@@ -1570,7 +1893,7 @@ struct PhaseCore {
     zxv_phase* phase = nullptr;
     std::mutex m; // serializes C calls with waiter bookkeeping
     std::map<std::uint64_t, std::promise<void>> waiters;
-    std::jthread driver;
+    zxv::jthread driver;
     std::condition_variable_any driver_cv;
 
     PhaseCore(std::shared_ptr<CapCore> c, zxv_phase* p) : cap(std::move(c)), phase(p) {}
@@ -1671,11 +1994,11 @@ private:
 /// Needs caps::phase. Destroying it stops the driver and cancels waiters.
 class PhaseClock {
 public:
-    /// A clock in the capability's context, at tick 0.
+    /// A clock in the capability's context, at tick 0 (needs caps::phase).
     explicit PhaseClock(const Capability& cap)
     {
         zxv_phase* p = nullptr;
-        cap.core()->call([&] { return zxv_phase_create(cap.core()->ctx->ctx, &p); });
+        cap.core()->call([&] { return zxv_phase_create_cap(cap.core()->cap, &p); });
         core_ = std::make_shared<detail::PhaseCore>(cap.core(), p);
     }
     PhaseClock(PhaseClock&&) noexcept = default; ///< move
@@ -1747,7 +2070,7 @@ public:
         return t;
     }
 
-    /// Start the real-time driver: a std::jthread advancing the clock at
+    /// Start the real-time driver: a zxv::jthread advancing the clock at
     /// `ticks_per_second` (it batches ticks, waking at most every 1 ms).
     /// Replaces a running driver. A FATAL status stops it and fails waiters.
     void start_realtime(std::uint64_t ticks_per_second)
@@ -1755,11 +2078,17 @@ public:
         if (ticks_per_second == 0) throw UsageError(ZXV_E_ARG, "ticks_per_second must be > 0");
         core_->stop_driver();
         detail::PhaseCore* c = core_.get(); // the core joins this thread before dying
-        core_->driver = std::jthread([c, ticks_per_second](std::stop_token st) {
+        core_->driver = zxv::jthread([c, ticks_per_second](zxv::stop_token st) {
             using clock = std::chrono::steady_clock;
             const auto start = clock::now();
             std::uint64_t issued = 0;
             std::mutex sleep_m;
+            // Wake the sleep below on a stop request (notified under sleep_m,
+            // so it cannot be lost); destroyed before sleep_m.
+            zxv::stop_callback wake_on_stop(st, [&sleep_m, c] {
+                std::lock_guard g(sleep_m);
+                c->driver_cv.notify_all();
+            });
             while (!st.stop_requested()) {
                 constexpr std::uint64_t ns_per_s = 1000000000u;
                 const auto elapsed = static_cast<std::uint64_t>(
@@ -1784,7 +2113,7 @@ public:
                 auto wake = start + std::chrono::nanoseconds(next_ns);
                 wake = std::max(wake, clock::now() + std::chrono::milliseconds(1));
                 std::unique_lock lk(sleep_m);
-                c->driver_cv.wait_until(lk, st, wake, [] { return false; });
+                c->driver_cv.wait_until(lk, wake, [&st] { return st.stop_requested(); });
             }
         });
     }
@@ -1932,11 +2261,12 @@ struct EmotionProfile {
 /// imaginary share split by each model's feeling. Needs caps::swarm.
 class Swarm {
 public:
-    /// A swarm of `num_levels` levels issuing `tokens_per_cycle` per cycle.
+    /// A swarm of `num_levels` levels issuing `tokens_per_cycle` per cycle (needs
+    /// caps::swarm).
     Swarm(const Capability& cap, std::uint32_t num_levels, std::uint64_t tokens_per_cycle) : cap_(cap.core())
     {
         zxv_swarm* s = nullptr;
-        cap_->call([&] { return zxv_swarm_create(cap_->ctx->ctx, num_levels, tokens_per_cycle, &s); });
+        cap_->call([&] { return zxv_swarm_create_cap(cap_->cap, num_levels, tokens_per_cycle, &s); });
         sw_.reset(s);
     }
     /// Register a model at a level (level d holds F(d+2) models).
@@ -2493,7 +2823,7 @@ inline GenerateResult run_generate(SessionCore& s, std::string_view prompt, cons
 class Session;
 
 /// An iterator-style stream of generated tokens. Generation runs on a
-/// worker std::jthread one token ahead of the consumer. Destroying the
+/// worker zxv::jthread one token ahead of the consumer. Destroying the
 /// stream (or cancel()) stops generation at the next token. Move-only.
 ///
 ///     for (const zxv::Token& t : session.stream(prompt, opts)) std::cout << t.piece;
@@ -2602,7 +2932,7 @@ private:
     {
         if (s->busy.exchange(true))
             throw UsageError(ZXV_E_STATE, "the session is in use by another call or an open TokenStream");
-        worker_ = std::jthread([st = st_, s = std::move(s), prompt = std::move(prompt), o]() {
+        worker_ = zxv::jthread([st = st_, s = std::move(s), prompt = std::move(prompt), o]() {
             std::function<bool(const Token&)> fn = [&](const Token& t) {
                 std::unique_lock lk(st->m);
                 st->cv.wait(lk, [&] { return !st->slot.has_value() || st->cancelled; });
@@ -2627,7 +2957,7 @@ private:
         });
     }
     std::shared_ptr<State> st_;
-    std::jthread worker_;
+    zxv::jthread worker_;
 };
 
 /// A conversation with a model: a KV cache. Generation appends, so a chat

@@ -41,7 +41,7 @@ func run() error {
 	}
 	defer reader.Close()
 
-	if err := ctx.EnableCurrency("NGN"); err != nil {
+	if err := ctx.EnableCurrencyCap(root, "NGN"); err != nil {
 		return err
 	}
 	ledger := zxv.NewLedger(root)

@@ -101,8 +101,13 @@ def test_swarm_capacity_palette_and_caps(cap: zxv.Capability) -> None:
             sw.set_mood(0x1F600, 1)  # outside the palette
     p = zxv.Swarm.emotion_profile("\U0001F914")
     assert isinstance(p.temperature, zxv.Rational)
-    with zxv.Swarm(cap.attenuate(Cap.LEDGER_READ), 2, 10) as sw, pytest.raises(zxv.CapabilityDeniedError):
-        sw.register(1, 0)
+    with pytest.raises(zxv.CapabilityDeniedError):
+        zxv.Swarm(cap.attenuate(Cap.LEDGER_READ), 2, 10)  # ABI 1.2: creating needs SWARM
+    s = cap.attenuate(Cap.SWARM)
+    with zxv.Swarm(s, 2, 10) as sw:
+        s.revoke()
+        with pytest.raises(zxv.CapabilityDeniedError):
+            sw.register(1, 0)
 
 
 # ------------------------------------------------------------------ hashes
@@ -211,7 +216,7 @@ def test_evm_state_vectors(cap: zxv.Capability, vectors: Dict[str, Any]) -> None
 
 
 def test_evm_ledger_state_equals_explicit(ctx: zxv.Context, cap: zxv.Capability) -> None:
-    ctx.currencies.enable("USD", 2)
+    ctx.currencies.enable("USD", 2, cap=cap)
     ledger = zxv.Ledger(cap)
     a = ledger.open_account("a", "USD", zxv.AccountKind.ISSUER)
     b = ledger.open_account("b", "USD")

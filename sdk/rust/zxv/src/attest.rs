@@ -40,11 +40,11 @@ unsafe impl Send for Attestations<'_> {}
 unsafe impl Sync for Attestations<'_> {}
 
 impl<'a> Attestations<'a> {
-    /// An empty registry in the capability's context.
+    /// An empty registry in the capability's context (needs
+    /// [`Caps::ATTEST`](crate::Caps::ATTEST)).
     pub fn new(cap: &'a Capability<'a>) -> Result<Attestations<'a>> {
-        let ctx = cap.context();
         let mut raw = std::ptr::null_mut();
-        ctx.call(|x| unsafe { sys::zxv_lpres_create(x, &mut raw) })?;
+        cap.call(|x| unsafe { sys::zxv_lpres_create_cap(x, &mut raw) })?;
         let raw = NonNull::new(raw)
             .ok_or_else(|| Error::with_detail(sys::ZXV_E_INTERNAL, "NULL registry"))?;
         Ok(Attestations { raw, cap })

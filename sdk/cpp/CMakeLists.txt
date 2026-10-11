@@ -11,7 +11,7 @@
 #   3. the in-repo build, ../libzxv/build (the "bundled" copy)
 #   4. the system linker path (find_library(zxv))
 cmake_minimum_required(VERSION 3.20)
-project(zxv_cpp VERSION 1.1.0 LANGUAGES CXX)
+project(zxv_cpp VERSION 1.2.0 LANGUAGES CXX)
 
 option(ZXV_BUILD_TESTS "Build the tests" ${PROJECT_IS_TOP_LEVEL})
 option(ZXV_BUILD_EXAMPLES "Build the examples" ${PROJECT_IS_TOP_LEVEL})
@@ -85,6 +85,13 @@ if(ZXV_BUILD_TESTS)
   target_link_libraries(test_zxv PRIVATE zxv::zxv)
   zxv_strict(test_zxv)
   add_test(NAME test_zxv COMMAND test_zxv "${CMAKE_CURRENT_SOURCE_DIR}/../conformance")
+  # The same tests with the bundled stop_token/jthread fallback forced on
+  # (what Apple's libc++ without std::jthread gets).
+  add_executable(test_zxv_stop_fallback tests/test_zxv.cpp)
+  target_link_libraries(test_zxv_stop_fallback PRIVATE zxv::zxv)
+  target_compile_definitions(test_zxv_stop_fallback PRIVATE ZXV_FORCE_STOP_TOKEN_FALLBACK)
+  zxv_strict(test_zxv_stop_fallback)
+  add_test(NAME test_zxv_stop_fallback COMMAND test_zxv_stop_fallback "${CMAKE_CURRENT_SOURCE_DIR}/../conformance")
 endif()
 
 if(ZXV_BUILD_EXAMPLES)

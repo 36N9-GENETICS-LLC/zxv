@@ -69,16 +69,16 @@ public sealed class StatementService
         ArgumentOutOfRangeException.ThrowIfLessThan(request.MaxEntries, 1);
         ArgumentOutOfRangeException.ThrowIfGreaterThan(request.MaxEntries, MessageService.MaxStatementEntries);
 
-        Account acct = _ledger.GetAccount(account);
-        IReadOnlyList<LedgerEntry> before = _ledger.GetEntries(account, 0, request.Start);
-        IReadOnlyList<LedgerEntry> page = _ledger.GetEntries(account, request.Start, request.MaxEntries);
+        Account acct = _ledger.GetAccountUnchecked(account);
+        IReadOnlyList<LedgerEntry> before = _ledger.GetEntriesUnchecked(account, 0, request.Start);
+        IReadOnlyList<LedgerEntry> page = _ledger.GetEntriesUnchecked(account, request.Start, request.MaxEntries);
         Money zero = _ledger.GetBalances(account).Equity with { MinorUnits = 0 };
         Money opening = before.Aggregate(zero, (sum, e) => sum + e.Amount);
         Money closing = page.Aggregate(opening, (sum, e) => sum + e.Amount);
-        int total = _ledger.GetEntryCount(account);
+        int total = _ledger.GetEntryCountUnchecked(account);
         int next = request.Start + page.Count;
 
-        MxDocument doc = _messages.BuildCamt053(new Camt053Message(
+        MxDocument doc = _messages.BuildCamt053Core(null, new Camt053Message(
             request.MessageId ?? _ids.NextMessageId(),
             _time.GetUtcNow(),
             _payments.ToIdentifier(account),

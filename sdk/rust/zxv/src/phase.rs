@@ -127,11 +127,11 @@ unsafe impl Send for PhaseClock<'_> {}
 unsafe impl Sync for PhaseClock<'_> {}
 
 impl<'a> PhaseClock<'a> {
-    /// A clock at tick 0 in the capability's context.
+    /// A clock at tick 0 in the capability's context (needs
+    /// [`Caps::PHASE`](crate::Caps::PHASE)).
     pub fn new(cap: &'a Capability<'a>) -> Result<PhaseClock<'a>> {
         let mut raw = std::ptr::null_mut();
-        cap.context()
-            .call(|x| unsafe { sys::zxv_phase_create(x, &mut raw) })?;
+        cap.call(|x| unsafe { sys::zxv_phase_create_cap(x, &mut raw) })?;
         let raw = NonNull::new(raw)
             .ok_or_else(|| Error::with_detail(sys::ZXV_E_INTERNAL, "NULL phase"))?;
         Ok(PhaseClock {

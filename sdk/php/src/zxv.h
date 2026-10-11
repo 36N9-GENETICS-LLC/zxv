@@ -1,6 +1,6 @@
 /* Copyright (c) 2024-2026 Michael Laurence Curzi and 36N9 Genetics, LLC */
 /* SPDX-License-Identifier: Apache-2.0 */
-/* The declarations of zxv_api.h (ABI 1.1) that PHP's FFI parses: no
+/* The declarations of zxv_api.h (ABI 1.2) that PHP's FFI parses: no
  * preprocessor, no enums (passed as int32_t). Keep in sync with
  * sdk/libzxv/include/zxv_api.h. */
 typedef struct zxv_ctx zxv_ctx;
@@ -45,8 +45,19 @@ int32_t zxv_ledger_entry_at(zxv_ctx *ctx, uint32_t account, uint32_t index, uint
 int32_t zxv_ledger_post_cap(const zxv_cap *cap, uint32_t from_account, uint32_t to_account, int64_t amount_minor, const char *ccy, const char *reference, uint64_t *out_entry_id);
 int32_t zxv_ledger_balance_cap(const zxv_cap *cap, uint32_t account, int64_t *out_debit_minor, int64_t *out_credit_minor, int64_t *out_equity_minor);
 int32_t zxv_ledger_check_cap(const zxv_cap *cap);
+int32_t zxv_ccy_enable_cap(const zxv_cap *cap, const char *alpha);
+int32_t zxv_ccy_enable_with_minor_cap(const zxv_cap *cap, const char *alpha, uint8_t minor_units);
+int32_t zxv_ccy_register_private_cap(const zxv_cap *cap, const char *code, uint8_t minor_units);
+int32_t zxv_ledger_open_account_cap(const zxv_cap *cap, const char *name, const char *ccy, int32_t kind, uint32_t *out_account_id);
+int32_t zxv_ledger_account_ccy_cap(const zxv_cap *cap, uint32_t account, char *buf, size_t cap_len, size_t *out_len);
+int32_t zxv_ledger_account_name_cap(const zxv_cap *cap, uint32_t account, char *buf, size_t cap_len, size_t *out_len);
+int32_t zxv_ledger_account_kind_cap(const zxv_cap *cap, uint32_t account, int32_t *out_kind);
+int32_t zxv_ledger_account_count_cap(const zxv_cap *cap, uint32_t *out_count);
+int32_t zxv_ledger_entry_count_cap(const zxv_cap *cap, uint32_t account, uint32_t *out_count);
+int32_t zxv_ledger_entry_at_cap(const zxv_cap *cap, uint32_t account, uint32_t index, uint64_t *out_entry_id, int64_t *out_signed_minor, uint32_t *out_counterparty, char *ref_buf, size_t ref_cap, size_t *out_ref_len);
 
 int32_t zxv_msg_create(zxv_ctx *ctx, int32_t kind, zxv_msg **out_msg);
+int32_t zxv_msg_create_cap(const zxv_cap *cap, int32_t kind, zxv_msg **out_msg);
 void zxv_msg_destroy(zxv_msg *msg);
 int32_t zxv_msg_set_text(zxv_msg *msg, int32_t field, const char *utf8);
 int32_t zxv_msg_set_amount(zxv_msg *msg, int32_t field, int64_t units, uint8_t frac_digits);
@@ -77,6 +88,7 @@ int32_t zxv_cap_check(const zxv_cap *cap, uint64_t needed);
 void zxv_cap_destroy(zxv_cap *cap);
 
 int32_t zxv_lpres_create(zxv_ctx *ctx, zxv_lpres **out_reg);
+int32_t zxv_lpres_create_cap(const zxv_cap *cap, zxv_lpres **out_reg);
 void zxv_lpres_destroy(zxv_lpres *reg);
 int32_t zxv_lpres_attest(const zxv_cap *cap, zxv_lpres *reg, const char *name, int32_t subject, int32_t lp_state, const char *attester, const uint8_t *digest, uint32_t digest_len, uint32_t *out_index);
 int32_t zxv_lpres_evidence(const zxv_cap *cap, zxv_lpres *reg, uint32_t index, int32_t positive);
@@ -85,6 +97,7 @@ int32_t zxv_lpres_state(zxv_lpres *reg, uint32_t index, int32_t *out_lp_state, u
 int32_t zxv_lpres_gate(zxv_lpres *reg, int32_t *out_clear);
 
 int32_t zxv_rmag_create(zxv_ctx *ctx, zxv_rmag **out_rmag);
+int32_t zxv_rmag_create_cap(const zxv_cap *cap, zxv_rmag **out_rmag);
 void zxv_rmag_destroy(zxv_rmag *rmag);
 int32_t zxv_rmag_budget(const zxv_cap *cap, zxv_rmag *rmag, const char *name, int32_t resource, int64_t limit_num, int64_t limit_den, int32_t enforce, uint32_t *out_budget);
 int32_t zxv_rmag_consume(const zxv_cap *cap, zxv_rmag *rmag, uint32_t budget, int64_t num, int64_t den);
@@ -94,6 +107,7 @@ int32_t zxv_rmag_status(zxv_rmag *rmag, uint32_t budget, int64_t *out_rem_num, i
 int32_t zxv_rmag_listen(zxv_rmag *rmag, zxv_rmag_listener fn, void *user);
 
 int32_t zxv_phase_create(zxv_ctx *ctx, zxv_phase **out_phase);
+int32_t zxv_phase_create_cap(const zxv_cap *cap, zxv_phase **out_phase);
 void zxv_phase_destroy(zxv_phase *phase);
 int32_t zxv_phase_now(zxv_phase *phase, uint64_t *out_tick);
 int32_t zxv_phase_advance(const zxv_cap *cap, zxv_phase *phase, uint64_t delta, uint64_t *out_now, uint32_t *out_cleared);
@@ -111,6 +125,7 @@ int32_t zxv_wire_resolve(const uint8_t *frame, int32_t *out_truth);
 int32_t zxv_wire_idle(uint32_t trunk, uint8_t *out_frame);
 
 int32_t zxv_swarm_create(zxv_ctx *ctx, uint32_t num_levels, uint64_t tokens_per_cycle, zxv_swarm **out_swarm);
+int32_t zxv_swarm_create_cap(const zxv_cap *cap, uint32_t num_levels, uint64_t tokens_per_cycle, zxv_swarm **out_swarm);
 void zxv_swarm_destroy(zxv_swarm *swarm);
 int32_t zxv_swarm_register(const zxv_cap *cap, zxv_swarm *swarm, uint32_t model_id, uint32_t level);
 int32_t zxv_swarm_set_active(const zxv_cap *cap, zxv_swarm *swarm, uint32_t model_id, int32_t active);

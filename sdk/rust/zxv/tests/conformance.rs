@@ -14,7 +14,7 @@ fn abi_version_matches() {
     let abi = i64s(&v["abi"]);
     let (major, minor, _) = version();
     assert_eq!(major as i64, abi[0]);
-    assert!(minor >= 1);
+    assert!(minor >= 2);
 }
 
 #[test]
@@ -355,7 +355,7 @@ fn evm_state_encoding() {
     assert_eq!(Hashes::keccak256(&state.encoding), state.digest);
 
     // The same from ledger accounts.
-    ctx.enable_currency_with_minor("USD", 2).unwrap();
+    ctx.enable_currency_with_minor_cap(&cap, "USD", 2).unwrap();
     let ledger = Ledger::new(&cap);
     let a = ledger
         .open_account("a", "USD", AccountKind::Issuer)

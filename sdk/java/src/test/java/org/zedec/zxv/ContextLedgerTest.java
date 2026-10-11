@@ -26,8 +26,8 @@ class ContextLedgerTest {
     @Test
     void ledgerThroughCapabilities() {
         try (ZxvContext ctx = ZxvContext.create(); Capability root = ctx.rootCapability(Permission.all())) {
-            ctx.enableCurrency("NGN", 2);
-            ctx.registerPrivateCurrency("VFV", 2);
+            ctx.enableCurrency(root, "NGN", 2);
+            ctx.registerPrivateCurrency(root, "VFV", 2);
             assertEquals(List.of("NGN", "VFV"), ctx.enabledCurrencies());
             assertTrue(ctx.currency("VFV").orElseThrow().isPrivate());
             assertTrue(ctx.currency("GHS").isEmpty());
@@ -119,7 +119,7 @@ class ContextLedgerTest {
     void fatalPathThroughHalt() {
         ZxvContext ctx = ZxvContext.create();
         Capability cap = ctx.rootCapability(Permission.all());
-        ctx.enableCurrency("NGN", 2);
+        ctx.enableCurrency(cap, "NGN", 2);
         Ledger ledger = Ledger.of(cap);
         Account a = ledger.openAccount("a", "NGN", AccountKind.ISSUER);
         ctx.halt("test halt");
@@ -131,7 +131,7 @@ class ContextLedgerTest {
         // The SDK marks the handle dead: every later call fails the same way, without retrying in C.
         assertThrows(ZxvFatalError.class, () -> ledger.post(a, a, 1, "NGN", "again"));
         assertThrows(ZxvFatalError.class, () -> cap.attenuate(Permission.LEDGER_READ));
-        assertThrows(ZxvFatalError.class, () -> ctx.enableCurrency("GHS"));
+        assertThrows(ZxvFatalError.class, () -> ctx.enableCurrency(cap, "GHS"));
         assertTrue(ctx.isPoisoned());
         ctx.close(); // a halted context can still be closed
         assertThrows(IllegalStateException.class, () -> cap.permissions(), "closing the context closed its capabilities");
