@@ -59,6 +59,9 @@ IPFSN := $(S)/ipfs_node/ipfsn_multiformats.c $(S)/ipfs_node/ipfsn_unixfs.c \
 MLKEM := $(S)/mlkem/keccak.c $(S)/mlkem/mlkem768.c $(S)/mlkem/mlkem_encode.c \
          $(S)/mlkem/mlkem_sample.c $(S)/mlkem/mlkem_ntt.c $(S)/mlkem/mlkem_kpe.c
 MLDSA := $(S)/pqsec/pq_mldsa65.c $(sort $(wildcard $(S)/pqsec/mldsa/[a-z]*.c))
+# Category 5 (bootlegger v3, vinea v3): ML-KEM-1024 + ML-DSA-87 from pqsec.
+PQ5 := $(S)/mlkem/keccak.c $(S)/pqsec/pq_mlkem1024.c $(S)/pqsec/pq_mldsa87.c \
+       $(S)/pqsec/mldsa/fips202.c
 
 # ---- parsers ---------------------------------------------------------------
 PARSERS := fuzz_cobol_copybook fuzz_ubh_frame fuzz_gguf_loader fuzz_fat32_mount fuzz_vinea \
@@ -89,7 +92,7 @@ INC_fuzz_vinea := -I$(S)/vinea -I$(S)/zcapital -I$(S)/lpres -I$(S)/edp_risk
 SRC_fuzz_vinea := $(addprefix $(S)/vinea/,vna_agree.c vna_cid.c vna_cmd.c vna_common.c \
                   vna_econ.c vna_file.c vna_frame.c vna_id.c vna_kad.c vna_lan.c vna_node.c \
                   vna_schema.c vna_session.c vna_wire.c) \
-                  $(MLDSA) $(MLKEM) $(S)/tls/x25519.c $(S)/tls/aead.c $(S)/tls/hkdf.c \
+                  $(PQ5) $(S)/tls/x25519.c $(S)/tls/aead.c $(S)/tls/hkdf.c \
                   $(S)/robin_debanks/sha256.c $(S)/swarm/swarm_budget.c \
                   $(S)/swarm/swarm_emotion.c $(S)/swarm/swarm_market.c $(S)/swarm/swarm_hk.c \
                   $(S)/ubh/ubh.c $(S)/event_space/event_envelope.c $(S)/zcapital/zcapital.c
@@ -132,7 +135,7 @@ DIR_fuzz_bootlegger := parsers
 INC_fuzz_bootlegger := -I$(K)/include -I$(S)/modbind -I$(S)/mlkem -I$(S)/bootlegger -I$(S)/pqsec \
                        -I$(S)/lpres -I$(S)/surplus -I$(S)/edp_risk -I$(S)/event_space -I$(S)/trispace
 SRC_fuzz_bootlegger := $(S)/bootlegger/bootlegger.c $(S)/robin_debanks/sha256.c $(S)/tls/aead.c \
-                       $(S)/tls/hkdf.c $(MLKEM) $(MLDSA)
+                       $(S)/tls/hkdf.c $(PQ5)
 DEF_fuzz_bootlegger := -DTEST_HOST
 
 DIR_fuzz_ipfs_cid := parsers

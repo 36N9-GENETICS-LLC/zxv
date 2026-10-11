@@ -638,20 +638,22 @@ Gaps: no host test.
 
 ### bootlegger  —  peer handshake and post-quantum key exchange
 Status: WORKING (tested in verify-all)
-What it does: Protocol v2 three-message handshake (HELLO, REPLY, FINISH). Each peer sends a fresh
-nonce and an ephemeral ML-KEM-768 key and signs, with its long-term ML-DSA-65 identity key, the
+What it does: Protocol v3 three-message handshake (HELLO, REPLY, FINISH). Each peer sends a fresh
+nonce and an ephemeral ML-KEM-1024 key and signs, with its long-term ML-DSA-87 identity key, the
 canonical length-prefixed transcript Identity_A || EK_A || Nonce_B || Identity_B || EK_B || Nonce_A
 (with the version and a domain string, SHA-256). Session keys come from both ML-KEM secrets and the
 transcript hash (HKDF); FINISH carries key confirmation. Rejects downgrade, zero or replayed nonces
-(bounded replay cache), unsigned or wrongly signed ephemeral keys, reflection and pin mismatches.
-Messages are sealed with ChaCha20-Poly1305.
+(bounded replay cache), unsigned or wrongly signed ephemeral keys, ephemeral keys that fail the
+FIPS 203 modulus check, reflection and pin mismatches. Messages are sealed with ChaCha20-Poly1305.
+v3 uses the same category-5 primitives as Vinea and the pqsec hybrid; v2 peers are refused.
 Main entry points: bootlegger_identity_init, bootlegger_hs_initiate, bootlegger_hs_respond,
 bootlegger_hs_finish, bootlegger_hs_accept, bootlegger_pin_peer, bootlegger_seal_msg/open_msg.
-Tests: src/bootlegger/test_bootlegger.c, run by verify-all, 59 checks (success, replay, MITM,
-downgrade, tampered transcript).
+Tests: src/bootlegger/test_bootlegger.c, run by verify-all, 64 checks (success, replay, MITM,
+downgrade, tampered transcript, unreduced KEM keys).
 Used by: no includes. In every kernel image.
 Gaps: no transport (send/recv and everything built on them return ENOTIMPL); the caller supplies
-the entropy; ML-DSA-65 needs tens of KiB of stack.
+the entropy; ML-DSA-87 needs tens of KiB of stack. Vinea's session (vna_session) is the live one;
+whether bootlegger is folded into it or archived is A5 in docs/GAP_AUDIT.md.
 
 ### bridge  —  one address resolver across Web2, Web3 and Web4
 Status: WORKING (tested in verify-all)
@@ -2326,7 +2328,7 @@ Gaps: none for floating point (coverage is Q16.16, fixed).
 
 ### vinea — Vinea Kademlia DHT node, sessions, file exchange and economy
 Status: WORKING (tested in verify-all)
-What it does: a pure-state-machine DHT node with signed and verified messages, a ping-before-evict Kademlia table, PQ sessions, CIDs, chunked file transfer, LAN discovery, schema validation, and a resource "economy" ledger (vna_econ).
+What it does: a pure-state-machine DHT node with signed and verified messages (ML-DSA-87 identities, protocol v3), a ping-before-evict Kademlia table, PQ sessions (X25519 + ML-KEM-1024 hybrid), CIDs, chunked file transfer, LAN discovery, schema validation, and a resource "economy" ledger (vna_econ).
 Main entry points: vna_node_init/handle/lookup/publish/announce/poll_event, vna_agree_*, vna_cid_*, vna_session_*, vna_file_*, vna_econ_*.
 Tests: test_vinea in verify-all.
 Used by: host tests and the desktop app (arch/hosted/zxv_net_host.c: one node on UDP, off by default). Not in either kernel.

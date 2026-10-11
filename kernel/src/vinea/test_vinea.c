@@ -2,7 +2,7 @@
 /* SPDX-License-Identifier: Apache-2.0 */
 /* test_vinea.c — host test for the Vinea P2P layer.
  *
- * Simulates a network of in-memory nodes exchanging real ML-DSA-65-signed
+ * Simulates a network of in-memory nodes exchanging real ML-DSA-87-signed
  * messages through a harness queue, then attacks every security claim.
  *
  * BUILD (run from kernel/):
@@ -13,9 +13,8 @@
  *     src/vinea/vna_file.c src/vinea/vna_frame.c src/vinea/vna_id.c \
  *     src/vinea/vna_kad.c src/vinea/vna_lan.c src/vinea/vna_node.c src/vinea/vna_schema.c \
  *     src/vinea/vna_session.c src/vinea/vna_wire.c \
- *     src/pqsec/pq_mldsa65.c src/pqsec/mldsa/[a-z]*.c \
- *     src/mlkem/keccak.c src/mlkem/mlkem768.c src/mlkem/mlkem_kpe.c src/mlkem/mlkem_ntt.c \
- *     src/mlkem/mlkem_sample.c src/mlkem/mlkem_encode.c \
+ *     src/pqsec/pq_mldsa87.c src/pqsec/pq_mlkem1024.c src/pqsec/mldsa/fips202.c \
+ *     src/mlkem/keccak.c \
  *     src/tls/x25519.c src/tls/aead.c src/tls/hkdf.c src/robin_debanks/sha256.c \
  *     src/swarm/swarm_budget.c src/swarm/swarm_emotion.c src/swarm/swarm_market.c \
  *     src/swarm/swarm_hk.c src/ubh/ubh.c src/event_space/event_envelope.c \
@@ -30,9 +29,6 @@
 #include <string.h>
 #include <time.h>
 
-/* Both declarations of ML-DSA-65 in one translation unit: any drift between
- * vna_pq.h and pq_security.h is a compile error here. */
-#include "../pqsec/pq_security.h"
 #include "vna_pq.h"
 
 #include "vna_common.h"
@@ -816,7 +812,7 @@ static void test_wire_attacks(void)
 /* ===================================================================== */
 static vna_hs_t hsI, hsR, hsM;
 static vna_sess_t sI, sR;
-static uint8_t m1[4096], m2[8192], m3[8192];
+static uint8_t m1[4096], m2[16384], m3[16384];
 
 static bool do_handshake(const vna_identity_t *Ini, const vna_identity_t *R, vna_sess_t *si,
                          vna_sess_t *sr)
@@ -834,7 +830,7 @@ static bool do_handshake(const vna_identity_t *Ini, const vna_identity_t *R, vna
 
 static void test_session(void)
 {
-    printf("[3] session: hybrid X25519 + ML-KEM-768 handshake, ML-DSA-65 auth, AEAD records\n");
+    printf("[3] session: hybrid X25519 + ML-KEM-1024 handshake, ML-DSA-87 auth, AEAD records\n");
     const vna_identity_t *Ini = &T[20].id, *R = &T[21].id;
     CHECK(do_handshake(Ini, R, &sI, &sR), "handshake completes");
     CHECK(memcmp(sI.tx_key, sR.rx_key, 32) == 0 && memcmp(sI.rx_key, sR.tx_key, 32) == 0 &&
@@ -952,7 +948,7 @@ static void test_session(void)
     memset(th, 0x5c, 32);
     memcpy(k_real, sI.tx_key, 32);
     {
-        static const char tag[] = "vinea/v2/hybrid";
+        static const char tag[] = "vinea/v3/hybrid";
         uint8_t in[sizeof tag - 1 + 96];
         memcpy(in, tag, sizeof tag - 1);
         memcpy(in + sizeof tag - 1, zero_k, 32);

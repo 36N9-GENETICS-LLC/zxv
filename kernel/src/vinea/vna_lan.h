@@ -24,8 +24,8 @@
  * QUERY    "who offers _zxv._udp?"; carries the NodeIDs the querier already
  *          knows (known-answer suppression, RFC 6762 §7.1): those stay quiet.
  * ANNOUNCE one SIGNED node record (vna_noderec_t, vna_wire.h): NodeID, pk,
- *          PoW nonce, addresses, seq, lifetime, ML-DSA-65 signature
- *          (context "vinea/v2/node-record"). The LAN wrapper itself is
+ *          PoW nonce, addresses, seq, lifetime, ML-DSA-87 signature
+ *          (context "vinea/v3/node-record"). The LAN wrapper itself is
  *          unsigned and carries no authority; everything a receiver acts on
  *          is inside the signed record. A GOODBYE is an announce whose record
  *          has VNA_NR_GOODBYE set (so it is signed too and cannot be forged to

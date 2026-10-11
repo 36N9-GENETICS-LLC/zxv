@@ -18,11 +18,11 @@ cd "$K"
 
 vinea() {
     for f in src/vinea/vna_*.c; do echo "$f"; done
-    echo src/pqsec/pq_mldsa65.c
-    for f in src/pqsec/mldsa/[a-z]*.c; do echo "$f"; done
-    for f in keccak mlkem768 mlkem_kpe mlkem_ntt mlkem_sample mlkem_encode; do
-        echo "src/mlkem/$f.c"
-    done
+    # category 5: ML-DSA-87 identities, ML-KEM-1024 sessions (pqsec)
+    echo src/pqsec/pq_mldsa87.c
+    echo src/pqsec/pq_mlkem1024.c
+    echo src/pqsec/mldsa/fips202.c
+    echo src/mlkem/keccak.c
     echo src/tls/x25519.c
     echo src/tls/aead.c
     echo src/tls/hkdf.c

@@ -50,7 +50,8 @@
 #define VNA_NODE_LOOKUPS 3u
 #define VNA_NODE_EVENTS  8u
 #define VNA_OUTBOX_MAX   64u
-#define VNA_MSG_WIRE_MAX 13700u /* largest framed message */
+#define VNA_MSG_WIRE_MAX                                                                           \
+    (VNA_BODY_MAX + VNA_PK_LEN + VNA_SIG_LEN + 247u) /* largest framed message */
 
 #define VNA_FL_RESPONSE 0x0001u /* HK message flag: this answers rpc */
 

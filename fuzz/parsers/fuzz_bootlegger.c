@@ -1,7 +1,7 @@
 /* Copyright (c) 2024-2026 Michael Laurence Curzi and 36N9 Genetics, LLC
  * SPDX-License-Identifier: Apache-2.0 */
 /* fuzz_bootlegger.c — the Bootlegger P2P handshake and message opener
- * (bootlegger/bootlegger.c): the transcript-bound ML-DSA-65 / ML-KEM-768
+ * (bootlegger/bootlegger.c): the transcript-bound ML-DSA-87 / ML-KEM-1024
  * handshake (HELLO -> REPLY -> FINISH) and the sealed message format.
  *
  * Byte 0 (mod 4) picks:
@@ -42,7 +42,8 @@ static bootlegger_finish_t g_finish;
 
 static void rnd_fill(uint8_t out[BOOTLEGGER_RAND_BYTES], uint8_t tag)
 {
-    for (int i = 0; i < BOOTLEGGER_RAND_BYTES; i++) out[i] = (uint8_t) (tag * 31u + (unsigned) i * 7u + 1u);
+    for (int i = 0; i < BOOTLEGGER_RAND_BYTES; i++)
+        out[i] = (uint8_t) (tag * 31u + (unsigned) i * 7u + 1u);
 }
 
 static void setup(void)

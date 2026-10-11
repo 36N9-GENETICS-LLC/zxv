@@ -159,7 +159,7 @@ typedef struct {
     uint64_t count;
     uint8_t base[32]; /* hash before the oldest entry still in the ring */
     uint8_t tip[32];
-    uint8_t tip_sig[VNA_SIG_LEN]; /* ML-DSA-65 over tip (covers the whole chain) */
+    uint8_t tip_sig[VNA_SIG_LEN]; /* ML-DSA-87 over tip (covers the whole chain) */
     uint64_t debits, credits;     /* double-entry projection totals */
 } vna_ledger_t;
 

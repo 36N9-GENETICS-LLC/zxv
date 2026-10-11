@@ -76,7 +76,7 @@ static void entry_hash(const vna_lentry_t *e, uint8_t out[32])
 static void ledger_init(vna_ledger_t *l)
 {
     vna_zero(l, sizeof *l);
-    vna_htag("vinea/v2/ledger-genesis", 0, 0, l->base);
+    vna_htag("vinea/v3/ledger-genesis", 0, 0, l->base);
     vna_copy(l->tip, l->base, 32);
 }
 
@@ -183,7 +183,7 @@ vna_status_t vna_book_add_peer(vna_book_t *b, const vna_id_t *id, const uint8_t 
         vna_zero(a, sizeof *a);
         a->id = *id;
         vna_copy(a->pk, pk, VNA_PK_LEN);
-        vna_htag("vinea/v2/pair-genesis", 0, 0, a->pair_prev);
+        vna_htag("vinea/v3/pair-genesis", 0, 0, a->pair_prev);
         a->used = true;
     }
     a->member = member;
@@ -574,7 +574,7 @@ vna_status_t vna_book_settle(vna_book_t *b, uint64_t now, vna_drbg_t *rng, vna_r
         b->pool[f] = 0;
         b->burned[VNA_TK_NEUTRAL][f] += x;
         uint8_t ref[32];
-        vna_htag("vinea/v2/expire", (const uint8_t *) &b->cycle, sizeof b->cycle, ref);
+        vna_htag("vinea/v3/expire", (const uint8_t *) &b->cycle, sizeof b->cycle, ref);
         vna_drbg_gen(rng, rnd, 32);
         ledger_triple(b, VNA_TK_NEUTRAL, f, 0x13, 0, x, VNA_ACC_BURN, VNA_ACC_POOL, ref, 1, 0,
                       b->cycle, now, rnd);
@@ -683,7 +683,7 @@ vna_status_t vna_gate_export(vna_gate_t *g, const uint8_t owner_secret[32], swar
     b->pool[form] += got;
     b->minted[VNA_TK_NEUTRAL][form] += got;
     b->burned[VNA_TK_INTERNAL][form] += got;
-    vna_htag("vinea/v2/gate-export", (const uint8_t *) &g->cycle, sizeof g->cycle, ref);
+    vna_htag("vinea/v3/gate-export", (const uint8_t *) &g->cycle, sizeof g->cycle, ref);
     vna_sha3(ref, 32, rnd); /* signature randomness is hedged; derived nonce is fine */
     ledger_triple(b, VNA_TK_NEUTRAL, form, 0x11, 0, got, VNA_ACC_POOL, VNA_ACC_MINT, ref, 1, 0,
                   g->cycle, b->cycle, rnd);
@@ -707,7 +707,7 @@ vna_status_t vna_gate_import(vna_gate_t *g, const uint8_t owner_secret[32], vna_
     g->ops++;
     g->imported += amount;
     b->minted[VNA_TK_INTERNAL][form] += amount;
-    vna_htag("vinea/v2/gate-import", (const uint8_t *) &g->cycle, sizeof g->cycle, ref);
+    vna_htag("vinea/v3/gate-import", (const uint8_t *) &g->cycle, sizeof g->cycle, ref);
     vna_sha3(ref, 32, rnd);
     ledger_triple(b, VNA_TK_INTERNAL, form, 0x12, 0, amount, VNA_ACC_SELF, VNA_ACC_MINT, ref, 1, 0,
                   g->cycle, b->cycle, rnd);

@@ -4,9 +4,9 @@
  *
  * MESSAGE (schema vna_msg_schema, all little-endian, version 1)
  *   magic "VNA2" | version | type | flags | features | src NodeID | dst NodeID |
- *   pow nonce | seq | timestamp_ms | rpc id | body<u16 len> | ML-DSA-65 pk |
- *   ML-DSA-65 signature
- * The signature (context "vinea/v2/msg") covers every byte before it, so
+ *   pow nonce | seq | timestamp_ms | rpc id | body<u16 len> | ML-DSA-87 pk |
+ *   ML-DSA-87 signature
+ * The signature (context "vinea/v3/msg") covers every byte before it, so
  * it binds the type, both NodeIDs (a message for node A cannot be replayed to
  * node B), the sequence, the timestamp, the rpc id and the body.
  *
@@ -20,7 +20,7 @@
  *      would be a replay, so dropping it is exact)
  *   4. timestamp window and replay window (read-only)
  *   5. NodeID binding SHA3-256(pk) == src and PoW (via the verified key cache)
- *   6. ML-DSA-65 signature
+ *   6. ML-DSA-87 signature
  *   7. commit: replay window advanced, message hash remembered
  */
 #ifndef VNA_WIRE_H
@@ -30,14 +30,16 @@
 #include "vna_schema.h"
 #include "vna_frame.h"
 
-#define VNA_MSG_MAGIC     0x32414E56u /* "VNA2" little-endian */
-#define VNA_REC_MAGIC     0x32524E56u /* "VNR2" */
-#define VNA_K             20u         /* bucket size and replication factor */
-#define VNA_PAYLOAD_MAX   2600u
-#define VNA_REC_MAX       8000u
-#define VNA_BODY_MAX      8192u
-#define VNA_HK_MAX        255u
-#define VNA_RCPT_WIRE_MAX 7200u /* a trade receipt (vna_econ.h VNA_RCPT_MAX) */
+#define VNA_MSG_MAGIC   0x32414E56u /* "VNA2" little-endian */
+#define VNA_REC_MAGIC   0x32524E56u /* "VNR2" */
+#define VNA_K           20u         /* bucket size and replication factor */
+#define VNA_PAYLOAD_MAX 2600u
+#define VNA_REC_MAX     (139u + VNA_PAYLOAD_MAX + VNA_PK_LEN + VNA_SIG_LEN)
+#define VNA_BODY_MAX    (VNA_REC_MAX + 192u)
+#define VNA_HK_MAX      255u
+/* a trade receipt (vna_econ.h VNA_RCPT_MAX); it travels in one vna_b_rec_t */
+#define VNA_RCPT_WIRE_MAX (582u + 2u * VNA_SIG_LEN)
+_Static_assert(VNA_RCPT_WIRE_MAX <= VNA_REC_MAX, "a trade receipt must fit a DHT record body");
 
 typedef enum {
     VNA_MSG_PING = 1,
@@ -190,8 +192,8 @@ vna_status_t vna_rec_verify(vna_verifier_t *v, const uint8_t *buf, uint32_t len,
 /* ---- signed node records (identity + where to reach it) ----
  *
  * A node record is the node's vna_id identity (NodeID = SHA3-256(pk), PoW
- * nonce) bound by its own ML-DSA-65 signature (context
- * "vinea/v2/node-record") to the transport addresses it can be reached at,
+ * nonce) bound by its own ML-DSA-87 signature (context
+ * "vinea/v3/node-record") to the transport addresses it can be reached at,
  * a monotonically increasing seq, and a lifetime. It is what a LAN
  * announcement carries and what a host persists as a "cached peer": anyone
  * can check it offline, nobody but the key holder can make or change one.
@@ -205,7 +207,7 @@ vna_status_t vna_rec_verify(vna_verifier_t *v, const uint8_t *buf, uint32_t len,
 #define VNA_NR_ADDRS      4u
 #define VNA_NR_HIGHCAP    0x01u
 #define VNA_NR_GOODBYE    0x02u /* leaving: drop this node (signed, so not spoofable) */
-#define VNA_NODEREC_MAX   5520u
+#define VNA_NODEREC_MAX   (259u + VNA_PK_LEN + VNA_SIG_LEN)
 
 typedef struct {
     uint16_t len;
@@ -243,12 +245,12 @@ vna_status_t vna_noderec_verify(vna_verifier_t *v, const uint8_t *buf, uint32_t 
                                 uint64_t skew_ms, vna_noderec_t *r);
 
 /* ---- store-and-forward (offline outbox) items ----
- * Signed by the origin at enqueue time (context "vinea/v2/spool-item"), so a
+ * Signed by the origin at enqueue time (context "vinea/v3/spool-item"), so a
  * queue persisted by the host is tamper-evident and the receiver sees what
  * the owner authorised and when. Delivered inside a fresh VNA_MSG_SPOOL
  * message (new seq/ts, so the message replay window still holds). */
 #define VNA_SPOOL_MAGIC    0x32534E56u /* "VNS2" */
-#define VNA_SPOOL_ITEM_MAX 3700u
+#define VNA_SPOOL_ITEM_MAX (391u + VNA_SIG_LEN)
 
 typedef struct {
     uint32_t magic;
