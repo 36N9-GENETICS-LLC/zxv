@@ -198,3 +198,48 @@ jobs:
           ini-values: ffi.enable=true
       - run: make -C ../libzxv all fixtures
       - run: php tests/run.php
+
+  rust:
+    name: rust ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-14]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        working-directory: sdk/rust
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - run: make -C ../libzxv all fixtures
+      - run: cargo fmt --check
+      - run: cargo clippy --all-targets -- -D warnings
+      - run: cargo test
+        env:
+          LD_LIBRARY_PATH: ${{ github.workspace }}/sdk/libzxv/build
+          DYLD_LIBRARY_PATH: ${{ github.workspace }}/sdk/libzxv/build
+
+  go:
+    name: go ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-14]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        working-directory: sdk/go/zxv
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: sdk/go/zxv/go.mod
+      - run: make -C ../../libzxv all fixtures
+      - run: go vet ./...
+      - run: go test -race ./...
+        env:
+          LD_LIBRARY_PATH: ${{ github.workspace }}/sdk/libzxv/build
+          DYLD_LIBRARY_PATH: ${{ github.workspace }}/sdk/libzxv/build
