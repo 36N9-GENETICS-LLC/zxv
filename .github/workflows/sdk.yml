@@ -76,3 +76,24 @@ jobs:
       - run: pip install -e '.[test]' mypy
       - run: python -m pytest -q
       - run: python -m mypy
+
+  java:
+    name: java ${{ matrix.os }} jdk${{ matrix.jdk }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-14]
+        jdk: ['22', '25']
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        working-directory: sdk/java
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: ${{ matrix.jdk }}
+          cache: maven
+      - run: make -C ../libzxv all fixtures
+      - run: mvn -B clean verify
