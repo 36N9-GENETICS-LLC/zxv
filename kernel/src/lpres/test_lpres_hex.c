@@ -9,7 +9,7 @@
 #include <stdio.h>
 #include <string.h>
 #include "lpres_hex.h"
-#include "../mlkem/keccak.h"
+#include "../robin_debanks/sha256.h"
 
 static int pass, fail;
 #define CHECK(c, msg)                                                                              \
@@ -283,7 +283,7 @@ static void ref_hash(const lpx_qrec_t *r, uint8_t out[32])
     k += 32;
     memcpy(b + k, r->prev, 32);
     k += 32;
-    sha3_256(b, k, out);
+    sha256(b, k, out);
 }
 
 static void test_qlog(void)
@@ -316,7 +316,7 @@ static void test_qlog(void)
         ref_hash(&st[k], rh);
         kat &= !memcmp(rh, st[k].hash, 32);
     }
-    CHECK(kat, "each record hash is SHA3-256 of exactly the documented bytes");
+    CHECK(kat, "each record hash is SHA-256 of exactly the documented bytes");
     st[1].seq = 0x0102030405060708ull;
     st[1].submitter = 0xA1B2C3D4u;
     lpx_qrec_t probe = st[1];

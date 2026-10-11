@@ -36,11 +36,12 @@
  *      base (lpres_conjoin, lpres_disjoin, lpres_negate: one source), the
  *      worst polarity (forbidden > entropic > neutral > negentropic) and the
  *      least advanced phase. Negation keeps polarity and phase.
- *   X6 QUARANTINE. lpx_qlog is an append-only, hash-chained (SHA3-256) log
+ *   X6 QUARANTINE. lpx_qlog is an append-only, hash-chained (SHA-256) log
  *      of forbidden work: the tag, who submitted it, the subject digest and
  *      a reason code. It is read for audit and never replayed. A full log
  *      refuses the append, and the caller must then halt (fail closed).
- *      Signing the log head is the caller's job.
+ *      Signing the log head is the caller's job. The hash is SHA-256, an
+ *      L0 pure function, so lpres (L1) stays below the crypto layer.
  *
  * HONEST LIMITS. A tag reports what a real check found; it is not the check.
  * FORBIDDEN on a memory access means a bounds check or a sanitizer caught

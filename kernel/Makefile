@@ -316,6 +316,7 @@ verify-all: test
 	@echo "=== hosted app: API guard, budget gate, Vinea UDP host, end-to-end API, model slot, peers, updates, notifications ==="; \
 	$(MAKE) --no-print-directory test-settle
 	$(MAKE) --no-print-directory test-lpres-hex
+	$(MAKE) --no-print-directory test-sdk-bridge
 	$(MAKE) --no-print-directory test-engine
 	sh arch/hosted/test_hosted.sh > /tmp/test_hosted_app.log 2>&1 && echo "[PASS] test_hosted" || { tail -40 /tmp/test_hosted_app.log; echo "[FAIL] test_hosted"; exit 1; }
 	@echo "=== i18n: CLDR locales, catalogs, formatting, UTF-8, Enochian core ==="; \
@@ -1391,7 +1392,12 @@ test-settle:
 # The 64-state hexagram tag on lpres (src/lpres/lpres_hex.h).
 .PHONY: test-lpres-hex
 test-lpres-hex:
-	gcc -std=c11 -O1 -g -Wall -Werror -Wextra -fsanitize=address,undefined -fno-sanitize-recover=all -DTEST_HOST -Iinclude -Isrc/lpres -Isrc/event_space -Isrc/modbind -Isrc/surplus src/lpres/test_lpres_hex.c src/lpres/lpres_hex.c src/lpres/lpres.c src/mlkem/keccak.c -o $(ZXV_TMP)/test_lpres_hex && $(ZXV_TMP)/test_lpres_hex > $(ZXV_TMP)/test_lpres_hex.log 2>&1 && echo "[PASS] test_lpres_hex ($$(tail -1 $(ZXV_TMP)/test_lpres_hex.log))" || { cat $(ZXV_TMP)/test_lpres_hex.log; echo "[FAIL] test_lpres_hex"; exit 1; }
+	gcc -std=c11 -O1 -g -Wall -Werror -Wextra -fsanitize=address,undefined -fno-sanitize-recover=all -DTEST_HOST -Iinclude -Isrc/lpres -Isrc/event_space -Isrc/modbind -Isrc/surplus src/lpres/test_lpres_hex.c src/lpres/lpres_hex.c src/lpres/lpres.c src/robin_debanks/sha256.c -o $(ZXV_TMP)/test_lpres_hex && $(ZXV_TMP)/test_lpres_hex > $(ZXV_TMP)/test_lpres_hex.log 2>&1 && echo "[PASS] test_lpres_hex ($$(tail -1 $(ZXV_TMP)/test_lpres_hex.log))" || { cat $(ZXV_TMP)/test_lpres_hex.log; echo "[FAIL] test_lpres_hex"; exit 1; }
+
+# The SDK capability bridge (src/sdk_bridge/sdk_bridge.h): one id per capability.
+.PHONY: test-sdk-bridge
+test-sdk-bridge:
+	gcc -std=c11 -O1 -g -Wall -Werror -Wextra -fsanitize=address,undefined -fno-sanitize-recover=all -DTEST_HOST -Iinclude -Isrc -Isrc/sdk_bridge -Isrc/sdk -Isrc/zcapital -Isrc/lpres -Isrc/surplus -Isrc/event_space -Isrc/modbind -Isrc/edp_risk -Isrc/rational -Isrc/orbital_compat -Isrc/crypto_wallet -Isrc/financial_fabric -Isrc/bridge -Isrc/constellation -Isrc/count_house -Isrc/finance -Isrc/pay -Isrc/finance_markets -Isrc/hardware -Isrc/identity -Isrc/interspace -Isrc/ipfs -Isrc/mesh_net -Isrc/mesh_token -Isrc/net -Isrc/onepolicy -Isrc/orbital_elevator -Isrc/orbital_fabric -Isrc/porter_house -Isrc/predictive -Isrc/update -Isrc/vena -Isrc/vino -Isrc/yantra src/sdk_bridge/test_sdk_bridge.c src/sdk_bridge/sdk_bridge.c src/lpres/lpres.c -o $(ZXV_TMP)/test_sdk_bridge && $(ZXV_TMP)/test_sdk_bridge > $(ZXV_TMP)/test_sdk_bridge.log 2>&1 && echo "[PASS] test_sdk_bridge ($$(tail -1 $(ZXV_TMP)/test_sdk_bridge.log))" || { cat $(ZXV_TMP)/test_sdk_bridge.log; echo "[FAIL] test_sdk_bridge"; exit 1; }
 
 # The libzxv facade (src/engine/zxv_engine.h): compress, route, decompress.
 .PHONY: test-vinea

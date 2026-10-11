@@ -2,7 +2,7 @@
 /* SPDX-License-Identifier: Apache-2.0 */
 /* lpres_hex.c — the 64-state hexagram tag. See lpres_hex.h (X1-X6). */
 #include "lpres_hex.h"
-#include "../mlkem/keccak.h"
+#include "../robin_debanks/sha256.h"
 
 #define A_P LPX_ACT_PROCEED
 #define A_W LPX_ACT_WAIT
@@ -159,7 +159,7 @@ void lpx_qlog_init(lpx_qlog_t *q, lpx_qrec_t *storage, uint32_t cap)
     for (uint32_t i = 0; i < LPX_QLOG_HASH; i++) q->head[i] = 0;
 }
 
-/* SHA3-256 over "zxv/lpx-qlog/v1" || seq || tag || reason || submitter ||
+/* SHA-256 over "zxv/lpx-qlog/v1" || seq || tag || reason || submitter ||
  * subject || prev */
 static void rec_hash(const lpx_qrec_t *r, uint8_t out[LPX_QLOG_HASH])
 {
@@ -173,7 +173,7 @@ static void rec_hash(const lpx_qrec_t *r, uint8_t out[LPX_QLOG_HASH])
     for (uint32_t i = 0; i < 4; i++) b[k++] = (uint8_t) (r->submitter >> (8 * i));
     for (uint32_t i = 0; i < 32; i++) b[k++] = r->subject[i];
     for (uint32_t i = 0; i < LPX_QLOG_HASH; i++) b[k++] = r->prev[i];
-    sha3_256(b, k, out);
+    sha256(b, k, out);
 }
 
 bool lpx_qlog_append(lpx_qlog_t *q, lpx_t tag, uint8_t reason, uint32_t submitter,
