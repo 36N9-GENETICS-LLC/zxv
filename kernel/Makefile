@@ -317,6 +317,7 @@ verify-all: test
 	$(MAKE) --no-print-directory test-settle
 	$(MAKE) --no-print-directory test-lpres-hex
 	$(MAKE) --no-print-directory test-sdk-bridge
+	$(MAKE) --no-print-directory test-vhub
 	$(MAKE) --no-print-directory test-engine
 	sh arch/hosted/test_hosted.sh > /tmp/test_hosted_app.log 2>&1 && echo "[PASS] test_hosted" || { tail -40 /tmp/test_hosted_app.log; echo "[FAIL] test_hosted"; exit 1; }
 	@echo "=== i18n: CLDR locales, catalogs, formatting, UTF-8, Enochian core ==="; \
@@ -1403,6 +1404,12 @@ test-sdk-bridge:
 .PHONY: test-market
 test-market:
 	gcc -std=c11 -O2 -Wall -Werror -Wextra -fsanitize=address,undefined -DTEST_HOST -Iinclude -Isrc/modbind -Isrc/market -Isrc/pay -Isrc/swarm -Isrc/tensor -Isrc/mlkem -Isrc/concord -Isrc/chiglet -Isrc/surplus -Isrc/pqsec -Isrc/lpres -Isrc/edp_risk -Isrc/event_space -Isrc/trispace src/market/test_market.c src/market/market.c src/market/mk_order.c src/market/mk_extra.c src/market/mk_concord.c src/market/mk_pq.c src/market/mk_pay.c src/pay/pay_ledger.c src/pay/pay_util.c src/pay/pay_assure.c src/robin_debanks/sha256.c src/swarm/swarm_market.c src/swarm/swarm_budget.c src/swarm/swarm_emotion.c src/tensor/zt.c src/mlkem/keccak.c src/concord/concord.c src/chiglet/chiglet.c src/surplus/surplus.c src/pqsec/pq_mldsa65.c $(sort $(wildcard src/pqsec/mldsa/*.c)) -o $(ZXV_TMP)/test_market -lm && $(ZXV_TMP)/test_market > $(ZXV_TMP)/test_market.log 2>&1 && echo "[PASS] test_market" || { tail -40 $(ZXV_TMP)/test_market.log; echo "[FAIL] test_market"; exit 1; }
+
+# V-Bill hub demo (src/vhub): signed exact-rational pegs, fiat A -> V-Bill -> fiat B
+# as one balanced pay_ledger posting, sovereign rule plug-ins that fail closed.
+.PHONY: test-vhub
+test-vhub:
+	gcc -std=c11 -O1 -g -Wall -Werror -Wextra -fsanitize=address,undefined -fno-sanitize-recover=all -DTEST_HOST -Iinclude -Isrc/pay -Isrc/mlkem -Isrc/lpres -Isrc/event_space -Isrc/modbind -Isrc/surplus -Isrc/tensor -Isrc/swarm -Isrc/zcapital src/vhub/test_vhub.c src/vhub/vhub.c src/pay/pay_ledger.c src/pay/pay_util.c src/pay/pay_assure.c src/lpres/lpres_hex.c src/lpres/lpres.c src/robin_debanks/sha256.c src/mlkem/keccak.c src/tensor/zt.c src/swarm/swarm_market.c src/swarm/swarm_budget.c src/swarm/swarm_emotion.c -o $(ZXV_TMP)/test_vhub -lm && $(ZXV_TMP)/test_vhub > $(ZXV_TMP)/test_vhub.log 2>&1 && echo "[PASS] test_vhub" || { tail -40 $(ZXV_TMP)/test_vhub.log; echo "[FAIL] test_vhub"; exit 1; }
 
 # The libzxv facade (src/engine/zxv_engine.h): compress, route, decompress.
 .PHONY: test-vinea
