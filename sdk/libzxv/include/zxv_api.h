@@ -1073,7 +1073,7 @@ ZXV_API int32_t zxv_evm_ledger_state(const zxv_cap *cap, const uint8_t channel_i
 /* the functions it declared as dependencies.                            */
 /* ===================================================================== */
 
-#define ZXV_FEAT_HW (0x08000000u) /* emulation matrix, ZHP-1, reconfig images */
+#define ZXV_FEAT_HW (0x10000000u) /* emulation matrix, ZHP-1, reconfig images */
 
 #define ZXV_CAP_HW_MATRIX (UINT64_C(1) << 10) /* build and call the emulation matrix */
 #define ZXV_CAP_HW_RECONF (UINT64_C(1) << 11) /* load hardware images, trust keys    */
