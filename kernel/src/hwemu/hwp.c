@@ -2,6 +2,7 @@
 /* SPDX-License-Identifier: Apache-2.0 */
 /* hwp.c — ZHP-1 hardware profiles. See hwp.h (P1-P3). */
 #include "hwp.h"
+#include "hwe_ids.h"
 #include "../robin_debanks/sha256.h"
 
 #define HWP_MAGIC0 'Z'
@@ -9,7 +10,7 @@
 #define HWP_MAGIC2 'P'
 #define HWP_MAGIC3 '1'
 #define HWP_FORMAT 1u
-#define HWP_KNOWN_MAX_ID 18u /* highest public cap id this reader knows */
+#define HWP_KNOWN_MAX_ID 24u /* highest public cap id this reader knows */
 
 void hwp_init(hwp_profile_t *p)
 {
@@ -42,6 +43,7 @@ int hwp_node_add(hwp_profile_t *p, uint16_t id, uint16_t parent, uint32_t cls, u
     n->cls = cls;
     n->ncap = 0;
     n->state_len = 0;
+    n->ext_len = 0;
     if (out_index) *out_index = p->n;
     p->n++;
     return HWP_OK;
@@ -88,6 +90,15 @@ int hwp_state_set(hwp_profile_t *p, uint16_t node_index, const uint8_t *state, u
     return HWP_OK;
 }
 
+int hwp_ext_set(hwp_profile_t *p, uint16_t node_index, const uint8_t *ext, uint16_t len)
+{
+    if (!p || node_index >= p->n || len > HWP_MAX_EXT || (len && !ext)) return HWP_E_ARG;
+    hwp_node_t *n = &p->node[node_index];
+    for (uint16_t i = 0; i < len; i++) n->ext[i] = ext[i];
+    n->ext_len = len;
+    return HWP_OK;
+}
+
 /* ---- encoding ---- */
 
 static void put16(uint8_t *b, uint16_t v)
@@ -118,7 +129,7 @@ static uint64_t get64(const uint8_t *b)
     return v;
 }
 
-#define NODE_HDR 12u
+#define NODE_HDR 16u
 #define CAP_LEN  10u
 
 uint32_t hwp_encoded_len(const hwp_profile_t *p)
@@ -126,7 +137,7 @@ uint32_t hwp_encoded_len(const hwp_profile_t *p)
     if (!p) return 0;
     uint32_t len = HWP_HEADER;
     for (uint16_t i = 0; i < p->n; i++)
-        len += NODE_HDR + CAP_LEN * p->node[i].ncap + p->node[i].state_len;
+        len += NODE_HDR + CAP_LEN * p->node[i].ncap + p->node[i].state_len + p->node[i].ext_len;
     return len;
 }
 
@@ -150,6 +161,8 @@ static void node_hdr(const hwp_node_t *n, uint8_t b[NODE_HDR])
     put32(b + 4, n->cls);
     put16(b + 8, n->ncap);
     put16(b + 10, n->state_len);
+    put16(b + 12, n->ext_len);
+    put16(b + 14, 0);
 }
 
 int hwp_encode(const hwp_profile_t *p, uint8_t *out, uint32_t cap, uint32_t *out_len)
@@ -170,6 +183,7 @@ int hwp_encode(const hwp_profile_t *p, uint8_t *out, uint32_t cap, uint32_t *out
             o += CAP_LEN;
         }
         for (uint16_t k = 0; k < n->state_len; k++) out[o++] = n->state[k];
+        for (uint16_t k = 0; k < n->ext_len; k++) out[o++] = n->ext[k];
     }
     return HWP_OK;
 }
@@ -190,13 +204,15 @@ int hwp_decode(const uint8_t *buf, uint32_t len, hwp_profile_t *p)
         uint16_t id = get16(buf + o), parent = get16(buf + o + 2);
         uint32_t cls = get32(buf + o + 4);
         uint16_t ncap = get16(buf + o + 8), slen = get16(buf + o + 10);
+        uint16_t elen = get16(buf + o + 12);
+        if (get16(buf + o + 14) != 0) return HWP_E_CANONICAL; /* P3 */
         o += NODE_HDR;
         uint16_t idx;
         int rc = hwp_node_add(p, id, parent, cls, &idx);
         if (rc == HWP_E_ARG) return HWP_E_CANONICAL;
         if (rc != HWP_OK) return rc;
-        if (ncap > HWP_MAX_CAPS || slen > HWP_MAX_STATE) return HWP_E_FULL;
-        if ((len - o) < (uint32_t) ncap * CAP_LEN + slen) return HWP_E_FORMAT;
+        if (ncap > HWP_MAX_CAPS || slen > HWP_MAX_STATE || elen > HWP_MAX_EXT) return HWP_E_FULL;
+        if ((len - o) < (uint32_t) ncap * CAP_LEN + slen + elen) return HWP_E_FORMAT;
         hwp_node_t *n = &p->node[idx];
         for (uint16_t k = 0; k < ncap; k++) {
             uint16_t key = get16(buf + o);
@@ -211,6 +227,8 @@ int hwp_decode(const uint8_t *buf, uint32_t len, hwp_profile_t *p)
         n->ncap = ncap;
         for (uint16_t k = 0; k < slen; k++) n->state[k] = buf[o++];
         n->state_len = slen;
+        for (uint16_t k = 0; k < elen; k++) n->ext[k] = buf[o++];
+        n->ext_len = elen;
     }
     return o == len ? HWP_OK : HWP_E_CANONICAL; /* P3 */
 }
@@ -234,6 +252,7 @@ void hwp_digest(const hwp_profile_t *p, uint8_t out[32])
             sha256_update(&c, cb, CAP_LEN);
         }
         sha256_update(&c, n->state, n->state_len);
+        sha256_update(&c, n->ext, n->ext_len);
     }
     sha256_final(&c, out);
 }
@@ -293,7 +312,7 @@ int hwp_match(const hwp_profile_t *host, const hwp_profile_t *target, hwp_match_
         pr->need_id = need->id;
         pr->have_id = HWP_NONE;
         pr->unmet_key = 0;
-        if (need->cls == HWP_CLASS_MACHINE) {
+        if (need->cls == HWP_CLASS_MACHINE || need->cls == HWP_CLASS_PACKAGE) {
             pr->kind = HWP_M_GROUP;
             continue;
         }
@@ -342,40 +361,80 @@ const hwp_profile_t *hwp_reference_r1(void)
     if (r1_built) return &r1;
     hwp_init(&r1);
     r1_node(1, HWP_ROOT, HWP_CLASS_MACHINE);
-    r1_node(2, 1, HWP_CLASS_CPU_CLUSTER);
+    r1_node(2, 1, HWP_CLASS_PACKAGE);
+    r1_node(3, 2, HWP_CLASS_CPU_CLUSTER);
     r1_cap(HWP_CAP_WORD_BITS, 64);
     r1_cap(HWP_CAP_COUNT, 1);
-    r1_node(3, 1, HWP_CLASS_MEMORY);
+    r1_node(4, 2, HWP_CLASS_MEMORY);
     r1_cap(HWP_CAP_BYTES, 64ull << 20);
-    r1_node(4, 1, HWP_CLASS_VECTOR_UNIT);
+    r1_node(5, 2, HWP_CLASS_VECTOR_UNIT);
     r1_cap(HWP_CAP_INT_WIDTHS, HWP_INT_8 | HWP_INT_16 | HWP_INT_32);
-    r1_node(5, 1, HWP_CLASS_MATRIX_UNIT);
+    r1_node(6, 2, HWP_CLASS_MATRIX_UNIT);
     r1_cap(HWP_CAP_INT_WIDTHS, HWP_INT_8 | HWP_INT_32);
     r1_cap(HWP_CAP_MACS_PER_CYCLE, 64);
-    r1_node(6, 1, HWP_CLASS_TERNARY_UNIT);
+    r1_cap(HWP_CAP_CONTRACT_ID, HWE_FN_TENSOR);
+    r1_cap(HWP_CAP_CONTRACT_VER, HWE_CONTRACT_V1);
+    r1_node(7, 2, HWP_CLASS_LOGIC_UNIT);
+    r1_cap(HWP_CAP_CONTRACT_ID, HWE_FN_LOGIC64);
+    r1_cap(HWP_CAP_CONTRACT_VER, HWE_CONTRACT_V1);
+    r1_node(8, 2, HWP_CLASS_TERNARY_UNIT);
     r1_cap(HWP_CAP_RADIX, 3);
-    r1_node(7, 1, HWP_CLASS_HASH_UNIT);
-    r1_cap(HWP_CAP_HASH_ALGS, HWP_HASH_SHA256 | HWP_HASH_SHA3);
-    r1_node(8, 1, HWP_CLASS_CRYPTO_UNIT);
-    r1_cap(HWP_CAP_PQ_ALGS, HWP_PQ_MLKEM | HWP_PQ_MLDSA);
-    r1_node(9, 1, HWP_CLASS_RECONF_FABRIC);
+    r1_node(9, 2, HWP_CLASS_HASH_UNIT);
+    r1_cap(HWP_CAP_HASH_ALGS, HWP_HASH_SHA256);
+    r1_cap(HWP_CAP_CONTRACT_ID, HWE_FN_SHA256);
+    r1_cap(HWP_CAP_CONTRACT_VER, HWE_CONTRACT_V1);
+    r1_node(10, 2, HWP_CLASS_HASH_UNIT);
+    r1_cap(HWP_CAP_HASH_ALGS, HWP_HASH_SHA3);
+    r1_cap(HWP_CAP_CONTRACT_ID, HWE_FN_KECCAK);
+    r1_cap(HWP_CAP_CONTRACT_VER, HWE_CONTRACT_V1);
+    r1_node(11, 2, HWP_CLASS_GCD_UNIT);
+    r1_cap(HWP_CAP_CONTRACT_ID, HWE_FN_GCD);
+    r1_cap(HWP_CAP_CONTRACT_VER, HWE_CONTRACT_V1);
+    r1_node(12, 2, HWP_CLASS_CRYPTO_UNIT);
+    r1_cap(HWP_CAP_PQ_ALGS, HWP_PQ_MLKEM | HWP_PQ_MLDSA | HWP_PQ_SLHDSA);
+    r1_cap(HWP_CAP_CONTRACT_ID, HWE_FN_MAC);
+    r1_cap(HWP_CAP_CONTRACT_VER, HWE_CONTRACT_V1);
+    r1_node(13, 2, HWP_CLASS_RECONF_FABRIC);
     r1_cap(HWP_CAP_REGIONS, 1);
-    r1_node(10, 1, HWP_CLASS_CLOCK);
+    r1_node(14, 2, HWP_CLASS_CLOCK);
     r1_cap(HWP_CAP_TICK_NS, 0);
-    r1_node(11, 1, HWP_CLASS_SECURE_ELEMENT);
-    r1_node(12, 1, HWP_CLASS_WIRE);
+    r1_node(15, 2, HWP_CLASS_SECURE_ISLAND);
+    r1_node(16, 2, HWP_CLASS_WIRE);
     r1_cap(HWP_CAP_WIRE_BITS, 168);
     r1_built = true;
     return &r1;
 }
 
+int hwp_present(const hwp_profile_t *host, const hwp_profile_t *target, hwp_profile_t *out)
+{
+    if (!host || !target || !out || out == target || out == host) return HWP_E_ARG;
+    static hwp_match_t mt; /* large; the kernel is single-threaded here */
+    int rc = hwp_match(host, target, &mt);
+    if (rc != HWP_OK) return rc;
+    *out = *target;
+    for (uint16_t i = 0; i < mt.n; i++) {
+        uint16_t idx;
+        if (hwp_node_find(out, mt.pair[i].need_id, &idx) != HWP_OK) return HWP_E_NOT_FOUND;
+        if (mt.pair[i].kind == HWP_M_GROUP) continue;
+        rc = hwp_cap_set(out, idx, HWP_CAP_KIND,
+                         mt.pair[i].kind == HWP_M_NATIVE ? HWP_KIND_HARD : HWP_KIND_SOFT);
+        if (rc != HWP_OK) return rc;
+    }
+    return HWP_OK;
+}
+
 const char *hwp_class_name(uint32_t cls)
 {
     static const char *const names[] = {
-        "invalid", "machine", "cpu-cluster", "cpu-core", "cache", "memory", "interconnect",
-        "matrix-unit", "vector-unit", "ternary-unit", "hash-unit", "crypto-unit", "codec-unit",
-        "reconf-fabric", "storage", "network", "radio", "sensor", "actuator", "clock", "power",
-        "secure-element", "display", "audio", "wire", "gpu"};
+        "invalid",        "device",        "cluster",         "core",
+        "mem.cache",      "mem",           "interconnect",    "engine.tensor.int",
+        "engine.vector",  "engine.ternary", "engine.hash",    "engine.crypto",
+        "engine.codec",   "fabric.reconfig", "io.storage",    "io.network",
+        "radio",          "sensor",        "actuator",        "clock",
+        "power",          "secure.element", "io.display",     "io.audio",
+        "io.wire",        "engine.gpu",    "package",         "lane",
+        "engine.logic64", "engine.ntt",    "engine.frame.ubh168", "engine.gcd",
+        "mem.channel",    "secure.island", "io"};
     if (cls >= HWP_CLASS_PRIVATE) return "private";
     if (cls > HWP_CLASS_PUBLIC_MAX) return "unknown";
     return names[cls];

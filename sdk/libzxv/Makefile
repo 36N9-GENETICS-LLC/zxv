@@ -67,7 +67,8 @@ KSRC := $(K)/src/iso20022/iso20022.c $(K)/src/finance/triple_ledger.c \
         $(K)/src/phase_coord/phase_coord.c $(K)/src/harmonic/zt_harmonic_wire.c \
         $(K)/src/swarm/swarm_budget.c $(K)/src/swarm/swarm_emotion.c \
         $(K)/src/mlkem/keccak.c $(K)/src/lpres/lpres_hex.c $(K)/src/robin_debanks/sha256.c \
-        $(K)/src/hwemu/hwm.c $(K)/src/hwemu/hwp.c $(K)/src/hwemu/hwr.c
+        $(K)/src/hwemu/hwm.c $(K)/src/hwemu/hwp.c $(K)/src/hwemu/hwr.c \
+        $(K)/src/hwemu/hwa.c $(K)/src/hwemu/hwe.c
 SRC  := src/zxv_api.c src/zxv_core.c src/zxv_econ.c src/zxv_crypto.c src/zxv_tensor.c \
         src/zxv_evm.c src/zxv_hex.c src/zxv_hw.c
 DEFS :=
@@ -75,7 +76,8 @@ DEFS :=
 ifeq ($(ZXV_NO_PQC),)
   INC  += -I$(K)/src/pqsec -I$(K)/third_party/ed25519/src
   KSRC += $(K)/src/pqsec/pq_mlkem1024.c $(K)/src/pqsec/pq_mldsa87.c $(K)/src/pqsec/mldsa/fips202.c \
-          $(K)/src/hwemu/hwr_mldsa.c \
+          $(K)/src/hwemu/hwr_pq.c $(K)/src/pqsec/pq_slh256s.c \
+          $(sort $(wildcard $(K)/src/pqsec/slhdsa/*.c)) \
           $(wildcard $(K)/third_party/ed25519/src/*.c)
 else
   DEFS += -DZXV_NO_PQC
@@ -87,6 +89,7 @@ ifeq ($(ZXV_NO_TENSOR),)
           zt_simd.c zt_simd_x86.c zt_simd_neon.c)
 else
   DEFS += -DZXV_NO_TENSOR
+  KFLAGS += -DHWE_NO_TENSOR
 endif
 
 ifeq ($(ZXV_NO_CBANK),)

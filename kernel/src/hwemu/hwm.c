@@ -1,6 +1,6 @@
 /* Copyright (c) 2024-2026 Michael Laurence Curzi and 36N9 Genetics, LLC */
 /* SPDX-License-Identifier: Apache-2.0 */
-/* hwm.c — the hardware emulation matrix. See hwm.h (M1-M6). */
+/* hwm.c — the hardware emulation matrix. See hwm.h (M1-M9). */
 #include "hwm.h"
 
 /* Largest conformance output compared on the stack (M2). */
@@ -48,6 +48,10 @@ int hwm_func_add(hwm_t *m, uint32_t id, const char *name, uint32_t *out_index)
     f->memo = 0;
     f->memo_cap = 0;
     f->memo_hits = f->memo_misses = 0;
+    f->contract = 0;
+    f->flags = 0;
+    f->max_latency_ns = 0;
+    f->power_budget_mw = 0;
     if (out_index) *out_index = m->nfn;
     m->nfn++;
     return HWM_OK;
@@ -70,6 +74,48 @@ int hwm_vector_add(hwm_t *m, uint32_t fn_index, uint32_t op, const uint8_t *in, 
     /* The contract changed: earlier proofs no longer cover it. */
     for (uint32_t i = 0; i < m->npv; i++)
         if (m->pv[i].fn == fn_index) m->pv[i].attest = LPRES_STATE_NEITHER;
+    f->bound = HWM_NONE;
+    hwm_memo_flush(m, fn_index);
+    return HWM_OK;
+}
+
+int hwm_contract_begin(hwm_t *m, uint32_t fn_index, uint32_t version)
+{
+    if (!m || fn_index >= m->nfn || m->depth != 0) return HWM_E_ARG;
+    hwm_func_t *f = &m->fn[fn_index];
+    if (version <= f->contract) return HWM_E_ARG; /* M9: forward only */
+    f->contract = version;
+    f->nvec = 0;
+    for (uint32_t i = 0; i < m->npv; i++)
+        if (m->pv[i].fn == fn_index) m->pv[i].attest = LPRES_STATE_NEITHER;
+    f->bound = HWM_NONE;
+    hwm_memo_flush(m, fn_index);
+    return HWM_OK;
+}
+
+static void memo_wipe(hwm_func_t *f)
+{
+    if (!f->memo) return;
+    volatile uint8_t *b = (volatile uint8_t *) f->memo;
+    uint32_t n = f->memo_cap * (uint32_t) sizeof *f->memo;
+    for (uint32_t i = 0; i < n; i++) b[i] = 0;
+}
+
+int hwm_policy_set(hwm_t *m, uint32_t fn_index, uint32_t flags, uint32_t max_latency_ns,
+                   uint32_t power_budget_mw)
+{
+    if (!m || fn_index >= m->nfn || (flags & ~HWM_F_MASK) || m->depth != 0) return HWM_E_ARG;
+    hwm_func_t *f = &m->fn[fn_index];
+    if ((f->flags & HWM_F_KEY_BEARING) && !(flags & HWM_F_KEY_BEARING)) return HWM_E_POLICY;
+    if ((flags & HWM_F_KEY_BEARING) && f->memo) {
+        /* M8: a key-bearing function keeps no stored inputs or outputs. */
+        memo_wipe(f);
+        f->memo = 0;
+        f->memo_cap = 0;
+    }
+    f->flags = flags;
+    f->max_latency_ns = max_latency_ns;
+    f->power_budget_mw = power_budget_mw;
     f->bound = HWM_NONE;
     hwm_memo_flush(m, fn_index);
     return HWM_OK;
@@ -123,6 +169,11 @@ int hwm_provider_add(hwm_t *m, uint32_t fn_index, uint32_t res_index, hwm_kind_t
     p->attest = LPRES_STATE_NEITHER;
     p->enabled = true;
     p->calls = 0;
+    p->cost_spent = 0;
+    p->latency_ns = 0;
+    p->power_mw = 0;
+    p->throughput_class = 0;
+    p->proven_contract = 0;
     if (out_index) *out_index = m->npv;
     m->npv++;
     return HWM_OK;
@@ -138,6 +189,26 @@ int hwm_provider_dep(hwm_t *m, uint32_t pv_index, uint32_t dep_fn_index)
     if (p->ndeps >= HWM_MAX_DEPS) return HWM_E_FULL;
     p->deps[p->ndeps++] = dep_fn_index;
     return HWM_OK;
+}
+
+int hwm_provider_traits(hwm_t *m, uint32_t pv_index, uint32_t latency_ns, uint32_t power_mw,
+                        uint32_t throughput_class)
+{
+    if (!m || pv_index >= m->npv || throughput_class > 15u) return HWM_E_ARG;
+    hwm_provider_t *p = &m->pv[pv_index];
+    p->latency_ns = latency_ns;
+    p->power_mw = power_mw;
+    p->throughput_class = (uint8_t) throughput_class;
+    m->fn[p->fn].bound = HWM_NONE; /* placement may change (M8) */
+    return HWM_OK;
+}
+
+uint32_t hwm_power_class(uint32_t mw)
+{
+    if (mw == 0) return 0;
+    uint32_t c = 1;
+    for (uint32_t lim = 10; c < 6 && mw > lim; lim *= 10) c++;
+    return c;
 }
 
 int hwm_provider_enable(hwm_t *m, uint32_t pv_index, bool on)
@@ -167,18 +238,40 @@ int hwm_provider_set_attest(hwm_t *m, uint32_t pv_index, lpres_state_t st)
 /* ---- selection (M3, M4, M5) ---- */
 
 static uint32_t select_inner(const hwm_t *m, uint32_t fn, uint32_t mask, uint32_t depth,
-                             uint32_t exclude);
+                             uint32_t exclude, bool local);
 
-static bool can_serve(const hwm_t *m, uint32_t pv, uint32_t mask, uint32_t depth)
+static bool fn_local(const hwm_func_t *f)
+{
+    return (f->flags & (HWM_F_KEY_BEARING | HWM_F_LOCAL_ONLY)) != 0;
+}
+
+/* M8: may this provider serve its function under the function's policy?
+ * `local` carries locality down from a key-bearing or local-only caller.
+ * A declared ceiling is met only by a declared value (unknown never acts). */
+static bool policy_ok(const hwm_t *m, uint32_t pv, bool local)
+{
+    const hwm_provider_t *p = &m->pv[pv];
+    const hwm_func_t *f = &m->fn[p->fn];
+    if (p->kind == HWM_KIND_REMOTE && (local || fn_local(f))) return false;
+    if (f->max_latency_ns && (p->latency_ns == 0 || p->latency_ns > f->max_latency_ns))
+        return false;
+    if (f->power_budget_mw && (p->power_mw == 0 || p->power_mw > f->power_budget_mw)) return false;
+    return true;
+}
+
+static bool can_serve(const hwm_t *m, uint32_t pv, uint32_t mask, uint32_t depth, bool local)
 {
     const hwm_provider_t *p = &m->pv[pv];
     if (!p->enabled || p->attest != LPRES_STATE_TRUE || !p->call) return false;
     if (m->res[p->resource].state != HWM_RES_OK) return false;
+    if (!policy_ok(m, pv, local)) return false;
+    local = local || fn_local(&m->fn[p->fn]);
     for (uint32_t i = 0; i < p->ndeps; i++) {
         uint32_t d = p->deps[i];
         if (mask & (1u << d)) return false; /* would revisit a function on the path */
         if (depth + 1u > HWM_MAX_DEPTH) return false;
-        if (select_inner(m, d, mask | (1u << d), depth + 1u, HWM_NONE) == HWM_NONE) return false;
+        if (select_inner(m, d, mask | (1u << d), depth + 1u, HWM_NONE, local) == HWM_NONE)
+            return false;
     }
     return true;
 }
@@ -192,12 +285,12 @@ static bool better(const hwm_t *m, uint32_t a, uint32_t b)
 }
 
 static uint32_t select_inner(const hwm_t *m, uint32_t fn, uint32_t mask, uint32_t depth,
-                             uint32_t exclude)
+                             uint32_t exclude, bool local)
 {
     uint32_t best = HWM_NONE;
     for (uint32_t i = 0; i < m->npv; i++) {
         if (i == exclude || m->pv[i].fn != fn) continue;
-        if (!can_serve(m, i, mask, depth)) continue;
+        if (!can_serve(m, i, mask, depth, local)) continue;
         if (best == HWM_NONE || better(m, i, best)) best = i;
     }
     return best;
@@ -211,10 +304,18 @@ static uint32_t stack_mask(const hwm_t *m)
     return mask;
 }
 
+/* M8: is any function on the active call path key-bearing or local-only? */
+static bool stack_local(const hwm_t *m)
+{
+    for (uint32_t i = 0; i < m->depth; i++)
+        if (fn_local(&m->fn[m->pv[m->stack[i]].fn])) return true;
+    return false;
+}
+
 uint32_t hwm_select(const hwm_t *m, uint32_t fn_index)
 {
     if (!m || fn_index >= m->nfn) return HWM_NONE;
-    return select_inner(m, fn_index, 1u << fn_index, 0, HWM_NONE);
+    return select_inner(m, fn_index, 1u << fn_index, 0, HWM_NONE, false);
 }
 
 int hwm_bind(hwm_t *m, uint32_t fn_index, uint32_t *out_pv)
@@ -225,7 +326,7 @@ int hwm_bind(hwm_t *m, uint32_t fn_index, uint32_t *out_pv)
     uint32_t pv = hwm_select(m, fn_index);
     if (prev != HWM_NONE && pv != prev &&
         !(prev < m->npv && m->pv[prev].fn == fn_index &&
-          can_serve(m, prev, 1u << fn_index, 0)))
+          can_serve(m, prev, 1u << fn_index, 0, false)))
         f->failovers++;
     if (pv != prev) hwm_memo_flush(m, fn_index); /* M7: answers come from who serves now */
     f->bound = pv;
@@ -261,6 +362,7 @@ int hwm_memo_attach(hwm_t *m, uint32_t fn_index, hwm_memo_entry_t *entries, uint
     if (!m || fn_index >= m->nfn) return HWM_E_ARG;
     if (entries && (cap == 0 || (cap & (cap - 1u)) != 0)) return HWM_E_ARG;
     hwm_func_t *f = &m->fn[fn_index];
+    if (entries && (f->flags & HWM_F_KEY_BEARING)) return HWM_E_POLICY; /* M8 */
     f->memo = entries;
     f->memo_cap = entries ? cap : 0;
     f->memo_hits = f->memo_misses = 0;
@@ -322,7 +424,7 @@ int hwm_call(hwm_t *m, uint32_t fn_index, uint32_t op, const uint8_t *in, uint32
         uint32_t mask = stack_mask(m);
         if (mask & (1u << fn_index)) return HWM_E_DEP;
         if (m->depth >= HWM_MAX_DEPTH) return HWM_E_DEPTH;
-        pv = select_inner(m, fn_index, mask | (1u << fn_index), m->depth, HWM_NONE);
+        pv = select_inner(m, fn_index, mask | (1u << fn_index), m->depth, HWM_NONE, stack_local(m));
         if (pv == HWM_NONE) return HWM_E_NOPROVIDER;
     }
     m->fn[fn_index].calls++;
@@ -351,7 +453,7 @@ int hwm_shadow(hwm_t *m, uint32_t fn_index, uint32_t op, const uint8_t *in, uint
     uint32_t a;
     int rc = hwm_bind(m, fn_index, &a);
     if (rc != HWM_OK) return rc;
-    uint32_t b = select_inner(m, fn_index, 1u << fn_index, 0, a);
+    uint32_t b = select_inner(m, fn_index, 1u << fn_index, 0, a, false);
     uint32_t la = 0, lb = 0;
     m->fn[fn_index].calls++;
     rc = run(m, a, op, in, in_len, out, out_cap, &la);
@@ -401,21 +503,47 @@ lpres_state_t hwm_attest(hwm_t *m, uint32_t pv_index, uint32_t *out_failed)
         }
     }
     p->attest = LPRES_STATE_TRUE;
+    p->proven_contract = f->contract;
     return p->attest;
+}
+
+uint32_t hwm_provider_flags(const hwm_t *m, uint32_t pv)
+{
+    if (!m || pv >= m->npv) return 0;
+    const hwm_provider_t *p = &m->pv[pv];
+    uint32_t fl = 0;
+    hwm_res_state_t rs = m->res[p->resource].state;
+    if (rs == HWM_RES_FAULTED || rs == HWM_RES_OFFLINE) fl |= HWM_PF_FAULT;
+    if (p->attest == LPRES_STATE_BOTH) fl |= HWM_PF_DISPUTED;
+    if (p->attest == LPRES_STATE_FALSE) fl |= HWM_PF_FAILED;
+    if (p->attest == LPRES_STATE_NEITHER) fl |= HWM_PF_UNPROVEN;
+    if (!p->enabled) fl |= HWM_PF_DISABLED;
+    if (!policy_ok(m, pv, false)) fl |= HWM_PF_POLICY;
+    if (m->fn[p->fn].bound == pv) fl |= HWM_PF_SERVING;
+    return fl;
 }
 
 const char *hwm_kind_name(hwm_kind_t k)
 {
     switch (k) {
-    case HWM_KIND_FIXED:
-        return "fixed";
-    case HWM_KIND_RECONF:
-        return "reconf";
+    case HWM_KIND_HARD:
+        return "hard";
+    case HWM_KIND_FABRIC:
+        return "fabric";
+    case HWM_KIND_MICRO:
+        return "micro";
     case HWM_KIND_PEER:
         return "peer";
     case HWM_KIND_SOFT:
         return "soft";
+    case HWM_KIND_REMOTE:
+        return "remote";
     default:
         return "invalid";
     }
+}
+
+bool hwm_kind_reconfigurable(hwm_kind_t k)
+{
+    return k == HWM_KIND_FABRIC || k == HWM_KIND_MICRO;
 }

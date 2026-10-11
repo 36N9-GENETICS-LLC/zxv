@@ -4,6 +4,7 @@
 #include <stdio.h>
 #include <string.h>
 #include "hwp.h"
+#include "hwe_ids.h"
 
 static int fails, checks;
 #define CHECK(c)                                                         \
@@ -71,6 +72,18 @@ int main(void)
     CHECK(memcmp(d1, d2, 32) != 0);
     CHECK(hwp_encode(&b, buf2, sizeof buf2, &n2) == HWP_OK && hwp_decode(buf2, n2, &c) == HWP_OK);
     CHECK(c.node[1].state_len == 3 && c.node[1].state[2] == 3);
+    /* So does the private extension, which ZXV never interprets. */
+    static const uint8_t ext[] = {0xEE, 0x01};
+    uint8_t d3[32];
+    CHECK(hwp_ext_set(&b, 2, ext, 2) == HWP_OK);
+    CHECK(hwp_ext_set(&b, 2, ext, HWP_MAX_EXT + 1) == HWP_E_ARG);
+    hwp_digest(&b, d3);
+    CHECK(memcmp(d2, d3, 32) != 0);
+    CHECK(hwp_encode(&b, buf2, sizeof buf2, &n2) == HWP_OK && hwp_decode(buf2, n2, &c) == HWP_OK);
+    CHECK(c.node[2].ext_len == 2 && c.node[2].ext[0] == 0xEE && c.node[1].state_len == 3);
+    /* The node's reserved field must be zero (P3). */
+    buf2[HWP_HEADER + 14] = 1;
+    CHECK(hwp_decode(buf2, n2, &c) == HWP_E_CANONICAL);
 
     /* P3 and format errors. */
     CHECK(hwp_decode(buf, n - 1, &c) == HWP_E_CANONICAL);
@@ -83,7 +96,7 @@ int main(void)
     /* Swap the first two cap keys of node 2 (P2). */
     memcpy(buf2, buf, n);
     {
-        uint32_t o = HWP_HEADER + 12 + 0 /* node 1 has no caps */ + 12;
+        uint32_t o = HWP_HEADER + 16 + 0 /* node 1 has no caps */ + 16;
         uint8_t t[10];
         memcpy(t, buf2 + o, 10);
         memcpy(buf2 + o, buf2 + o + 10, 10);
@@ -97,42 +110,69 @@ int main(void)
     CHECK(hwp_decode(buf2, HWP_HEADER + 5, &c) == HWP_E_FORMAT);
 
     /* Matching against R1: a laptop runs CPU, memory and vectors natively
-     * and emulates the matrix, ternary, hash, crypto, fabric, clock,
-     * secure element and wire units. */
+     * and emulates the tensor, logic, ternary, hash, gcd, crypto, fabric,
+     * clock, secure island and wire units. */
     const hwp_profile_t *r1 = hwp_reference_r1();
-    CHECK(r1->n == 12);
-    hwp_match_t mt;
+    CHECK(r1->n == 16);
+    static hwp_match_t mt;
     CHECK(hwp_match(&a, r1, &mt) == HWP_OK);
-    CHECK(mt.native == 3 && mt.emulated == 8);
-    CHECK(mt.pair[0].kind == HWP_M_GROUP);
-    CHECK(mt.pair[1].kind == HWP_M_NATIVE && mt.pair[1].have_id == 2);
-    CHECK(mt.pair[3].kind == HWP_M_NATIVE && mt.pair[3].have_id == 4);
-    CHECK(mt.pair[4].kind == HWP_M_EMULATE && mt.pair[4].unmet_key == 0);
+    CHECK(mt.native == 3 && mt.emulated == 11);
+    CHECK(mt.pair[0].kind == HWP_M_GROUP && mt.pair[1].kind == HWP_M_GROUP);
+    CHECK(mt.pair[2].kind == HWP_M_NATIVE && mt.pair[2].have_id == 2);
+    CHECK(mt.pair[4].kind == HWP_M_NATIVE && mt.pair[4].have_id == 4);
+    CHECK(mt.pair[5].kind == HWP_M_EMULATE && mt.pair[5].unmet_key == 0);
+    /* Engine nodes name their contracts. */
+    {
+        uint64_t v = 0;
+        CHECK(hwp_cap_get(&r1->node[5], HWP_CAP_CONTRACT_ID, &v) && v == HWE_FN_TENSOR);
+        CHECK(hwp_cap_get(&r1->node[11], HWP_CAP_CONTRACT_ID, &v) && v == HWE_FN_MAC);
+    }
+    /* Presented on the laptop: every running node says what serves it. */
+    {
+        static hwp_profile_t pr;
+        uint64_t k = 99;
+        CHECK(hwp_present(&a, r1, &pr) == HWP_OK && pr.n == r1->n);
+        CHECK(!hwp_cap_get(&pr.node[0], HWP_CAP_KIND, &k) && !hwp_cap_get(&pr.node[1], HWP_CAP_KIND, &k));
+        CHECK(hwp_cap_get(&pr.node[2], HWP_CAP_KIND, &k) && k == HWP_KIND_HARD);
+        CHECK(hwp_cap_get(&pr.node[5], HWP_CAP_KIND, &k) && k == HWP_KIND_SOFT);
+        CHECK(hwp_present(&a, r1, (hwp_profile_t *) r1) == HWP_E_ARG);
+        /* KIND is INFO: a presented profile still matches like R1 */
+        CHECK(hwp_match(&a, &pr, &mt) == HWP_OK && mt.native == 3 && mt.emulated == 11);
+    }
 
     /* A machine built to R1 (here a profile copied from R1 with bigger
      * numbers) runs everything natively. A private class and a private,
      * non-critical cap ride along without being understood. */
     static hwp_profile_t chip;
     memcpy(&chip, r1, sizeof chip);
-    hwp_cap_set(&chip, 4, HWP_CAP_MACS_PER_CYCLE, 4096);
-    hwp_cap_set(&chip, 4, (uint16_t) (HWP_CMP_INFO | 0x1234u), 77);
+    hwp_cap_set(&chip, 5, HWP_CAP_MACS_PER_CYCLE, 4096);
+    hwp_cap_set(&chip, 5, (uint16_t) (HWP_CMP_INFO | 0x1234u), 77);
     CHECK(hwp_node_add(&chip, 200, 1, HWP_CLASS_PRIVATE | 7u, &idx) == HWP_OK);
-    CHECK(hwp_match(&chip, r1, &mt) == HWP_OK && mt.native == 11 && mt.emulated == 0);
+    CHECK(hwp_ext_set(&chip, idx, ext, 2) == HWP_OK);
+    CHECK(hwp_match(&chip, r1, &mt) == HWP_OK && mt.native == 14 && mt.emulated == 0);
     /* Too few MACs: emulated, and the report says which cap. */
-    hwp_cap_set(&chip, 4, HWP_CAP_MACS_PER_CYCLE, 8);
-    CHECK(hwp_match(&chip, r1, &mt) == HWP_OK && mt.pair[4].kind == HWP_M_EMULATE &&
-          mt.pair[4].unmet_key == HWP_CAP_MACS_PER_CYCLE);
-    hwp_cap_set(&chip, 4, HWP_CAP_MACS_PER_CYCLE, 4096);
+    hwp_cap_set(&chip, 5, HWP_CAP_MACS_PER_CYCLE, 8);
+    CHECK(hwp_match(&chip, r1, &mt) == HWP_OK && mt.pair[5].kind == HWP_M_EMULATE &&
+          mt.pair[5].unmet_key == HWP_CAP_MACS_PER_CYCLE);
+    hwp_cap_set(&chip, 5, HWP_CAP_MACS_PER_CYCLE, 4096);
+    /* An older contract version does not satisfy a newer requirement. */
+    hwp_cap_set(&chip, 6, HWP_CAP_CONTRACT_VER, 0);
+    CHECK(hwp_match(&chip, r1, &mt) == HWP_OK && mt.pair[6].kind == HWP_M_EMULATE &&
+          mt.pair[6].unmet_key == HWP_CAP_CONTRACT_VER);
+    hwp_cap_set(&chip, 6, HWP_CAP_CONTRACT_VER, 1);
     /* A critical cap this reader does not know: not used blind. */
-    hwp_cap_set(&chip, 5, (uint16_t) (HWP_KEY_CRITICAL | HWP_CMP_INFO | 0x1001u), 1);
-    CHECK(hwp_match(&chip, r1, &mt) == HWP_OK && mt.pair[5].kind == HWP_M_EMULATE);
+    hwp_cap_set(&chip, 7, (uint16_t) (HWP_KEY_CRITICAL | HWP_CMP_INFO | 0x1001u), 1);
+    CHECK(hwp_match(&chip, r1, &mt) == HWP_OK && mt.pair[7].kind == HWP_M_EMULATE);
     /* Binary hardware never passes for ternary. */
     hwp_profile_t *tw = &c;
     memcpy(tw, r1, sizeof *tw);
-    hwp_cap_set(tw, 5, HWP_CAP_RADIX, 2);
-    CHECK(hwp_match(tw, r1, &mt) == HWP_OK && mt.pair[5].kind == HWP_M_EMULATE);
+    hwp_cap_set(tw, 7, HWP_CAP_RADIX, 2);
+    CHECK(hwp_match(tw, r1, &mt) == HWP_OK && mt.pair[7].kind == HWP_M_EMULATE);
 
-    CHECK(!strcmp(hwp_class_name(HWP_CLASS_TERNARY_UNIT), "ternary-unit"));
+    CHECK(!strcmp(hwp_class_name(HWP_CLASS_TERNARY_UNIT), "engine.ternary"));
+    CHECK(!strcmp(hwp_class_name(HWP_CLASS_SECURE_ISLAND), "secure.island"));
+    CHECK(!strcmp(hwp_class_name(HWP_CLASS_MATRIX_UNIT), "engine.tensor.int"));
+    CHECK(!strcmp(hwp_class_name(HWP_CLASS_PUBLIC_MAX + 1u), "unknown"));
     CHECK(!strcmp(hwp_class_name(HWP_CLASS_PRIVATE | 3u), "private"));
 
     printf("%d/%d checks passed\n", checks - fails, checks);

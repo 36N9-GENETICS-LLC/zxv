@@ -9,13 +9,16 @@
  * several functions, so the providers form a matrix: functions down the
  * side, resources across the top, one cell per provider.
  *
- *   FIXED   silicon built for this function.
- *   RECONF  a reconfigurable region (FPGA fabric, a microcoded unit)
- *           currently loaded with an image for this function; see hwr.h.
- *   PEER    a component built for another function standing in for this
- *           one (a DSP block serving a codec, a tensor unit serving a
+ *   HARD    silicon built for this function.
+ *   FABRIC  a reconfigurable region (FPGA fabric) currently loaded with
+ *           an image for this function; see hwr.h.
+ *   MICRO   a microcoded unit or soft core running firmware for it (also
+ *           updated by signed images, hwr.h).
+ *   PEER    a local component built for another function standing in for
+ *           this one (a DSP block serving a codec, a tensor unit serving a
  *           hash). This is "components emulating each other".
  *   SOFT    a software emulator running on a CPU.
+ *   REMOTE  another machine (a mesh peer) serving the function.
  *
  * Callers never pick a provider. They call the FUNCTION (hwm_call) and the
  * matrix binds the best provider that may serve, so a caller cannot tell
@@ -33,8 +36,8 @@
  *      unknown never acts), and a disagreement seen in service is BOTH.
  *      Only TRUE binds.
  *   M3 DETERMINISTIC CHOICE. Among the providers that may serve: lowest
- *      cost, then kind (FIXED, RECONF, PEER, SOFT), then the lower index.
- *      Same matrix, same binding, on every machine.
+ *      cost, then kind (HARD, FABRIC, MICRO, PEER, SOFT, REMOTE), then the
+ *      lower index. Same matrix, same binding, on every machine.
  *   M4 FAILOVER. A provider whose resource faults or starts reconfiguring,
  *      or whose attestation leaves TRUE, is unbound, and the next call
  *      binds the next one. When nothing may serve, the call is refused
@@ -57,8 +60,19 @@
  *      without running any provider. The memo is flushed whenever the
  *      binding changes, a vector is added or a shadow check disputes, so a
  *      stored answer always came from the provider that is serving now.
- *      This is the only place the matrix can beat running the work
- *      directly, and only on repeated inputs; bench_hwm.c measures it.
+ *      It skips work on repeated inputs and does nothing for new
+ *      ones; bench_hwm.c measures it.
+ *   M8 PLACEMENT BY POLICY. Callers state constraints on a function
+ *      (hwm_policy_set: local only, a latency ceiling, a power budget),
+ *      never a provider; providers that break them never serve it. A
+ *      KEY-BEARING function (its inputs or state hold secret keys) is
+ *      always local: no REMOTE provider serves it, nor any function its
+ *      provider leans on (M5), and it never gets a memo (M7), so key
+ *      material is not kept. Key-bearing cannot be switched off again.
+ *   M9 VERSIONED CONTRACTS. The conformance vectors of a function form a
+ *      contract with a version. hwm_contract_begin replaces the vectors
+ *      with a newer version and every provider must prove itself again;
+ *      a provider records which version it proved.
  *
  * HONEST LIMITS. Conformance vectors prove agreement on those vectors, not
  * equivalence on every input; the vectors are the contract and should be
@@ -85,12 +99,28 @@
 #define HWM_MEMO_BYTES    64u /* larger inputs or outputs bypass the memo */
 
 typedef enum {
-    HWM_KIND_FIXED = 0,
-    HWM_KIND_RECONF = 1,
-    HWM_KIND_PEER = 2,
-    HWM_KIND_SOFT = 3,
-    HWM_KIND_COUNT = 4
+    HWM_KIND_HARD = 0,
+    HWM_KIND_FABRIC = 1,
+    HWM_KIND_MICRO = 2,
+    HWM_KIND_PEER = 3,
+    HWM_KIND_SOFT = 4,
+    HWM_KIND_REMOTE = 5,
+    HWM_KIND_COUNT = 6
 } hwm_kind_t;
+
+/* Function policy flags (M8). */
+#define HWM_F_KEY_BEARING 0x1u /* always local, no memo; sticky */
+#define HWM_F_LOCAL_ONLY  0x2u /* no REMOTE provider */
+#define HWM_F_MASK        0x3u
+
+/* Provider status flags (hwm_provider_flags). */
+#define HWM_PF_FAULT    0x1u /* its resource is faulted or offline */
+#define HWM_PF_DISPUTED 0x2u /* a shadow check found it disagreeing (BOTH) */
+#define HWM_PF_FAILED   0x4u /* it failed the conformance vectors (FALSE) */
+#define HWM_PF_UNPROVEN 0x8u /* never proven against this contract (NEITHER) */
+#define HWM_PF_DISABLED 0x10u
+#define HWM_PF_POLICY   0x20u /* the function's policy excludes it (M8) */
+#define HWM_PF_SERVING  0x40u /* bound now */
 
 typedef enum {
     HWM_RES_OK = 0,
@@ -110,7 +140,8 @@ typedef enum {
     HWM_E_DEPTH = -7,      /* M5: nesting deeper than HWM_MAX_DEPTH */
     HWM_E_DISPUTE = -8,    /* M6: two providers disagreed */
     HWM_E_PROVIDER = -9,   /* the provider itself returned an error */
-    HWM_E_BUFFER = -10     /* output did not fit */
+    HWM_E_BUFFER = -10,    /* output did not fit */
+    HWM_E_POLICY = -11     /* M8: the request breaks the function's policy */
 } hwm_status_t;
 
 typedef struct hwm hwm_t;
@@ -148,6 +179,10 @@ typedef struct {
     hwm_memo_entry_t *memo; /* M7, caller-owned; NULL = none */
     uint32_t memo_cap;      /* a power of two */
     uint64_t memo_hits, memo_misses;
+    uint32_t contract;       /* M9: version of the vector set (0: unversioned) */
+    uint32_t flags;          /* M8: HWM_F_* */
+    uint32_t max_latency_ns; /* M8: 0 = no ceiling */
+    uint32_t power_budget_mw; /* M8: 0 = no budget */
 } hwm_func_t;
 
 typedef struct {
@@ -163,6 +198,10 @@ typedef struct {
     bool enabled;
     uint32_t calls;
     uint64_t cost_spent; /* calls * cost, for measuring (not billing) */
+    uint32_t latency_ns;     /* declared typical latency per call (0: unknown) */
+    uint32_t power_mw;       /* declared power while serving (0: unknown) */
+    uint8_t throughput_class; /* declared, 0 (slowest) .. 15 */
+    uint32_t proven_contract; /* M9: contract version of its last TRUE proof */
 } hwm_provider_t;
 
 typedef struct {
@@ -191,6 +230,14 @@ int hwm_func_find(const hwm_t *m, uint32_t id, uint32_t *out_index);
  * changed, so earlier proofs no longer cover it. */
 int hwm_vector_add(hwm_t *m, uint32_t fn_index, uint32_t op, const uint8_t *in, uint32_t in_len,
                    const uint8_t *expect, uint32_t expect_len);
+/* M9: start contract `version` (strictly newer than the current one): the
+ * vectors are cleared, every provider of the function goes to NEITHER, and
+ * the caller adds the new vectors with hwm_vector_add. */
+int hwm_contract_begin(hwm_t *m, uint32_t fn_index, uint32_t version);
+/* M8: set the function's policy. Clearing HWM_F_KEY_BEARING once set is
+ * HWM_E_POLICY. Unbinds; the next call binds under the new policy. */
+int hwm_policy_set(hwm_t *m, uint32_t fn_index, uint32_t flags, uint32_t max_latency_ns,
+                   uint32_t power_budget_mw);
 
 int hwm_resource_add(hwm_t *m, uint32_t id, uint32_t *out_index);
 int hwm_resource_find(const hwm_t *m, uint32_t id, uint32_t *out_index);
@@ -201,6 +248,14 @@ int hwm_resource_set(hwm_t *m, uint32_t res_index, hwm_res_state_t st);
 int hwm_provider_add(hwm_t *m, uint32_t fn_index, uint32_t res_index, hwm_kind_t kind,
                      uint32_t cost, hwm_call_fn call, void *inst, uint32_t *out_index);
 int hwm_provider_dep(hwm_t *m, uint32_t pv_index, uint32_t dep_fn_index);
+/* Declared traits used by placement (M8) and discovery. */
+int hwm_provider_traits(hwm_t *m, uint32_t pv_index, uint32_t latency_ns, uint32_t power_mw,
+                        uint32_t throughput_class);
+/* HWM_PF_* for discovery. */
+uint32_t hwm_provider_flags(const hwm_t *m, uint32_t pv_index);
+/* Coarse power bucket of a declared power: 0 unknown, 1 <= 10 mW, 2 <= 100
+ * mW, 3 <= 1 W, 4 <= 10 W, 5 <= 100 W, 6 above. */
+uint32_t hwm_power_class(uint32_t power_mw);
 int hwm_provider_enable(hwm_t *m, uint32_t pv_index, bool on);
 /* Point a provider at another function (a reconfigurable region loaded
  * with an image for something else). Its attestation goes to NEITHER and
@@ -233,10 +288,13 @@ int hwm_shadow(hwm_t *m, uint32_t fn_index, uint32_t op, const uint8_t *in, uint
                bool *out_checked);
 
 /* M7: give a PURE function a memo of `cap` entries (a power of two,
- * caller-owned, outliving the matrix). NULL/0 removes it. */
+ * caller-owned, outliving the matrix). NULL/0 removes it. A key-bearing
+ * function never gets one (HWM_E_POLICY). */
 int hwm_memo_attach(hwm_t *m, uint32_t fn_index, hwm_memo_entry_t *entries, uint32_t cap);
 void hwm_memo_flush(hwm_t *m, uint32_t fn_index);
 
 const char *hwm_kind_name(hwm_kind_t k);
+/* FABRIC and MICRO are the kinds a signed image can change (hwr.h). */
+bool hwm_kind_reconfigurable(hwm_kind_t k);
 
 #endif /* HWM_H */

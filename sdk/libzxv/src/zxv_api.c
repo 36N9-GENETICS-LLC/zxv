@@ -215,6 +215,7 @@ const char *zxv_status_name(int32_t status)
     case ZXV_E_ROLLBACK: return "ZXV_E_ROLLBACK";
     case ZXV_E_BLOCKED: return "ZXV_E_BLOCKED";
     case ZXV_E_TARGET: return "ZXV_E_TARGET";
+    case ZXV_E_POLICY: return "ZXV_E_POLICY";
     case ZXV_E_INTERNAL: return "ZXV_E_INTERNAL";
     default: return "ZXV_E_UNKNOWN";
     }
@@ -249,7 +250,8 @@ int32_t zxv_status_class(int32_t status)
     case ZXV_E_DISPUTE:
     case ZXV_E_QUARANTINED:
     case ZXV_E_ROLLBACK:
-    case ZXV_E_BLOCKED: return ZXV_CLASS_REFUSED;
+    case ZXV_E_BLOCKED:
+    case ZXV_E_POLICY: return ZXV_CLASS_REFUSED;
     case ZXV_E_INVARIANT:
     case ZXV_E_POISONED: return ZXV_CLASS_FATAL;
     default: return ZXV_CLASS_SYSTEM;

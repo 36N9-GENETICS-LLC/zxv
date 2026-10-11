@@ -1403,10 +1403,17 @@ HWEMU_CC := gcc -std=c11 -O1 -g -Wall -Werror -Wextra -fsanitize=address,undefin
 # fails the build.
 .PHONY: test-hwemu
 test-hwemu:
-	@for f in hwm hwp hwr; do gcc -std=c11 -O2 -Wall -Werror -Wextra -ffreestanding -mgeneral-regs-only -DTEST_HOST -Iinclude -Isrc/lpres -Isrc/event_space -Isrc/modbind -Isrc/surplus -c src/hwemu/$$f.c -o $(ZXV_TMP)/hwemu_$$f.o || { echo "[FAIL] hwemu $$f.c freestanding/no-FP"; exit 1; }; done; echo "[PASS] hwemu freestanding, no FP registers"
+	@for f in hwm hwp hwr hwa hwe; do gcc -std=c11 -O2 -Wall -Werror -Wextra -ffreestanding -mgeneral-regs-only -DTEST_HOST -Iinclude -Isrc/tensor -Isrc/lpres -Isrc/event_space -Isrc/modbind -Isrc/surplus -c src/hwemu/$$f.c -o $(ZXV_TMP)/hwemu_$$f.o || { echo "[FAIL] hwemu $$f.c freestanding/no-FP"; exit 1; }; done; echo "[PASS] hwemu freestanding, no FP registers"
 	$(HWEMU_CC) src/hwemu/test_hwm.c src/hwemu/hwm.c -o $(ZXV_TMP)/test_hwm && $(ZXV_TMP)/test_hwm > $(ZXV_TMP)/test_hwm.log 2>&1 && echo "[PASS] test_hwm ($$(tail -1 $(ZXV_TMP)/test_hwm.log))" || { cat $(ZXV_TMP)/test_hwm.log; echo "[FAIL] test_hwm"; exit 1; }
+	$(HWEMU_CC) -Isrc/tensor src/hwemu/test_hwe.c src/hwemu/hwe.c src/hwemu/hwm.c src/robin_debanks/sha256.c src/mlkem/keccak.c src/lpres/lpres.c -o $(ZXV_TMP)/test_hwe && $(ZXV_TMP)/test_hwe > $(ZXV_TMP)/test_hwe.log 2>&1 && echo "[PASS] test_hwe ($$(tail -1 $(ZXV_TMP)/test_hwe.log))" || { cat $(ZXV_TMP)/test_hwe.log; echo "[FAIL] test_hwe"; exit 1; }
+	python3 tools/check_hwe_vectors.py
 	$(HWEMU_CC) src/hwemu/test_hwp.c src/hwemu/hwp.c src/robin_debanks/sha256.c -o $(ZXV_TMP)/test_hwp && $(ZXV_TMP)/test_hwp > $(ZXV_TMP)/test_hwp.log 2>&1 && echo "[PASS] test_hwp ($$(tail -1 $(ZXV_TMP)/test_hwp.log))" || { cat $(ZXV_TMP)/test_hwp.log; echo "[FAIL] test_hwp"; exit 1; }
-	$(HWEMU_CC) src/hwemu/test_hwr.c src/hwemu/hwr.c src/hwemu/hwr_mldsa.c src/hwemu/hwm.c src/lpres/lpres_hex.c src/lpres/lpres.c src/robin_debanks/sha256.c src/pqsec/pq_mldsa87.c src/pqsec/mldsa/fips202.c -o $(ZXV_TMP)/test_hwr && $(ZXV_TMP)/test_hwr > $(ZXV_TMP)/test_hwr.log 2>&1 && echo "[PASS] test_hwr ($$(tail -1 $(ZXV_TMP)/test_hwr.log))" || { cat $(ZXV_TMP)/test_hwr.log; echo "[FAIL] test_hwr"; exit 1; }
+	$(HWEMU_CC) src/hwemu/test_hwr.c src/hwemu/hwr.c src/hwemu/hwa.c src/hwemu/hwr_pq.c src/hwemu/hwm.c src/lpres/lpres_hex.c src/lpres/lpres.c src/robin_debanks/sha256.c src/pqsec/pq_mldsa87.c src/pqsec/mldsa/fips202.c src/pqsec/pq_slh256s.c $(sort $(wildcard src/pqsec/slhdsa/*.c)) -o $(ZXV_TMP)/test_hwr && $(ZXV_TMP)/test_hwr > $(ZXV_TMP)/test_hwr.log 2>&1 && echo "[PASS] test_hwr ($$(tail -1 $(ZXV_TMP)/test_hwr.log))" || { cat $(ZXV_TMP)/test_hwr.log; echo "[FAIL] test_hwr"; exit 1; }
+
+# Regenerate the standard-engine golden vectors from the open C reference.
+.PHONY: hwe-vectors
+hwe-vectors:
+	gcc -std=c11 -O1 -Wall -Wextra -Werror -DHWE_GEN -DTEST_HOST -Iinclude -Isrc/lpres -Isrc/event_space -Isrc/modbind -Isrc/surplus -Isrc/tensor src/hwemu/gen_hwe_vectors.c src/hwemu/hwe.c src/hwemu/hwm.c src/robin_debanks/sha256.c src/mlkem/keccak.c src/lpres/lpres.c -o $(ZXV_TMP)/gen_hwe_vectors && $(ZXV_TMP)/gen_hwe_vectors > src/hwemu/hwe_vectors.h && python3 tools/check_hwe_vectors.py
 
 # Not part of verify-all (timings vary by machine): emulated paths against
 # native code and against the machine's peak. See src/hwemu/bench_hwm.c.
