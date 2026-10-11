@@ -24,8 +24,10 @@ every language.
 | Solidity / EVM | [`solidity`](solidity/) | `ZxvStateChannel.sol` | verifies libzxv's state encoding | 10 |
 | Ruby | [`ruby`](ruby/) | gem `zxv` | ffi | 40 runs |
 | PHP | [`php`](php/) | `zedec/zxv` | PHP FFI | 31 |
-
-Rust, Go, C++ and Swift are being added to this table.
+| Rust | [`rust`](rust/) | crates `zxv`, `zxv-sys` | bindgen, `Result` types | 40 |
+| Go | [`go`](go/) | `.../sdk/go/zxv` | cgo, `error` returns | 36, `-race` |
+| C++ | [`cpp`](cpp/) | header-only `zxv.hpp` (C++20) | direct C ABI, RAII | 409 checks, ASan + UBSan + TSan |
+| Swift | [`swift`](swift/) | SwiftPM `Zxv` | C module map | 20 |
 
 ## What every SDK gives you
 

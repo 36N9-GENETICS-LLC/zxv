@@ -243,3 +243,38 @@ jobs:
         env:
           LD_LIBRARY_PATH: ${{ github.workspace }}/sdk/libzxv/build
           DYLD_LIBRARY_PATH: ${{ github.workspace }}/sdk/libzxv/build
+
+  cpp:
+    name: cpp ${{ matrix.os }} ${{ matrix.cxx }}${{ matrix.sanitize == 'ON' && ' sanitize' || '' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-24.04, cxx: g++, sanitize: 'OFF' }
+          - { os: ubuntu-24.04, cxx: clang++, sanitize: 'OFF' }
+          - { os: ubuntu-24.04, cxx: g++, sanitize: 'ON' }
+          - { os: macos-14, cxx: clang++, sanitize: 'OFF' }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v5
+      - run: make -C sdk/libzxv all fixtures
+      - run: cmake -S sdk/cpp -B build-cpp -DZXV_SANITIZE=${{ matrix.sanitize }}
+        env:
+          CXX: ${{ matrix.cxx }}
+      - run: cmake --build build-cpp -j4
+      - run: ctest --test-dir build-cpp --output-on-failure
+        env:
+          ASAN_OPTIONS: detect_leaks=1
+
+  swift:
+    name: swift ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-15]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v5
+      - run: make -C sdk/libzxv all fixtures
+      - run: swift --version && swift test
+        working-directory: sdk/swift
