@@ -1677,9 +1677,9 @@ Gaps: test lacks SPDX.
 
 ### market  —  P2P commerce state machine
 Status: WORKING (tested in verify-all, under ASan+UBSan)
-What it does: Signed storefronts and listings, carts, orders through one table-driven state machine, per-order escrow with exact conservation, the 0.08889% assurance fee from pay (charged once per sale), refunds exact to the minor unit, operator tax rates, disputes, reviews, ISF-ranked discovery and agent shopping with user confirmation tokens. Money only moves through a settle hook.
-Main entry points: mk_init, mk_ccy_register, mk_listing_publish, mk_cart_add, mk_checkout, mk_dispute_open/rule, mk_discover, mk_mandate_grant, mk_invoice_issue.
-Tests: market/test_market.c — passes. Used by: nothing outside tests. Hosted only.
+What it does: Signed storefronts and listings, carts, orders through one table-driven state machine, per-order escrow with exact conservation, the 0.08889% assurance fee from pay (charged once per sale), refunds exact to the minor unit, operator tax rates, disputes, reviews, ISF-ranked discovery and agent shopping with user confirmation tokens. Money only moves through a settle hook. `mk_pay.c` is that hook on the ledger of record: each settlement becomes one atomic `pay_ledger_post` (one line per account with a nonzero net, escrow balancing captures, releases, refunds and rulings; invoices must net to zero), so a ledger refusal (funds, freeze, balance) leaves the market unchanged. Identifiers are SHA-256(seed || tag || n).
+Main entry points: mk_init, mk_ccy_register, mk_listing_publish, mk_cart_add, mk_checkout, mk_dispute_open/rule, mk_discover, mk_mandate_grant, mk_invoice_issue; mk_pay_init, mk_pay_bind, mk_pay_settle.
+Tests: market/test_market.c (`make test-market`) — passes; every flow also posts to a real pay_ledger through mk_pay and the two books are compared after each settlement (866 postings, 0 mismatches); mk_pay mutation 91.5%, in the CI gate. Used by: nothing outside tests yet (the app does not open a market). Hosted only.
 Gaps: not linked into a kernel.
 
 ### mbcomp  —  component (circuit-element) vocabulary
