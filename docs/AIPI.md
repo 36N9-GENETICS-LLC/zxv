@@ -302,12 +302,19 @@ work):
 
 ## 14. Tests
 
-- `make -C kernel test-aipi`: 346 checks under ASan + UBSan, plus the
+- `make -C kernel test-aipi`: 601 checks under ASan + UBSan, plus the
   freestanding build for aarch64 and i386. Covers CIDs and text forms,
   descriptor rules and canonical encoding (every bit flip), records, GET
-  with a lying peer, routes, CHECKER / CERT / QUORUM, disputes, expiry,
-  privacy, codec mismatches, funds, and the escrow invariant over random
-  runs.
+  with a lying peer or gateway, routes, CHECKER / CERT / QUORUM, disputes,
+  expiry, privacy, codec mismatches, funds, and the escrow invariant over
+  random runs. Edge tests pin every encoder to its exact size, cut and alter
+  every record header, drop each hook, and check the memo ring, pins and
+  payment shares at their limits (a 2^63 bounty included).
+- Mutation testing (`tests/harness/mutator/mutate.py` on `aipi.c`, tests
+  built with ASan + UBSan): 90.4% of 1277 mutants killed. The 122 that live
+  were reviewed and are equivalent: dead initialisers, sign variants of
+  error paths that cannot be reached, and checks that the IPFS node or the
+  canonical re-encode repeat, so no test can tell them apart.
 - `make -C sdk/kits/aipi test`: 60 end-to-end checks on real Wasm modules
   (see the kit README).
 - The core is in the kernel's `verify-all`; the kit has its own CI job in

@@ -32,6 +32,7 @@ typedef struct {
     int lie; /* added to every result (0: honest) */
     uint64_t salt;
     int runs, checks, certs;
+    uint32_t last_contract_len;
 } fake_exec_t;
 
 static uint64_t rd64(const uint8_t *p)
@@ -67,7 +68,24 @@ static int fx_run(void *ctx, const aipi_code_t *code, const uint8_t *in, uint32_
     fake_exec_t *x = (fake_exec_t *) ctx;
     uint64_t n, r;
     x->runs++;
+    x->last_contract_len = code->contract ? code->contract_len : 0;
     if (!code->module || code->module_len == 0) return AIPI_ERR_EXEC;
+    /* edge entries: output sizes and errors at the limits */
+    if (!strcmp(code->fn->entry, "wide")) { /* AIPI_IO_MAX bytes out */
+        memset(out, 0x5A, AIPI_IO_MAX);
+        *out_len = AIPI_IO_MAX;
+        return AIPI_OK;
+    }
+    if (!strcmp(code->fn->entry, "too_wide")) { /* claims one byte more than allowed */
+        *out_len = AIPI_IO_MAX + 1;
+        return AIPI_OK;
+    }
+    if (!strcmp(code->fn->entry, "no_space")) return AIPI_ERR_SPACE;
+    if (!strcmp(code->fn->entry, "in_len")) { /* any input length: echoes it */
+        wr64(out, in_len);
+        *out_len = 8;
+        return AIPI_OK;
+    }
     if (in_len != 8 || cap < 8) return AIPI_ERR_EXEC;
     n = rd64(in);
     if (!strcmp(code->fn->entry, "isqrt"))
@@ -114,10 +132,19 @@ static int fx_certify(void *ctx, const aipi_code_t *code, const uint8_t *in, uin
                       uint32_t *cert_len)
 {
     fake_exec_t *x = (fake_exec_t *) ctx;
-    (void) code;
     (void) out;
     (void) out_len;
     x->certs++;
+    if (!strcmp(code->fn->certifier, "cert_fails")) return AIPI_ERR_SPACE;
+    if (!strcmp(code->fn->certifier, "cert_wide")) {
+        *cert_len = AIPI_CERT_MAX + 1;
+        return AIPI_OK;
+    }
+    if (!strcmp(code->fn->certifier, "cert_max")) {
+        memset(cert, 0xC5, AIPI_CERT_MAX);
+        *cert_len = AIPI_CERT_MAX;
+        return AIPI_OK;
+    }
     if (in_len != 8 || cap < 8) return AIPI_ERR_EXEC;
     wr64(cert, least_factor(rd64(in)));
     *cert_len = 8;
@@ -181,8 +208,8 @@ struct node {
     ipfsn_pin_t pins[32];
     ipfsn_node_t in;
     uint8_t *scratch, *net, *modbuf, *conbuf;
-    aipi_job_t jobs[JOBS];
-    aipi_memo_t memo[4];
+    aipi_job_t *jobs; /* heap, exact size: ASan sees any read past the end */
+    aipi_memo_t *memo;
     aipi_ctx_t a;
     fake_exec_t fx;
     lpx_qrec_t qrec[8];
@@ -191,9 +218,13 @@ struct node {
     uint8_t last_call[AIPI_CALL_ENC_MAX];
     uint32_t last_call_len, last_want, nbroadcasts;
     uint64_t last_bounty;
+    int fail_broadcast;
     /* peer hook: blocks come from `peer`, optionally tampered */
     node_t *peer;
     int tamper, wants;
+    /* gateway hook: blocks come from `gw_peer` over "HTTPS" */
+    node_t *gw_peer;
+    int gw_tamper, gw_gets;
 };
 
 static int nd_broadcast(void *ctx, const ipfsn_cid_t *call, const uint8_t *rec, uint32_t len,
@@ -201,6 +232,7 @@ static int nd_broadcast(void *ctx, const ipfsn_cid_t *call, const uint8_t *rec, 
 {
     node_t *n = (node_t *) ctx;
     (void) call;
+    if (n->fail_broadcast) return -1;
     memcpy(n->last_call, rec, len);
     n->last_call_len = len;
     n->last_want = want;
@@ -229,6 +261,32 @@ static int nd_want(void *ctx, const uint8_t *cid_bin, uint32_t cid_len, uint8_t 
     return 0;
 }
 
+/* gateway hook: an HTTPS trustless gateway in front of `gw_peer` */
+static int nd_https_get(void *ctx, const char *url, const char *accept, uint8_t *buf, uint32_t cap,
+                        uint32_t *len)
+{
+    node_t *n = (node_t *) ctx;
+    ipfsn_cid_t cid;
+    const char *p = strstr(url, "/ipfs/");
+    (void) accept;
+    n->gw_gets++;
+    if (!n->gw_peer || !p) return -1;
+    p += 6;
+    if (ipfsn_cid_parse(p, (uint32_t) strcspn(p, "?"), &cid) != IPFSN_OK) return -1;
+    if (ipfsn_serve_block(&n->gw_peer->in, &cid, IPFSN_WIRE_PLAIN, buf, cap, len) != IPFSN_OK)
+        return -1;
+    if (n->gw_tamper && *len) buf[*len - 1] ^= 0x80;
+    return 0;
+}
+
+static void use_gateway(node_t *n, node_t *behind)
+{
+    n->gw_peer = behind;
+    n->in.gw.ctx = n;
+    n->in.gw.https_get = nd_https_get;
+    n->in.gw.base = "https://gw.test";
+}
+
 static node_t *node_new(uint8_t id)
 {
     node_t *n = calloc(1, sizeof *n);
@@ -238,6 +296,10 @@ static node_t *node_new(uint8_t id)
     n->net = malloc(IPFSN_BLOCK_MAX + 256);
     n->modbuf = malloc(AIPI_MODULE_MAX);
     n->conbuf = malloc(AIPI_CONTRACT_MAX);
+    n->jobs = malloc(JOBS * sizeof *n->jobs);
+    n->memo = malloc(4 * sizeof *n->memo);
+    memset(n->jobs, 0xEE, JOBS * sizeof *n->jobs); /* aipi_init must clear them */
+    memset(n->memo, 0xEE, 4 * sizeof *n->memo);
     ipfsn_memstore_ops(&n->ms, &n->ops);
     if (ipfsn_bs_init(&n->bs, &n->ops, n->tab, 256, n->scratch, IPFSN_SCRATCH_MIN) != IPFSN_OK)
         abort();
@@ -273,6 +335,8 @@ static void node_free(node_t *n)
     free(n->net);
     free(n->modbuf);
     free(n->conbuf);
+    free(n->jobs);
+    free(n->memo);
     free(n);
 }
 
@@ -1202,6 +1266,1050 @@ static void test_escrow_invariant(void)
     for (int i = 0; i < 4; i++) node_free(ex[i]);
 }
 
+/* ===== edges: limits, malformed records, missing hooks ======================
+ * These pin down the boundaries the scenario tests above pass over: exact
+ * buffer sizes, every header byte of every record, each missing hook, and
+ * the bookkeeping (memo ring, pins, payment shares) at its edges. Buffers
+ * that a decoder reads are heap copies of exactly the given length, so a
+ * read one byte too far fails under ASan + UBSan (make test-aipi). */
+
+static uint8_t *dup_exact(const uint8_t *b, uint32_t n)
+{
+    uint8_t *p = malloc(n); /* malloc(0) too: any read of it is caught */
+    if (n) memcpy(p, b, n);
+    return p;
+}
+
+/* Every encoder: AIPI_ERR_SPACE below the size it needs, the same bytes at
+ * and above it, and never a byte written past `cap`. Returns that size. */
+typedef int (*enc_t)(const void *arg, uint8_t *out, uint32_t cap);
+static int sweep_caps(enc_t enc, const void *arg)
+{
+    static uint8_t full[AIPI_CLAIM_ENC_MAX + AIPI_FN_ENC_MAX];
+    int len = enc(arg, full, sizeof full), need = -1, bad = 0;
+    if (len <= 0) return -1;
+    for (uint32_t cap = 0; cap <= (uint32_t) len + 2u; cap++) {
+        uint8_t *b = malloc(cap + 1u);
+        int r;
+        memset(b, 0xA5, cap + 1u);
+        r = enc(arg, b, cap);
+        if (r == AIPI_ERR_SPACE) {
+            if (need >= 0) bad++; /* failed after a smaller cap worked */
+        } else if (r == len && !memcmp(b, full, (size_t) len)) {
+            if (need < 0) need = (int) cap;
+        } else {
+            bad++;
+        }
+        if (b[cap] != 0xA5) bad++;
+        free(b);
+    }
+    return bad ? -2 : need;
+}
+
+static int enc_fn(const void *arg, uint8_t *out, uint32_t cap)
+{
+    return aipi_fn_encode((const aipi_fn_t *) arg, out, cap);
+}
+typedef struct {
+    const ipfsn_cid_t *cid;
+    const uint8_t *in, *ex, *out, *cert;
+    uint32_t in_len, out_len, cert_len;
+} rec_arg_t;
+static int enc_call(const void *arg, uint8_t *out, uint32_t cap)
+{
+    const rec_arg_t *a = (const rec_arg_t *) arg;
+    return aipi_call_encode(a->cid, a->in, a->in_len, out, cap);
+}
+static int enc_claim(const void *arg, uint8_t *out, uint32_t cap)
+{
+    const rec_arg_t *a = (const rec_arg_t *) arg;
+    return aipi_claim_encode(a->cid, a->ex, a->out, a->out_len, a->cert, a->cert_len, out, cap);
+}
+static int enc_text(const void *arg, uint8_t *out, uint32_t cap)
+{
+    return aipi_cid_to_text((const ipfsn_cid_t *) arg, (char *) out, cap);
+}
+
+static int check_names(const char *entry, const char *checker, const char *certifier, int verify)
+{
+    aipi_fn_t fn;
+    ipfsn_cid_t mod;
+    ipfsn_cid_sha256(IPFSN_MC_RAW, MODULE, sizeof MODULE, &mod);
+    make_fn(&fn, &mod, entry, verify);
+    strcpy(fn.checker, checker);
+    strcpy(fn.certifier, certifier);
+    return aipi_fn_check(&fn);
+}
+
+static void test_edge_names(void)
+{
+    char a63[64], b63[64], name[4];
+    int bad = 0;
+    /* the alphabet is [A-Za-z0-9_], ends included, neighbours excluded */
+    static const char ok[] = "azAZ09_";
+    static const char no[] = "`{@[/:-. ";
+    for (const char *p = ok; *p; p++) {
+        name[0] = *p;
+        name[1] = 0;
+        if (check_names(name, "", "", AIPI_VERIFY_LOCAL) != AIPI_OK) bad++;
+        name[0] = 'e';
+        name[1] = *p;
+        name[2] = 0;
+        if (check_names(name, "", "", AIPI_VERIFY_LOCAL) != AIPI_OK) bad++;
+    }
+    for (const char *p = no; *p; p++) {
+        name[0] = *p;
+        name[1] = 0;
+        if (check_names(name, "", "", AIPI_VERIFY_LOCAL) != AIPI_ERR_MALFORMED) bad++;
+        name[0] = 'e';
+        name[1] = *p;
+        name[2] = 0;
+        if (check_names(name, "", "", AIPI_VERIFY_LOCAL) != AIPI_ERR_MALFORMED) bad++;
+    }
+    CHECK(bad == 0);
+    CHECK(check_names("", "", "", AIPI_VERIFY_LOCAL) == AIPI_ERR_MALFORMED);
+    /* names differ anywhere, first or last byte, and are still two names */
+    CHECK(check_names("ab", "xb", "", AIPI_VERIFY_CHECKER) == AIPI_OK);
+    CHECK(check_names("ab", "ab", "", AIPI_VERIFY_CHECKER) == AIPI_ERR_MALFORMED);
+    memset(a63, 'q', 63);
+    a63[63] = 0;
+    memcpy(b63, a63, 64);
+    b63[62] = 'r';
+    CHECK(check_names(a63, b63, "", AIPI_VERIFY_CHECKER) == AIPI_OK);
+    CHECK(check_names(a63, a63, "", AIPI_VERIFY_CHECKER) == AIPI_ERR_MALFORMED);
+    CHECK(check_names("e", "c", "c", AIPI_VERIFY_CERT) == AIPI_ERR_MALFORMED);
+    CHECK(check_names("e", "c", "e", AIPI_VERIFY_CERT) == AIPI_ERR_MALFORMED);
+    CHECK(check_names("e", "c", "f", AIPI_VERIFY_CERT) == AIPI_OK);
+    /* one-letter names are names: no checker allowed outside CHECKER/CERT */
+    CHECK(check_names("e", "a", "", AIPI_VERIFY_QUORUM) == AIPI_ERR_MALFORMED);
+    CHECK(check_names("e", "", "a", AIPI_VERIFY_LOCAL) == AIPI_ERR_MALFORMED);
+    /* verify modes outside 1..4 are refused even with nothing else wrong */
+    CHECK(check_names("e", "", "", 0) == AIPI_ERR_MALFORMED);
+    CHECK(check_names("e", "", "", 5) == AIPI_ERR_MALFORMED);
+}
+
+static void test_edge_encoders(void)
+{
+    ipfsn_cid_t mod, f, call;
+    aipi_fn_t fn;
+    rec_arg_t a;
+    uint8_t *ex = malloc(32), big[AIPI_IO_MAX], cbig[AIPI_CERT_MAX];
+    uint8_t rec[AIPI_CALL_ENC_MAX];
+    int len;
+
+    ipfsn_cid_sha256(IPFSN_MC_RAW, MODULE, sizeof MODULE, &mod);
+    make_fn(&fn, &mod, "composite", AIPI_VERIFY_CERT);
+    strcpy(fn.checker, "composite_ok");
+    strcpy(fn.certifier, "factor_of");
+    len = aipi_fn_encode(&fn, rec, sizeof rec);
+    CHECK(len > 19 && sweep_caps(enc_fn, &fn) == len); /* without a contract */
+    fn.has_contract = true;
+    ipfsn_cid_sha256(IPFSN_MC_RAW, CONTRACT, sizeof CONTRACT, &fn.contract);
+    len = aipi_fn_encode(&fn, rec, sizeof rec);
+    CHECK(len > 19 && sweep_caps(enc_fn, &fn) == len); /* with one */
+    {
+        /* fuel is 8 bytes little-endian at offset 11, and the header ends at 19 */
+        fn.fuel_max = 0x8877665544332211ull;
+        len = aipi_fn_encode(&fn, rec, sizeof rec);
+        CHECK(rec[11] == 0x11 && rec[18] == 0x88 && rec[19] == 36u); /* then the module CID */
+        CHECK(!memcmp(rec, "AIPF\x01", 5));
+    }
+    fn.has_contract = false;
+    strcpy(fn.checker, "isqrt_ok");
+    strcpy(fn.entry, "isqrt");
+    fn.certifier[0] = 0;
+    fn.verify = AIPI_VERIFY_CHECKER;
+    aipi_fn_cid(&fn, &f);
+
+    memset(big, 0x3C, sizeof big);
+    memset(cbig, 0x4D, sizeof cbig);
+    memset(ex, 0xE1, 32);
+    memset(&a, 0, sizeof a);
+    a.cid = &f;
+    a.in = big;
+    for (uint32_t n = 0; n <= 300; n += 150) {
+        a.in_len = n;
+        len = aipi_call_encode(&f, big, n, rec, sizeof rec);
+        CHECK(len == 6 + 40 + 2 + (int) n && sweep_caps(enc_call, &a) == len);
+    }
+    a.in_len = AIPI_IO_MAX;
+    CHECK(sweep_caps(enc_call, &a) == 6 + 40 + 2 + (int) AIPI_IO_MAX);
+    /* the input length is two bytes, little-endian */
+    len = aipi_call_encode(&f, big, 300, rec, sizeof rec);
+    CHECK(rec[46] == (300 & 0xFF) && rec[47] == (300 >> 8) && !memcmp(rec, "AIPC\x01\x00", 6));
+
+    aipi_call_cid(&f, big, 8, &call);
+    a.cid = &call;
+    a.ex = ex;
+    a.out = big;
+    a.cert = cbig;
+    a.out_len = 3;
+    a.cert_len = 2;
+    CHECK(sweep_caps(enc_claim, &a) > 0);
+    a.out_len = AIPI_IO_MAX;
+    a.cert_len = AIPI_CERT_MAX;
+    CHECK(sweep_caps(enc_claim, &a) ==
+          6 + 40 + 32 + 2 + (int) AIPI_IO_MAX + 2 + (int) AIPI_CERT_MAX);
+    {
+        /* a reused buffer full of junk still decodes: every header byte is written */
+        static uint8_t cl[AIPI_CLAIM_ENC_MAX];
+        aipi_claim_t c;
+        memset(cl, 0xFF, sizeof cl);
+        len = aipi_claim_encode(&call, ex, big, 300, cbig, 260, cl, sizeof cl);
+        CHECK(len > 0 && aipi_claim_decode(cl, (uint32_t) len, &c) == AIPI_OK);
+        CHECK(c.out_len == 300 && c.cert_len == 260 && !memcmp(c.executor, ex, 32));
+        CHECK(!memcmp(c.out, big, 300) && !memcmp(c.cert, cbig, 260));
+    }
+
+    /* text: 'z' + base58btc + NUL */
+    len = aipi_cid_to_text(&f, (char *) rec, sizeof rec);
+    CHECK(len > 1 && sweep_caps(enc_text, &f) == len + 1);
+    {
+        ipfsn_cid_t v0 = mod;
+        v0.version = 0;
+        v0.codec = IPFSN_MC_DAG_PB;
+        CHECK(aipi_cid_to_text(&v0, (char *) rec, sizeof rec) == AIPI_ERR_UNSUPP);
+    }
+    free(ex);
+}
+
+/* A decoder that is handed any byte of the header changed, or the record cut
+ * anywhere, or one byte too many, refuses it. */
+typedef int (*dec_t)(const uint8_t *b, uint32_t len);
+static int dec_fn(const uint8_t *b, uint32_t len)
+{
+    aipi_fn_t fn;
+    return aipi_fn_decode(b, len, &fn);
+}
+static int dec_call(const uint8_t *b, uint32_t len)
+{
+    ipfsn_cid_t f;
+    const uint8_t *in;
+    uint32_t n;
+    return aipi_call_decode(b, len, &f, &in, &n);
+}
+static int dec_claim(const uint8_t *b, uint32_t len)
+{
+    aipi_claim_t c;
+    return aipi_claim_decode(b, len, &c);
+}
+static int sweep_decode(dec_t dec, const uint8_t *rec, uint32_t len, uint32_t header)
+{
+    int bad = 0;
+    uint8_t *b;
+    b = dup_exact(rec, len);
+    if (dec(b, len) != AIPI_OK) bad += 100;
+    free(b);
+    for (uint32_t l = 0; l < len; l++) {
+        b = dup_exact(rec, l);
+        if (dec(b, l) != AIPI_ERR_MALFORMED) bad++;
+        free(b);
+    }
+    b = malloc(len + 1u);
+    memcpy(b, rec, len);
+    b[len] = 0;
+    if (dec(b, len + 1u) != AIPI_ERR_MALFORMED) bad++;
+    for (uint32_t i = 0; i < header; i++) {
+        memcpy(b, rec, len);
+        b[i] ^= (uint8_t) (i == 5 ? 0x01 : 0x20); /* flags: the lowest bit too */
+        if (dec(b, len) != AIPI_ERR_MALFORMED) bad++;
+        b[i] = (uint8_t) (rec[i] + 1u);
+        if (dec(b, len) != AIPI_ERR_MALFORMED) bad++;
+    }
+    free(b);
+    return bad;
+}
+
+/* hand-built record: magic, version, flags, then one CID of any codec */
+static uint32_t rec_with_cid(const char *magic, const ipfsn_cid_t *cid, uint8_t *out)
+{
+    uint32_t pos = 6;
+    int n;
+    memcpy(out, magic, 4);
+    out[4] = 1;
+    out[5] = 0;
+    n = ipfsn_cid_encode(cid, out + 7, IPFSN_CID_BIN_MAX);
+    out[6] = (uint8_t) n;
+    pos += 1u + (uint32_t) n;
+    return pos;
+}
+
+static void test_edge_decoders(void)
+{
+    ipfsn_cid_t mod, f, call, back;
+    aipi_fn_t fn;
+    static uint8_t rec[AIPI_CLAIM_ENC_MAX], big[AIPI_IO_MAX], ex[32];
+    const uint8_t *in;
+    uint32_t in_len, pos;
+    aipi_claim_t c;
+    int len;
+
+    ipfsn_cid_sha256(IPFSN_MC_RAW, MODULE, sizeof MODULE, &mod);
+    make_fn(&fn, &mod, "composite", AIPI_VERIFY_CERT);
+    strcpy(fn.checker, "composite_ok");
+    strcpy(fn.certifier, "factor_of");
+    fn.has_contract = true;
+    ipfsn_cid_sha256(IPFSN_MC_RAW, CONTRACT, sizeof CONTRACT, &fn.contract);
+    len = aipi_fn_encode(&fn, rec, sizeof rec);
+    CHECK(sweep_decode(dec_fn, rec, (uint32_t) len, 5) == 0);
+    fn.has_contract = false;
+    len = aipi_fn_encode(&fn, rec, sizeof rec);
+    CHECK(sweep_decode(dec_fn, rec, (uint32_t) len, 5) == 0);
+    aipi_fn_cid(&fn, &f);
+
+    memset(big, 0x61, sizeof big);
+    for (uint32_t n = 0; n <= 300; n += 300) {
+        len = aipi_call_encode(&f, big, n, rec, sizeof rec);
+        CHECK(sweep_decode(dec_call, rec, (uint32_t) len, 6) == 0);
+    }
+    big[299] = 0x7E;
+    len = aipi_call_encode(&f, big, 300, rec, sizeof rec);
+    CHECK(aipi_call_decode(rec, (uint32_t) len, &back, &in, &in_len) == AIPI_OK);
+    CHECK(in_len == 300 && in == rec + 48 && in[299] == 0x7E && ipfsn_cid_equal(&back, &f));
+    len = aipi_call_encode(&f, big, AIPI_IO_MAX, rec, sizeof rec);
+    CHECK(aipi_call_decode(rec, (uint32_t) len, &back, &in, &in_len) == AIPI_OK &&
+          in_len == AIPI_IO_MAX);
+    /* a call record naming a data CID, or a call CID, is not a call */
+    pos = rec_with_cid("AIPC", &mod, rec);
+    rec[pos] = rec[pos + 1] = 0;
+    CHECK(aipi_call_decode(rec, pos + 2, &back, &in, &in_len) == AIPI_ERR_MALFORMED);
+    aipi_call_cid(&f, big, 8, &call);
+    pos = rec_with_cid("AIPC", &call, rec);
+    rec[pos] = rec[pos + 1] = 0;
+    CHECK(aipi_call_decode(rec, pos + 2, &back, &in, &in_len) == AIPI_ERR_MALFORMED);
+    /* an input length past AIPI_IO_MAX is refused even when the bytes are there */
+    {
+        static uint8_t over[AIPI_CALL_ENC_MAX + 1];
+        len = aipi_call_encode(&f, big, AIPI_IO_MAX, over, sizeof over);
+        over[len] = 0x61;
+        over[46] = (uint8_t) ((AIPI_IO_MAX + 1) & 0xFF);
+        over[47] = (uint8_t) ((AIPI_IO_MAX + 1) >> 8);
+        CHECK(aipi_call_decode(over, (uint32_t) len + 1, &back, &in, &in_len) ==
+              AIPI_ERR_MALFORMED);
+    }
+
+    memset(ex, 0x0E, sizeof ex);
+    len = aipi_claim_encode(&call, ex, big, 8, big, 4, rec, sizeof rec);
+    CHECK(sweep_decode(dec_claim, rec, (uint32_t) len, 6) == 0);
+    len = aipi_claim_encode(&call, ex, 0, 0, 0, 0, rec, sizeof rec);
+    CHECK(sweep_decode(dec_claim, rec, (uint32_t) len, 6) == 0);
+    len = aipi_claim_encode(&call, ex, big, AIPI_IO_MAX, big, AIPI_CERT_MAX, rec, sizeof rec);
+    CHECK(len > 0 && aipi_claim_decode(rec, (uint32_t) len, &c) == AIPI_OK);
+    CHECK(c.out_len == AIPI_IO_MAX && c.cert_len == AIPI_CERT_MAX);
+    /* lengths past the limits, with the bytes present, are still refused */
+    {
+        static uint8_t over[AIPI_CLAIM_ENC_MAX + 2];
+        uint32_t o = 6 + 40 + 32; /* header, call CID, executor */
+        len = aipi_claim_encode(&call, ex, big, AIPI_IO_MAX, 0, 0, over, sizeof over);
+        CHECK(len == (int) (o + 2 + AIPI_IO_MAX + 2));
+        over[o] = (uint8_t) ((AIPI_IO_MAX + 1) & 0xFF);
+        over[o + 1] = (uint8_t) ((AIPI_IO_MAX + 1) >> 8);
+        over[o + 2 + AIPI_IO_MAX] = 0x61; /* out is now 1025 bytes... */
+        over[o + 3 + AIPI_IO_MAX] = 0;    /* ...then an empty certificate */
+        over[o + 4 + AIPI_IO_MAX] = 0;
+        CHECK(aipi_claim_decode(over, (uint32_t) len + 1, &c) == AIPI_ERR_MALFORMED);
+        len = aipi_claim_encode(&call, ex, 0, 0, big, AIPI_CERT_MAX, over, sizeof over);
+        over[len] = 0x61;
+        over[o + 2] = (uint8_t) ((AIPI_CERT_MAX + 1) & 0xFF);
+        over[o + 3] = (uint8_t) ((AIPI_CERT_MAX + 1) >> 8);
+        CHECK(aipi_claim_decode(over, (uint32_t) len + 1, &c) == AIPI_ERR_MALFORMED);
+    }
+    /* a claim must name a call CID */
+    pos = rec_with_cid("AIPR", &f, rec);
+    memset(rec + pos, 0, 36);
+    CHECK(aipi_claim_decode(rec, pos + 36, &c) == AIPI_ERR_MALFORMED);
+    pos = rec_with_cid("AIPR", &call, rec);
+    memset(rec + pos, 0, 36);
+    CHECK(aipi_claim_decode(rec, pos + 36, &c) == AIPI_OK && c.out_len == 0);
+    {
+        /* a call CID with an identity multihash proves nothing: not one */
+        ipfsn_cid_t bad = call;
+        bad.mh_code = IPFSN_MH_IDENTITY;
+        CHECK(aipi_claim_encode(&bad, ex, 0, 0, 0, 0, rec, sizeof rec) == AIPI_ERR_UNSUPP);
+    }
+
+    /* text */
+    {
+        char *empty = (char *) dup_exact((const uint8_t *) "", 0);
+        CHECK(aipi_cid_from_text(empty, 0, &back) == AIPI_ERR_MALFORMED);
+        free(empty);
+        CHECK(aipi_cid_from_text("b!!!!", 5, &back) == AIPI_ERR_MALFORMED);
+        CHECK(aipi_cid_from_text("bafy", 4, &back) == AIPI_ERR_MALFORMED);
+        CHECK(aipi_cid_from_text("z!", 2, &back) == AIPI_ERR_MALFORMED);
+    }
+}
+
+static const ipfsn_pin_t *find_pin(const node_t *n, const ipfsn_cid_t *cid)
+{
+    for (int i = 0; i < 32; i++)
+        if (n->pins[i].used && ipfsn_cid_equal(&n->pins[i].cid, cid)) return &n->pins[i];
+    return NULL;
+}
+
+/* Flip one byte of the last stored copy of `bytes` in n's memstore. */
+static int corrupt_last(node_t *n, const uint8_t *bytes, uint32_t len)
+{
+    for (int64_t off = (int64_t) n->ms.len - len; off >= 0; off--)
+        if (!memcmp(n->ms.buf + off, bytes, len)) {
+            n->ms.buf[off] ^= 0x01;
+            return 1;
+        }
+    return 0;
+}
+
+static void test_edge_get_and_store(void)
+{
+    node_t *r = node_new(1), *p = node_new(2);
+    ipfsn_cid_t data, gone, cid;
+    uint8_t buf[256];
+    uint32_t len = 0;
+    lpx_t tag;
+    static const uint8_t DATA[] = "edge: local block";
+    static const uint8_t FAR[] = "edge: block behind a gateway";
+
+    /* a local hit is counted as verified and tagged so */
+    CHECK(aipi_put_blob(&r->a, DATA, sizeof DATA, IPFSN_VIS_PUBLIC, &data) == AIPI_OK);
+    CHECK(aipi_get(&r->a, &data, buf, sizeof buf, &len, &tag) == AIPI_OK);
+    CHECK(r->a.gets_verified == 1 && lpx_base(tag) == LPX_B_TRUE &&
+          lpx_phase(tag) == LPX_PH_MANIFEST);
+    CHECK(aipi_get(&r->a, &data, buf, sizeof buf, &len, NULL) == AIPI_OK &&
+          r->a.gets_verified == 2);
+    /* a pin records the CID itself for public data, a private handle for sealed data */
+    {
+        const ipfsn_pin_t *pin = find_pin(r, &data);
+        CHECK(pin && pin->vis == IPFSN_VIS_PUBLIC && !pin->private_cid &&
+              ipfsn_cid_equal(&pin->handle, &data));
+        CHECK(aipi_put_blob(&r->a, FAR, 5, IPFSN_VIS_PRIVATE, &cid) == AIPI_OK);
+        pin = find_pin(r, &cid);
+        CHECK(pin && pin->vis == IPFSN_VIS_PRIVATE && pin->private_cid &&
+              !ipfsn_cid_equal(&pin->handle, &cid));
+    }
+
+    /* the local store altered under us: dropped as FORBIDDEN, source local */
+    CHECK(corrupt_last(r, DATA, sizeof DATA));
+    CHECK(aipi_get(&r->a, &data, buf, sizeof buf, &len, &tag) == AIPI_ERR_HASH);
+    CHECK(lpx_forbidden(tag) && r->a.forbidden == 1 && r->qlog.n == 1);
+    CHECK(r->qlog.rec[0].submitter == 1 && r->a.gets_verified == 2);
+    /* with no tag and no quarantine log it is still refused and counted */
+    r->a.qlog = NULL;
+    CHECK(aipi_get(&r->a, &data, buf, sizeof buf, &len, NULL) == AIPI_ERR_HASH);
+    CHECK(r->a.forbidden == 2 && r->qlog.n == 1);
+    r->a.qlog = &r->qlog;
+
+    /* a gateway, no peers: verified, stored, counted */
+    r->in.peer.want = NULL;
+    use_gateway(r, p);
+    CHECK(aipi_put_blob(&p->a, FAR, sizeof FAR, IPFSN_VIS_PUBLIC, &data) == AIPI_OK);
+    p->a.online = true;
+    r->gw_tamper = 1;
+    CHECK(aipi_get(&r->a, &data, buf, sizeof buf, &len, &tag) == AIPI_ERR_HASH);
+    CHECK(lpx_forbidden(tag) && r->a.forbidden == 3 && r->qlog.n == 2);
+    CHECK(r->qlog.rec[1].submitter == 3 && !ipfsn_bs_has(&r->bs, &data));
+    r->a.qlog = NULL;
+    CHECK(aipi_get(&r->a, &data, buf, sizeof buf, &len, NULL) == AIPI_ERR_HASH);
+    r->a.qlog = &r->qlog;
+    r->gw_tamper = 0;
+    CHECK(aipi_get(&r->a, &data, buf, sizeof buf, &len, NULL) == AIPI_OK);
+    CHECK(r->a.gets_verified == 3 && r->wants == 0 && r->gw_gets == 3);
+    CHECK(len == sizeof FAR && !memcmp(buf, FAR, len));
+    CHECK(ipfsn_bs_visibility(&r->bs, &data) == (int) IPFSN_VIS_PUBLIC);
+    /* nobody has it: NOTFOUND, not a lie */
+    ipfsn_cid_sha256(IPFSN_MC_RAW, (const uint8_t *) "no one", 6, &gone);
+    CHECK(aipi_get(&r->a, &gone, buf, sizeof buf, &len, &tag) == AIPI_ERR_NOTFOUND);
+    CHECK(r->a.forbidden == 4 && !lpx_forbidden(tag));
+    /* peer and gateway: the peer lies, the gateway answers, the call succeeds */
+    {
+        node_t *q = node_new(3);
+        ipfsn_cid_t both;
+        static const uint8_t BOTH[] = "edge: on peer and gateway";
+        CHECK(aipi_put_blob(&q->a, BOTH, sizeof BOTH, IPFSN_VIS_PUBLIC, &both) == AIPI_OK);
+        CHECK(aipi_put_blob(&p->a, BOTH, sizeof BOTH, IPFSN_VIS_PUBLIC, &both) == AIPI_OK);
+        r->in.peer.want = nd_want;
+        r->peer = q;
+        r->tamper = 1;
+        CHECK(aipi_get(&r->a, &both, buf, sizeof buf, &len, &tag) == AIPI_OK);
+        CHECK(lpx_base(tag) == LPX_B_TRUE && r->a.forbidden == 5 && r->wants == 1);
+        /* peer honest but without it, gateway without it: NOTFOUND */
+        r->tamper = 0;
+        CHECK(aipi_get(&r->a, &gone, buf, sizeof buf, &len, &tag) == AIPI_ERR_NOTFOUND);
+        CHECK(r->a.forbidden == 5);
+        /* a peer that has it: counted once */
+        {
+            uint64_t v = r->a.gets_verified;
+            ipfsn_cid_t onq;
+            CHECK(aipi_put_blob(&q->a, (const uint8_t *) "only q", 6, IPFSN_VIS_PUBLIC, &onq) ==
+                  AIPI_OK);
+            CHECK(aipi_get(&r->a, &onq, buf, sizeof buf, &len, NULL) == AIPI_OK);
+            CHECK(r->a.gets_verified == v + 1);
+        }
+        /* a CID this node holds privately is never asked for, even when absent */
+        {
+            ipfsn_cid_t mine;
+            int w = r->wants, g = r->gw_gets;
+            CHECK(aipi_put_blob(&q->a, (const uint8_t *) "q too", 5, IPFSN_VIS_PUBLIC, &mine) ==
+                  AIPI_OK);
+            CHECK(ipfsn_pin(&r->in, &mine, IPFSN_VIS_PRIVATE, NULL) == IPFSN_OK);
+            CHECK(aipi_get(&r->a, &mine, buf, sizeof buf, &len, NULL) == AIPI_ERR_NOTFOUND);
+            CHECK(r->wants == w && r->gw_gets == g);
+        }
+        node_free(q);
+    }
+
+    /* storage refusals come back as AIPI codes */
+    CHECK(aipi_put_blob(&r->a, DATA, 3, 7, &cid) == AIPI_ERR_ARG);
+    {
+        uint8_t *huge = calloc(1, IPFSN_BLOCK_MAX + 1u);
+        CHECK(aipi_put_blob(&r->a, huge, IPFSN_BLOCK_MAX + 1u, IPFSN_VIS_PUBLIC, &cid) ==
+              AIPI_ERR_SPACE);
+        free(huge);
+    }
+    {
+        /* 32 pins: the 33rd distinct blob cannot be pinned */
+        node_t *s = node_new(4);
+        int ok = 0;
+        uint64_t i;
+        for (i = 0; i < 32; i++)
+            if (aipi_put_blob(&s->a, u64in(i), 8, IPFSN_VIS_PUBLIC, &cid) == AIPI_OK) ok++;
+        CHECK(ok == 32);
+        CHECK(aipi_put_blob(&s->a, u64in(i), 8, IPFSN_VIS_PUBLIC, &cid) == AIPI_ERR_FULL);
+        node_free(s);
+    }
+    node_free(r);
+    node_free(p);
+}
+
+static void local_fn(node_t *n, const char *entry, ipfsn_cid_t *f, aipi_fn_t *out)
+{
+    aipi_fn_t fn;
+    ipfsn_cid_t mod;
+    CHECK(aipi_put_blob(&n->a, MODULE, sizeof MODULE, IPFSN_VIS_PUBLIC, &mod) == AIPI_OK);
+    make_fn(&fn, &mod, entry, AIPI_VERIFY_LOCAL);
+    CHECK(aipi_publish_fn(&n->a, &fn, f) == AIPI_OK);
+    if (out) *out = fn;
+}
+
+static int memo_used(const node_t *n)
+{
+    int k = 0;
+    for (int i = 0; i < 4; i++) k += n->memo[i].used == 1;
+    return k;
+}
+
+static void test_edge_execute(void)
+{
+    node_t *r = node_new(1), *p = node_new(2);
+    ipfsn_cid_t f, call, mod;
+    aipi_fn_t fn;
+    static uint8_t out[AIPI_IO_MAX + 8], big[AIPI_IO_MAX];
+    uint32_t job, len;
+    const aipi_job_t *j;
+
+    /* init leaves no stale job or memo entry (node_new filled them with junk) */
+    {
+        int bad = 0;
+        for (int i = 0; i < JOBS; i++) bad += r->jobs[i].status != AIPI_JOB_FREE;
+        for (int i = 0; i < 4; i++) bad += r->memo[i].used != 0;
+        CHECK(bad == 0);
+    }
+
+    /* the contract travels with the module to the sandbox */
+    {
+        ipfsn_cid_t con;
+        CHECK(aipi_put_blob(&r->a, MODULE, sizeof MODULE, IPFSN_VIS_PUBLIC, &mod) == AIPI_OK);
+        CHECK(aipi_put_blob(&r->a, CONTRACT, sizeof CONTRACT, IPFSN_VIS_PUBLIC, &con) == AIPI_OK);
+        make_fn(&fn, &mod, "isqrt", AIPI_VERIFY_LOCAL);
+        fn.has_contract = true;
+        fn.contract = con;
+        CHECK(aipi_publish_fn(&r->a, &fn, &f) == AIPI_OK);
+        CHECK(aipi_execute(&r->a, &f, u64in(17), 8, false, 0, 0, 1, &job) == AIPI_OK);
+        CHECK(r->fx.last_contract_len == sizeof CONTRACT);
+        aipi_release(&r->a, job);
+        /* ...and a contract nobody has stops the call before it runs */
+        ipfsn_cid_sha256(IPFSN_MC_RAW, (const uint8_t *) "lost", 4, &fn.contract);
+        CHECK(aipi_publish_fn(&r->a, &fn, &f) == AIPI_OK);
+        {
+            int runs = r->fx.runs;
+            CHECK(aipi_execute(&r->a, &f, u64in(17), 8, false, 0, 0, 1, &job) == AIPI_ERR_NOTFOUND);
+            CHECK(r->fx.runs == runs);
+            aipi_release(&r->a, job);
+        }
+    }
+
+    /* outputs and inputs at AIPI_IO_MAX; errors from the sandbox pass through */
+    local_fn(r, "wide", &f, NULL);
+    CHECK(aipi_execute(&r->a, &f, u64in(1), 8, false, 0, 0, 1, &job) == AIPI_OK);
+    CHECK(aipi_result(&r->a, job, out, AIPI_IO_MAX - 1, &len) == AIPI_ERR_SPACE);
+    CHECK(aipi_result(&r->a, job, out, AIPI_IO_MAX, &len) == AIPI_OK && len == AIPI_IO_MAX &&
+          out[AIPI_IO_MAX - 1] == 0x5A);
+    aipi_release(&r->a, job);
+    local_fn(r, "too_wide", &f, NULL);
+    CHECK(aipi_execute(&r->a, &f, u64in(1), 8, false, 0, 0, 1, &job) == AIPI_ERR_EXEC);
+    aipi_release(&r->a, job);
+    local_fn(r, "no_space", &f, NULL);
+    CHECK(aipi_execute(&r->a, &f, u64in(1), 8, false, 0, 0, 1, &job) == AIPI_ERR_SPACE);
+    aipi_release(&r->a, job);
+    local_fn(r, "in_len", &f, NULL);
+    CHECK(aipi_execute(&r->a, &f, big, AIPI_IO_MAX, false, 0, 0, 1, &job) == AIPI_OK);
+    CHECK(aipi_result(&r->a, job, out, sizeof out, &len) == AIPI_OK && rd64(out) == AIPI_IO_MAX);
+    aipi_release(&r->a, job);
+    CHECK(aipi_execute(&r->a, &f, big, AIPI_IO_MAX + 1, false, 0, 0, 1, &job) == AIPI_ERR_SPACE);
+    CHECK(aipi_job(&r->a, 0) == NULL);
+    /* no sandbox, no local run */
+    r->a.exec.run = NULL;
+    CHECK(aipi_execute(&r->a, &f, u64in(2), 8, false, 0, 0, 1, &job) == AIPI_ERR_EXEC);
+    aipi_release(&r->a, job);
+    r->a.exec.run = fx_run;
+
+    /* the memo: one entry per call, a ring of four, oldest out first */
+    {
+        node_t *m = node_new(5);
+        ipfsn_cid_t cs[6];
+        int runs;
+        local_fn(m, "isqrt", &f, NULL);
+        for (uint64_t i = 0; i < 6; i++) aipi_call_cid(&f, u64in(100 + i), 8, &cs[i]);
+        for (uint64_t i = 0; i < 4; i++) {
+            CHECK(aipi_execute(&m->a, &f, u64in(100 + i), 8, false, 0, 0, 1, &job) == AIPI_OK);
+            aipi_release(&m->a, job);
+            CHECK(m->a.memo_next == (i + 1) % 4 && memo_used(m) == (int) i + 1);
+        }
+        CHECK(aipi_execute(&m->a, &f, u64in(104), 8, false, 0, 0, 1, &job) == AIPI_OK);
+        aipi_release(&m->a, job);
+        CHECK(ipfsn_cid_equal(&m->memo[0].call, &cs[4]) && m->a.memo_next == 1);
+        CHECK(ipfsn_cid_equal(&m->memo[1].call, &cs[1]) && memo_used(m) == 4);
+        /* the memo output is cached, not pinned */
+        CHECK(find_pin(m, &m->memo[0].output) == NULL);
+        runs = m->fx.runs;
+        CHECK(aipi_execute(&m->a, &f, u64in(100), 8, false, 0, 0, 1, &job) ==
+              AIPI_OK); /* evicted */
+        CHECK(aipi_job(&m->a, job)->route == AIPI_ROUTE_LOCAL && m->fx.runs == runs + 1);
+        aipi_release(&m->a, job);
+        CHECK(aipi_execute(&m->a, &f, u64in(103), 8, false, 0, 0, 1, &job) == AIPI_OK); /* kept */
+        CHECK(aipi_job(&m->a, job)->route == AIPI_ROUTE_CACHE && m->fx.runs == runs + 1);
+        aipi_release(&m->a, job);
+        /* a private input never comes from (or goes to) the memo */
+        CHECK(aipi_execute(&m->a, &f, u64in(103), 8, true, 0, 0, 1, &job) == AIPI_OK);
+        CHECK(aipi_job(&m->a, job)->route == AIPI_ROUTE_LOCAL && m->fx.runs == runs + 2);
+        aipi_release(&m->a, job);
+        node_free(m);
+    }
+    {
+        /* a memo entry whose stored output went bad: recomputed, not
+         * entered twice */
+        node_t *m = node_new(6);
+        uint8_t o8[8];
+        local_fn(m, "isqrt", &f, NULL);
+        CHECK(aipi_execute(&m->a, &f, u64in(0x1234567887654321ull), 8, false, 0, 0, 1, &job) ==
+              AIPI_OK);
+        aipi_result(&m->a, job, o8, 8, &len);
+        aipi_release(&m->a, job);
+        CHECK(memo_used(m) == 1 && m->a.memo_next == 1);
+        CHECK(corrupt_last(m, o8, 8));
+        CHECK(aipi_execute(&m->a, &f, u64in(0x1234567887654321ull), 8, false, 0, 0, 1, &job) ==
+              AIPI_OK);
+        j = aipi_job(&m->a, job);
+        CHECK(j->route == AIPI_ROUTE_LOCAL && m->fx.runs == 2 && m->a.forbidden == 1);
+        CHECK(aipi_result(&m->a, job, out, sizeof out, &len) == AIPI_OK && !memcmp(out, o8, 8));
+        CHECK(lpx_base(j->tag) == LPX_B_TRUE && lpx_phase(j->tag) == LPX_PH_MANIFEST);
+        CHECK(memo_used(m) == 1 && m->a.memo_next == 1);
+        aipi_release(&m->a, job);
+        node_free(m);
+    }
+
+    /* offline with the descriptor but not the code: unavailable, no job */
+    make_fn(&fn, &mod, "isqrt", AIPI_VERIFY_CHECKER);
+    strcpy(fn.checker, "isqrt_ok");
+    {
+        node_t *d = node_new(7);
+        CHECK(aipi_publish_fn(&d->a, &fn, &f) == AIPI_OK);
+        aipi_call_cid(&f, u64in(9), 8, &call);
+        d->a.online = false;
+        CHECK(aipi_plan(&d->a, &fn, &call, false) == AIPI_ROUTE_UNAVAILABLE);
+        CHECK(aipi_plan(&d->a, &fn, &call, true) == AIPI_ROUTE_UNAVAILABLE);
+        d->a.online = true;
+        CHECK(aipi_plan(&d->a, &fn, &call, false) == AIPI_ROUTE_MESH);
+        CHECK(aipi_plan(&d->a, &fn, &call, true) == AIPI_ROUTE_FETCH_LOCAL);
+        /* quorum needs no local code, so only "offline" can stop it */
+        make_fn(&fn, &mod, "smallest_factor", AIPI_VERIFY_QUORUM);
+        CHECK(aipi_publish_fn(&d->a, &fn, &f) == AIPI_OK);
+        d->a.online = false;
+        CHECK(aipi_execute(&d->a, &f, u64in(9), 8, false, 0, 0, 1, &job) == AIPI_ERR_OFFLINE);
+        CHECK(d->nbroadcasts == 0 && aipi_job(&d->a, 0) == NULL);
+        node_free(d);
+    }
+    (void) p;
+    node_free(r);
+    node_free(p);
+}
+
+/* a claim from any executor id, for any output */
+static int forge(node_t *r, uint8_t id_last, uint8_t id_fill, uint64_t val, uint8_t *claim)
+{
+    ipfsn_cid_t fc, call;
+    const uint8_t *in;
+    uint32_t in_len;
+    uint8_t ex[32], o[8];
+    memset(ex, id_fill, 32);
+    ex[31] = id_last;
+    wr64(o, val);
+    aipi_call_decode(r->last_call, r->last_call_len, &fc, &in, &in_len);
+    aipi_call_cid(&fc, in, in_len, &call);
+    return aipi_claim_encode(&call, ex, o, 8, 0, 0, claim, AIPI_CLAIM_ENC_MAX);
+}
+
+static void test_edge_mesh(void)
+{
+    node_t *r = node_new(1);
+    ipfsn_cid_t mod, f;
+    aipi_fn_t fn;
+    uint8_t claim[AIPI_CLAIM_ENC_MAX], v = 0;
+    uint32_t job, job2;
+    const aipi_job_t *j;
+    int cl;
+
+    ipfsn_cid_sha256(IPFSN_MC_RAW, MODULE, sizeof MODULE, &mod);
+    make_fn(&fn, &mod, "isqrt", AIPI_VERIFY_CHECKER);
+    strcpy(fn.checker, "isqrt_ok");
+    publish(r, &fn, &f);
+    use_ledger(r, 1000);
+
+    /* no checker hook: refused before anything is broadcast or reserved */
+    r->a.exec.check = NULL;
+    CHECK(aipi_execute(&r->a, &f, u64in(64), 8, false, 10, 0, 100, &job) == AIPI_ERR_EXEC);
+    CHECK(r->nbroadcasts == 0 && r->lg.balance == 1000 && aipi_job(&r->a, 0) == NULL);
+    r->a.exec.check = fx_check;
+
+    /* a failed broadcast refunds the bounty, and needs no refund hook when
+     * there is none */
+    r->fail_broadcast = 1;
+    CHECK(aipi_execute(&r->a, &f, u64in(64), 8, false, 10, 0, 100, &job) == AIPI_ERR_TRANSPORT);
+    CHECK(r->lg.balance == 1000 && r->lg.escrow == 0 && aipi_job(&r->a, 0) == NULL);
+    r->a.mesh.refund = NULL;
+    r->a.mesh.pay = NULL;
+    r->a.mesh.reserve = NULL;
+    CHECK(aipi_execute(&r->a, &f, u64in(64), 8, false, 0, 0, 100, &job) == AIPI_ERR_TRANSPORT);
+    CHECK(aipi_execute(&r->a, &f, u64in(64), 8, false, 1, 0, 100, &job) == AIPI_ERR_ARG);
+    r->fail_broadcast = 0;
+    use_ledger(r, 1000);
+    CHECK(r->a.broadcasts == 0);
+
+    /* rejections: BOTH, with the polarity of the evidence so far; eight
+     * claims fill the job; ids differing only in their last byte are two
+     * executors; an all-zero id is an id */
+    CHECK(aipi_execute(&r->a, &f, u64in(64), 8, false, 10, 0, 100, &job) == AIPI_OK);
+    CHECK(r->a.broadcasts == 1);
+    j = aipi_job(&r->a, job);
+    {
+        int bad = 0;
+        for (uint32_t i = 0; i < AIPI_CLAIMS_MAX; i++) {
+            cl = forge(r, (uint8_t) i, 0, 9 + i, claim); /* isqrt(64) is 8 */
+            if (aipi_submit(&r->a, job, claim, (uint32_t) cl, &v) != AIPI_OK ||
+                v != AIPI_V_REJECTED)
+                bad++;
+            if (j->nclaims != i + 1 || j->nrejected != i + 1) bad++;
+            if (lpx_base(j->tag) != LPX_B_BOTH ||
+                lpx_pol(j->tag) != lpx_polarity(0, i, 0, i + 1, false))
+                bad++;
+        }
+        CHECK(bad == 0);
+        /* the first claim came from the all-zero id; ids 0..7 differ only last */
+        cl = forge(r, 1, 0, 9, claim);
+        CHECK(aipi_submit(&r->a, job, claim, (uint32_t) cl, &v) == AIPI_ERR_DUP);
+        cl = forge(r, 8, 0, 8, claim);
+        CHECK(aipi_submit(&r->a, job, claim, (uint32_t) cl, &v) == AIPI_ERR_FULL);
+        CHECK(j->nclaims == AIPI_CLAIMS_MAX && j->status == AIPI_JOB_PENDING);
+    }
+    /* a second pending job expires on its own */
+    CHECK(aipi_execute(&r->a, &f, u64in(81), 8, false, 10, 0, 50, &job2) == AIPI_OK && job2 != job);
+    CHECK(aipi_tick(&r->a, 50) == 1 && aipi_job(&r->a, job2)->status == AIPI_JOB_EXPIRED);
+    CHECK(aipi_job(&r->a, job)->status == AIPI_JOB_PENDING);
+    CHECK(aipi_tick(NULL, 50) == 0);
+    aipi_release(&r->a, job2);
+
+    /* a checker that cannot run leaves the claim uncounted */
+    {
+        aipi_fn_t g = fn;
+        ipfsn_cid_t gf;
+        strcpy(g.checker, "no_such_checker");
+        CHECK(aipi_publish_fn(&r->a, &g, &gf) == AIPI_OK);
+        CHECK(aipi_execute(&r->a, &gf, u64in(64), 8, false, 0, 0, 100, &job2) == AIPI_OK);
+        cl = forge(r, 1, 1, 8, claim);
+        CHECK(aipi_submit(&r->a, job2, claim, (uint32_t) cl, &v) == AIPI_ERR_EXEC);
+        CHECK(aipi_job(&r->a, job2)->nclaims == 0);
+        r->a.exec.check = NULL; /* nor does one with no checker hook */
+        CHECK(aipi_submit(&r->a, job2, claim, (uint32_t) cl, &v) == AIPI_ERR_EXEC);
+        CHECK(aipi_job(&r->a, job2)->nclaims == 0);
+        r->a.exec.check = fx_check;
+        CHECK(aipi_tick(&r->a, 100) == 2);
+        aipi_release(&r->a, job2);
+    }
+    aipi_release(&r->a, job);
+    node_free(r);
+}
+
+static void test_edge_quorum_pay(void)
+{
+    node_t *r = node_new(1), *e[5];
+    ipfsn_cid_t mod, f;
+    aipi_fn_t fn;
+    uint8_t claim[AIPI_CLAIM_ENC_MAX], v = 0;
+    uint32_t job;
+    const aipi_job_t *j;
+    int cl;
+    static const uint64_t salts[5] = {0, 0, 1, 2, 0};
+
+    ipfsn_cid_sha256(IPFSN_MC_RAW, MODULE, sizeof MODULE, &mod);
+    make_fn(&fn, &mod, "salt", AIPI_VERIFY_QUORUM);
+    fn.quorum_n = 5;
+    fn.quorum_k = 3;
+    CHECK(aipi_publish_fn(&r->a, &fn, &f) == AIPI_OK);
+    for (int i = 0; i < 5; i++) {
+        e[i] = node_new((uint8_t) (10 + i));
+        publish(e[i], &fn, &f);
+        e[i]->fx.salt = salts[i];
+    }
+    use_ledger(r, 1000);
+
+    /* A, A, B, C: the A group can still reach 3 of 5, so it waits */
+    CHECK(aipi_execute(&r->a, &f, u64in(7), 8, false, 10, 0, 100, &job) == AIPI_OK);
+    CHECK(r->last_want == 5);
+    j = aipi_job(&r->a, job);
+    for (int i = 0; i < 4; i++) {
+        cl = answer(e[i], r, claim, sizeof claim);
+        CHECK(aipi_submit(&r->a, job, claim, (uint32_t) cl, &v) == AIPI_OK && v == AIPI_V_COUNTED);
+    }
+    CHECK(j->status == AIPI_JOB_PENDING && lpx_base(j->tag) == LPX_B_BOTH);
+    cl = answer(e[4], r, claim, sizeof claim);
+    CHECK(aipi_submit(&r->a, job, claim, (uint32_t) cl, &v) == AIPI_OK && v == AIPI_V_ACCEPTED);
+    /* 10 over three winners: 4, 3, 3, the extra unit to the earliest */
+    CHECK(lg_paid(&r->lg, e[0]->a.self) == 4 && lg_paid(&r->lg, e[1]->a.self) == 3 &&
+          lg_paid(&r->lg, e[4]->a.self) == 3);
+    CHECK(lg_paid(&r->lg, e[2]->a.self) == 0 && r->lg.nids == 3 && j->paid == 10);
+    aipi_release(&r->a, job);
+
+    /* a bounty smaller than the winners: units to the earliest, nobody paid 0 */
+    use_ledger(r, 1000);
+    CHECK(aipi_execute(&r->a, &f, u64in(8), 8, false, 1, 0, 100, &job) == AIPI_OK);
+    for (int i = 0; i < 5; i++) {
+        cl = answer(e[i == 2 ? 4 : i], r, claim, sizeof claim);
+        if (aipi_submit(&r->a, job, claim, (uint32_t) cl, &v) != AIPI_OK || v == AIPI_V_ACCEPTED)
+            break;
+    }
+    CHECK(v == AIPI_V_ACCEPTED && r->lg.nids == 1 && lg_paid(&r->lg, e[0]->a.self) == 1);
+    aipi_release(&r->a, job);
+
+    /* a bounty with the top bit set splits exactly (no 64-bit division) */
+    use_ledger(r, UINT64_MAX);
+    CHECK(aipi_execute(&r->a, &f, u64in(9), 8, false, (1ull << 63) + 3, 0, 100, &job) == AIPI_OK);
+    for (int i = 0; i < 5; i++) {
+        cl = answer(e[i == 2 ? 4 : i], r, claim, sizeof claim);
+        if (aipi_submit(&r->a, job, claim, (uint32_t) cl, &v) != AIPI_OK || v == AIPI_V_ACCEPTED)
+            break;
+    }
+    CHECK(v == AIPI_V_ACCEPTED);
+    {
+        const uint64_t bounty = (1ull << 63) + 3, share = bounty / 3, rem = bounty % 3;
+        CHECK(lg_paid(&r->lg, e[0]->a.self) == share + (rem > 0));
+        CHECK(lg_paid(&r->lg, e[1]->a.self) == share + (rem > 1));
+        CHECK(lg_paid(&r->lg, e[4]->a.self) == share);
+    }
+    CHECK(r->lg.escrow == 0);
+    aipi_release(&r->a, job);
+
+    /* a final dispute rejects every claim, the first one included */
+    use_ledger(r, 1000);
+    e[0]->fx.salt = 5;
+    e[1]->fx.salt = 6;
+    CHECK(aipi_execute(&r->a, &f, u64in(10), 8, false, 10, 0, 100, &job) == AIPI_OK);
+    j = aipi_job(&r->a, job);
+    for (int i = 0; i < 4; i++) {
+        cl = answer(e[i], r, claim, sizeof claim);
+        aipi_submit(&r->a, job, claim, (uint32_t) cl, &v);
+    }
+    CHECK(v == AIPI_V_DISPUTED && j->status == AIPI_JOB_DISPUTED);
+    {
+        int bad = 0;
+        for (uint32_t i = 0; i < j->nclaims; i++) bad += j->slot[i].verdict != AIPI_V_REJECTED;
+        CHECK(bad == 0 && j->nclaims == 4 && j->nrejected == 4);
+    }
+    aipi_release(&r->a, job);
+    node_free(r);
+    for (int i = 0; i < 5; i++) node_free(e[i]);
+}
+
+static void test_edge_serve(void)
+{
+    node_t *e = node_new(4);
+    ipfsn_cid_t mod, f;
+    aipi_fn_t fn;
+    static uint8_t rec[AIPI_CALL_ENC_MAX], claim[AIPI_CLAIM_ENC_MAX];
+    aipi_claim_t c;
+    int rl;
+
+    CHECK(aipi_put_blob(&e->a, MODULE, sizeof MODULE, IPFSN_VIS_PUBLIC, &mod) == AIPI_OK);
+    /* a CHECKER function's claim carries no certificate */
+    make_fn(&fn, &mod, "isqrt", AIPI_VERIFY_CHECKER);
+    strcpy(fn.checker, "isqrt_ok");
+    CHECK(aipi_publish_fn(&e->a, &fn, &f) == AIPI_OK);
+    rl = aipi_call_encode(&f, u64in(49), 8, rec, sizeof rec);
+    {
+        int cl = aipi_serve(&e->a, rec, (uint32_t) rl, claim, sizeof claim);
+        CHECK(cl > 0 && aipi_claim_decode(claim, (uint32_t) cl, &c) == AIPI_OK);
+        CHECK(c.cert_len == 0 && c.out_len == 8 && rd64(c.out) == 7 && e->fx.certs == 0);
+        CHECK(!memcmp(c.executor, e->a.self, 32));
+    }
+    e->a.exec.run = NULL;
+    CHECK(aipi_serve(&e->a, rec, (uint32_t) rl, claim, sizeof claim) == AIPI_ERR_EXEC);
+    e->a.exec.run = fx_run;
+    /* outputs: AIPI_IO_MAX served, one more refused */
+    make_fn(&fn, &mod, "wide", AIPI_VERIFY_QUORUM);
+    CHECK(aipi_publish_fn(&e->a, &fn, &f) == AIPI_OK);
+    rl = aipi_call_encode(&f, u64in(1), 8, rec, sizeof rec);
+    {
+        int cl = aipi_serve(&e->a, rec, (uint32_t) rl, claim, sizeof claim);
+        CHECK(cl > 0 && aipi_claim_decode(claim, (uint32_t) cl, &c) == AIPI_OK &&
+              c.out_len == AIPI_IO_MAX);
+    }
+    make_fn(&fn, &mod, "too_wide", AIPI_VERIFY_QUORUM);
+    CHECK(aipi_publish_fn(&e->a, &fn, &f) == AIPI_OK);
+    rl = aipi_call_encode(&f, u64in(1), 8, rec, sizeof rec);
+    CHECK(aipi_serve(&e->a, rec, (uint32_t) rl, claim, sizeof claim) == AIPI_ERR_EXEC);
+    /* certificates: none without a certifier hook, its errors pass through,
+     * AIPI_CERT_MAX bytes served, one more refused */
+    {
+        static const char *certs[] = {"factor_of", "cert_fails", "cert_wide", "cert_max"};
+        static const int want[] = {AIPI_ERR_EXEC, AIPI_ERR_SPACE, AIPI_ERR_EXEC, 1};
+        for (int i = 0; i < 4; i++) {
+            int cl;
+            make_fn(&fn, &mod, "composite", AIPI_VERIFY_CERT);
+            strcpy(fn.checker, "composite_ok");
+            strcpy(fn.certifier, certs[i]);
+            CHECK(aipi_publish_fn(&e->a, &fn, &f) == AIPI_OK);
+            rl = aipi_call_encode(&f, u64in(91), 8, rec, sizeof rec);
+            if (i == 0) e->a.exec.certify = NULL;
+            cl = aipi_serve(&e->a, rec, (uint32_t) rl, claim, sizeof claim);
+            e->a.exec.certify = fx_certify;
+            if (want[i] < 0) {
+                CHECK(cl == want[i]);
+            } else {
+                CHECK(cl > 0 && aipi_claim_decode(claim, (uint32_t) cl, &c) == AIPI_OK &&
+                      c.cert_len == AIPI_CERT_MAX && c.cert[AIPI_CERT_MAX - 1] == 0xC5);
+            }
+        }
+    }
+    node_free(e);
+}
+
+/* Every entry point refuses NULL where it needs a pointer, and an index
+ * one past the job table. */
+static void test_edge_nulls(void)
+{
+    node_t *n = node_new(1);
+    ipfsn_cid_t mod, f, call;
+    aipi_fn_t fn;
+    aipi_claim_t c;
+    uint8_t buf[AIPI_CLAIM_ENC_MAX], ex[32] = {0}, v;
+    const uint8_t *in;
+    uint32_t len, job;
+    char txt[AIPI_TEXT_MAX];
+    int bad = 0;
+
+    local_fn(n, "isqrt", &f, &fn);
+    mod = fn.module;
+    aipi_call_cid(&f, u64in(4), 8, &call);
+    len = (uint32_t) aipi_call_encode(&f, u64in(4), 8, buf, sizeof buf);
+
+    bad += aipi_fn_check(NULL) != AIPI_ERR_ARG;
+    bad += aipi_fn_encode(NULL, buf, sizeof buf) != AIPI_ERR_ARG;
+    bad += aipi_fn_encode(&fn, NULL, sizeof buf) != AIPI_ERR_ARG;
+    bad += aipi_fn_decode(NULL, 10, &fn) != AIPI_ERR_ARG;
+    bad += aipi_fn_decode(buf, 10, NULL) != AIPI_ERR_ARG;
+    bad += aipi_fn_cid(NULL, &f) != AIPI_ERR_ARG;
+    bad += aipi_fn_cid(&fn, NULL) != AIPI_ERR_ARG;
+    bad += aipi_call_encode(NULL, buf, 1, buf, sizeof buf) != AIPI_ERR_ARG;
+    bad += aipi_call_encode(&f, NULL, 1, buf, sizeof buf) != AIPI_ERR_ARG;
+    bad += aipi_call_encode(&f, buf, 1, NULL, sizeof buf) != AIPI_ERR_ARG;
+    bad += aipi_call_decode(NULL, len, &f, &in, &len) != AIPI_ERR_ARG;
+    bad += aipi_call_decode(buf, len, NULL, &in, &len) != AIPI_ERR_ARG;
+    bad += aipi_call_decode(buf, len, &f, NULL, &len) != AIPI_ERR_ARG;
+    bad += aipi_call_decode(buf, len, &f, &in, NULL) != AIPI_ERR_ARG;
+    bad += aipi_call_cid(&f, buf, 1, NULL) != AIPI_ERR_ARG;
+    bad += aipi_call_cid(NULL, buf, 1, &call) != AIPI_ERR_ARG;
+    bad += aipi_claim_encode(NULL, ex, 0, 0, 0, 0, buf, sizeof buf) != AIPI_ERR_ARG;
+    bad += aipi_claim_encode(&call, NULL, 0, 0, 0, 0, buf, sizeof buf) != AIPI_ERR_ARG;
+    bad += aipi_claim_encode(&call, ex, NULL, 1, 0, 0, buf, sizeof buf) != AIPI_ERR_ARG;
+    bad += aipi_claim_encode(&call, ex, 0, 0, NULL, 1, buf, sizeof buf) != AIPI_ERR_ARG;
+    bad += aipi_claim_encode(&call, ex, 0, 0, 0, 0, NULL, sizeof buf) != AIPI_ERR_ARG;
+    bad += aipi_claim_decode(NULL, 50, &c) != AIPI_ERR_ARG;
+    bad += aipi_claim_decode(buf, 50, NULL) != AIPI_ERR_ARG;
+    bad += aipi_cid_to_text(NULL, txt, sizeof txt) != AIPI_ERR_ARG;
+    bad += aipi_cid_to_text(&f, NULL, sizeof txt) != AIPI_ERR_ARG;
+    bad += aipi_cid_from_text(NULL, 5, &f) != AIPI_ERR_ARG;
+    bad += aipi_cid_from_text("zzzzz", 5, NULL) != AIPI_ERR_ARG;
+    bad += aipi_provider_key(NULL, ex) != AIPI_ERR_ARG;
+    bad += aipi_provider_key(&f, NULL) != AIPI_ERR_ARG;
+    bad += aipi_get(NULL, &mod, buf, sizeof buf, &len, 0) != AIPI_ERR_ARG;
+    bad += aipi_get(&n->a, NULL, buf, sizeof buf, &len, 0) != AIPI_ERR_ARG;
+    bad += aipi_get(&n->a, &mod, NULL, sizeof buf, &len, 0) != AIPI_ERR_ARG;
+    bad += aipi_get(&n->a, &mod, buf, sizeof buf, NULL, 0) != AIPI_ERR_ARG;
+    bad += aipi_put_blob(NULL, buf, 1, IPFSN_VIS_PUBLIC, &call) != AIPI_ERR_ARG;
+    bad += aipi_put_blob(&n->a, NULL, 1, IPFSN_VIS_PUBLIC, &call) != AIPI_ERR_ARG;
+    bad += aipi_put_blob(&n->a, buf, 1, IPFSN_VIS_PUBLIC, NULL) != AIPI_ERR_ARG;
+    bad += aipi_publish_fn(NULL, &fn, &call) != AIPI_ERR_ARG;
+    bad += aipi_publish_fn(&n->a, NULL, &call) != AIPI_ERR_ARG;
+    bad += aipi_publish_fn(&n->a, &fn, NULL) != AIPI_ERR_ARG;
+    bad += aipi_load_fn(NULL, &f, &fn) != AIPI_ERR_ARG;
+    bad += aipi_load_fn(&n->a, NULL, &fn) != AIPI_ERR_ARG;
+    bad += aipi_load_fn(&n->a, &f, NULL) != AIPI_ERR_ARG;
+    bad += aipi_plan(NULL, &fn, &call, false) != AIPI_ERR_ARG;
+    bad += aipi_plan(&n->a, NULL, &call, false) != AIPI_ERR_ARG;
+    bad += aipi_plan(&n->a, &fn, NULL, false) != AIPI_ERR_ARG;
+    bad += aipi_execute(NULL, &f, buf, 8, false, 0, 0, 1, &job) != AIPI_ERR_ARG;
+    bad += aipi_execute(&n->a, NULL, buf, 8, false, 0, 0, 1, &job) != AIPI_ERR_ARG;
+    bad += aipi_execute(&n->a, &f, NULL, 8, false, 0, 0, 1, &job) != AIPI_ERR_ARG;
+    bad += aipi_execute(&n->a, &f, buf, 8, false, 0, 0, 1, NULL) != AIPI_ERR_ARG;
+    bad += aipi_submit(NULL, 0, buf, 10, &v) != AIPI_ERR_ARG;
+    bad += aipi_submit(&n->a, 0, NULL, 10, &v) != AIPI_ERR_ARG;
+    bad += aipi_submit(&n->a, 0, buf, 10, NULL) != AIPI_ERR_ARG;
+    bad += aipi_serve(NULL, buf, len, buf, sizeof buf) != AIPI_ERR_ARG;
+    bad += aipi_serve(&n->a, NULL, len, buf, sizeof buf) != AIPI_ERR_ARG;
+    bad += aipi_serve(&n->a, buf, len, NULL, sizeof buf) != AIPI_ERR_ARG;
+    CHECK(bad == 0);
+
+    /* the job table: the last slot is a slot, the one after it is not */
+    {
+        uint8_t out[16];
+        uint32_t ids[JOBS];
+        for (uint32_t i = 0; i < JOBS; i++)
+            CHECK(aipi_execute(&n->a, &f, u64in(i + 1000), 8, false, 0, 0, 1, &ids[i]) == AIPI_OK);
+        CHECK(ids[JOBS - 1] == JOBS - 1 && aipi_job(&n->a, JOBS - 1) != NULL);
+        CHECK(aipi_result(&n->a, JOBS - 1, out, sizeof out, &len) == AIPI_OK);
+        CHECK(aipi_job(&n->a, JOBS) == NULL && aipi_job(NULL, 0) == NULL);
+        CHECK(aipi_result(&n->a, JOBS, out, sizeof out, &len) == AIPI_ERR_ARG);
+        CHECK(aipi_result(NULL, 0, out, sizeof out, &len) == AIPI_ERR_ARG);
+        CHECK(aipi_result(&n->a, 0, NULL, sizeof out, &len) == AIPI_ERR_ARG);
+        CHECK(aipi_result(&n->a, 0, out, sizeof out, NULL) == AIPI_ERR_ARG);
+        CHECK(aipi_release(&n->a, JOBS) == AIPI_ERR_ARG && aipi_release(NULL, 0) == AIPI_ERR_ARG);
+        CHECK(aipi_release(&n->a, JOBS - 1) == AIPI_OK && aipi_job(&n->a, JOBS - 1) == NULL);
+        for (uint32_t i = 0; i + 1 < JOBS; i++) aipi_release(&n->a, ids[i]);
+    }
+
+    /* every status has its own name */
+    {
+        int codes[17], nn = 0, dupn = 0;
+        for (int s = 0; s >= AIPI_ERR_TRANSPORT; s--) codes[nn++] = s;
+        for (int i = 0; i < nn; i++) {
+            const char *a = aipi_status_name(codes[i]);
+            if (!strncmp(a, "AIPI_ERR_?", 11)) dupn++;
+            for (int k = 0; k < i; k++)
+                if (!strcmp(a, aipi_status_name(codes[k]))) dupn++;
+        }
+        CHECK(dupn == 0 && !strcmp(aipi_status_name(AIPI_ERR_TRANSPORT), "AIPI_ERR_TRANSPORT"));
+        CHECK(!strcmp(aipi_status_name(AIPI_OK), "AIPI_OK"));
+        CHECK(!strcmp(aipi_status_name(-99), "AIPI_ERR_?"));
+    }
+    node_free(n);
+}
+
 int main(void)
 {
     test_cids_and_text();
@@ -1216,6 +2324,15 @@ int main(void)
     test_privacy();
     test_codec_and_funds();
     test_escrow_invariant();
+    test_edge_names();
+    test_edge_encoders();
+    test_edge_decoders();
+    test_edge_get_and_store();
+    test_edge_execute();
+    test_edge_mesh();
+    test_edge_quorum_pay();
+    test_edge_serve();
+    test_edge_nulls();
     printf("%d passed, %d failed\n", passes, failures);
     return failures ? 1 : 0;
 }
