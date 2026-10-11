@@ -1619,6 +1619,27 @@ static bool in_sync(void)
            vna_book_conserved(&bkS2) && vna_book_conserved(&bkB2);
 }
 
+typedef struct {
+    uint32_t n;
+    uint8_t role, res, form;
+    uint64_t units;
+    vna_id_t peer;
+    uint8_t hash[32];
+} done_log_t;
+static done_log_t dnS, dnB;
+static void on_done(void *ctx, uint8_t role, const vna_id_t *peer, uint8_t res, uint8_t form,
+                    uint64_t units, const uint8_t hash[32])
+{
+    done_log_t *d = (done_log_t *) ctx;
+    d->n++;
+    d->role = role;
+    d->res = res;
+    d->form = form;
+    d->units = units;
+    d->peer = *peer;
+    memcpy(d->hash, hash, 32);
+}
+
 static void test_link(void)
 {
     printf("[5b] trade loop: offer, accept, commit, confirm, retries, the gate loop\n");
@@ -1637,6 +1658,8 @@ static void test_link(void)
     vna_link_init(&lkS, &bkS2, &agS, &usS, seedS, 100, 3);
     vna_link_init(&lkB, &bkB2, 0, 0, seedB, 100, 3);
     const char *hk = "ask(compute, units: 1)";
+    vna_link_on_done(&lkS, on_done, &dnS);
+    vna_link_on_done(&lkB, on_done, &dnB);
 
     /* T1-T4 */
     int32_t w = vna_link_want(&lkB, VNA_RES_COMPUTE, SWARM_CAP_SYSTEM, 300, 1000);
@@ -1655,6 +1678,12 @@ static void test_link(void)
               vna_book_find(&bkB2, &IS->id)->contrib[SWARM_CAP_SYSTEM] == 300,
           "the buyer recorded the compute received and the seller's contribution");
     CHECK(in_sync(), "both books hold the same pair chain and are conserved");
+    CHECK(dnS.n == 1 && dnS.role == VNA_LINK_SELL && dnS.res == VNA_RES_COMPUTE &&
+              dnS.form == SWARM_CAP_SYSTEM && dnS.units == 100 && vna_id_eq(&dnS.peer, &IBu->id),
+          "L5: the seller hears its trade once, with the buyer, resource and units");
+    CHECK(dnB.n == 1 && dnB.role == VNA_LINK_BUY && dnB.units == 100 &&
+              vna_id_eq(&dnB.peer, &IS->id) && memcmp(dnS.hash, dnB.hash, 32) == 0,
+          "L5: the buyer hears the same receipt (same hash)");
 
     /* L3: only what was asked for, under the ceiling, from the counterparty */
     uint32_t ref0 = lkB.refused;
@@ -1717,6 +1746,10 @@ static void test_link(void)
     pump(false, false);
     CHECK(lkB.confirmed == 2 && vna_link_pending(&lkB, 0) == 0 && in_sync(),
           "the resent countersign draws the confirmation again; applied once, books in sync");
+    CHECK(dnS.n == 2 && dnB.n == 2, "L5: a duplicate delivery is not reported again");
+    vna_link_on_done(&lkS, 0, &dnS);
+    CHECK(lkS.done == 0 && lkS.done_ctx == 0, "the hook can be cleared");
+    vna_link_on_done(0, on_done, &dnS); /* no crash */
 
     /* T3 refused at commit: the agreement changed after the offer */
     vna_link_sell(&lkS, &IBu->id, VNA_TR_CREDIT, SWARM_CAP_SYSTEM, VNA_RES_COMPUTE, 5, 5, hk,

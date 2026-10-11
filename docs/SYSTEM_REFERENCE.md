@@ -1848,8 +1848,9 @@ Status: WORKING (tested in verify-all, also under ASan+UBSan; freestanding aarch
 What it does: Two layers of checks. (1) Before a node signs a ledger, budget or task transition, pa_precommit_check tests conservation, overflow, token budget, ISF headroom and sizes. On failure nothing is signed and the node enters a contradiction state (value-equal to LPRES_STATE_BOTH). (2) Peers replay each signed record (ML-DSA-65) through the real pay_ledger and swarm_budget code and compare bit for bit. A committee is drawn deterministically from the record hash, with a 2f+1 of 3f+1 signed-vote quorum. Canary challenges use the normal request format. Signed evidence can be re-checked by any third node and isolates the misbehaving peer through a host revoke callback; no funds are ever moved. Evidence that does not verify counts against the accuser. Inference uses commit-and-sample spot checks. See docs/PEER_AUDIT.md.
 Main entry points: pa_precommit_check, pa_emit_record, pa_replay_check, pa_committee, pa_vote, pa_quorum, pa_evidence_make, pa_evidence_check, pa_canary_issue, pa_canary_check, pa_infer_commit, pa_spot_sampled, pa_spot_check, pa_runtime_replay.
 Tests: peer_audit/test_peer_audit.c — 101 checks pass.
-Used by: nothing yet (library).
-Gaps: not wired to any transport (vinea/app); the revoke callback is not yet connected to porter_house or vinea; there is no agreed per-epoch peer list; full GGUF model replay is not tested; state lives in memory only.
+Signatures are ML-DSA-87, the same scheme as a Vinea node identity.
+Used by: settle (every spine transfer is encoded in pa_runtime's replayable form) and the desktop app, which self-audits and signs every ledger posting through settle's audit hook and reports the state, record count and events in /api/status.
+Gaps: records are not yet carried to peers (vinea); the revoke callback is not yet connected to porter_house or vinea; there is no agreed per-epoch peer list; full GGUF model replay is not tested; state lives in memory only.
 
 ### pci  —  PCI enumeration (x86)
 Status: PARTIAL
@@ -1960,8 +1961,8 @@ Status: WORKING (tested in verify-all)
 What it does: Quests, co-op groups, anti-abuse guards and earnable badges, plus quest payouts through the pay layer. Badges are signed with ML-DSA and encoded and decoded as bytes, and minors' badges are kept non-public.
 Main entry points: quest.h, quest_badge.h (qst_badge_encode/decode), quest_coop.h, quest_guard.h, quest_pay.h, quest_sign_mldsa.h.
 Tests: test_quest.c (133 checks, verify-all). qst_badge_decode was fuzzed here for 20k iterations with no crash.
-Used by: social (and it uses reputation and pqsec). Not in arm64 list.
-Gaps: None found.
+Used by: social (and it uses reputation and pqsec), and the desktop app: every compute or storage sale the node completes (vna_link L5, countersigned by the buyer, who is the verifier) is recorded for the owner, and /api/status shows the eight skills. Not in arm64 list.
+Gaps: the app's node trades nothing until owner controls for agreements and wants exist, so nothing is credited yet in practice.
 
 ### rational — exact rational arithmetic (WyvernEye)
 Status: WORKING (tested in verify-all)

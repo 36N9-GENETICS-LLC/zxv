@@ -73,6 +73,8 @@ struct zxv_net {
     vna_gate_t gate;
     uint8_t owner_secret[32];
     vna_link_t link;
+    vna_link_done_fn trade_fn; /* U7 */
+    void *trade_ctx;
 };
 
 uint64_t zxv_net_wall_ms(void)
@@ -289,6 +291,7 @@ int zxv_net_start(zxv_net_t *n, zxv_net_mode_t mode, const char *bind_ip, uint16
     if (vna_gate_begin_cycle(&n->gate, n->owner_secret) != VNA_OK) return fail(n, "gate failed");
     vna_link_init(&n->link, &n->book, NULL, NULL, lseed, 1000, 8);
     memset(lseed, 0, sizeof lseed);
+    vna_link_on_done(&n->link, n->trade_fn, n->trade_ctx);
     vna_node_set_rcpt_handler(&n->node, on_rcpt, n);
     size_t obcap = (size_t) (VNA_OUTBOX_MAX + 1u) * (VNA_MSG_WIRE_MAX + VNA_XFORM_MAX_OVERHEAD);
     if (!(n->obuf = (uint8_t *) malloc(obcap))) return fail(n, "out of memory");
@@ -452,6 +455,14 @@ int zxv_net_econ_cycle(zxv_net_t *n, swarm_budget_t *sb, uint64_t base_rate, uin
     drain_link(n, now_ms);
     flush(n);
     return st == VNA_OK ? 0 : -1;
+}
+
+void zxv_net_on_trade(zxv_net_t *n, vna_link_done_fn fn, void *ctx)
+{
+    if (!n) return;
+    n->trade_fn = fn;
+    n->trade_ctx = fn ? ctx : NULL;
+    vna_link_on_done(&n->link, fn, ctx);
 }
 
 void zxv_net_status(const zxv_net_t *n, zxv_net_status_t *st)

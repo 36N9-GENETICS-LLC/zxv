@@ -57,6 +57,11 @@ case "${1:-srcs}" in
         for f in src/tensor/zt*.c; do echo "$f"; done
         # the settlement spine: swarm money on the ledger of record
         echo src/settle/settle.c
+        # the node's self-audit of every posting (peer_audit layer 1)
+        echo src/peer_audit/peer_audit.c
+        echo src/peer_audit/pa_runtime.c
+        # the owner's verified contributions from trades (quest)
+        for f in quest quest_coop quest_guard; do echo "src/quest/$f.c"; done
         for f in pay_ledger pay_util pay_assure; do echo "src/pay/$f.c"; done
         # one copy of each file: vinea and update share sha256, aead, hkdf, ubh,
         # event_envelope and the ML-DSA sources
@@ -64,7 +69,7 @@ case "${1:-srcs}" in
         ;;
     incs)
         # the last five are kernel/Makefile's CPATH
-        for d in arch/hosted src/swarm src/tensor src/settle src/pay src/zcapital src/social src/vinea src/lpres \
+        for d in arch/hosted src/swarm src/tensor src/settle src/peer_audit src/quest src/pay src/zcapital src/social src/vinea src/lpres \
                  src/edp_risk src/update src/ipfs_node src/pqsec src/mlkem include src/modbind \
                  src/e8 src/event_space src/surplus; do
             echo "$d"

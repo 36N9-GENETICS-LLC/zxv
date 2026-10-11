@@ -28,6 +28,10 @@
  *   L3 FAIL CLOSED. Anything that does not fit (wrong sender, not asked for,
  *      over the ceiling, off the chain, refused by the book) is refused and
  *      counted; nothing is applied half-way.
+ *   L5 DONE. An optional hook (vna_link_on_done) hears each trade once, when
+ *      this node applies the fully signed receipt (T3 for the seller, T4 for
+ *      the buyer): role, counterparty, resource, form, units and the receipt
+ *      hash. A duplicate (L2) is not reported again.
  *   L4 THE LOOP. vna_link_cycle closes the node's economic cycle: verified
  *      remote compute received this cycle (countersigned receipts) becomes
  *      extra internal rate for the next swarm budget cycle through the owner
@@ -77,6 +81,10 @@ typedef struct {
     uint8_t bytes[VNA_RCPT_MAX];
 } vna_link_msg_t;
 
+/* L5: one applied trade. hash = SHA3-256 of the fully signed receipt. */
+typedef void (*vna_link_done_fn)(void *ctx, uint8_t role, const vna_id_t *peer, uint8_t resource,
+                                 uint8_t form, uint64_t units, const uint8_t hash[32]);
+
 typedef struct {
     vna_book_t *book;
     const vna_agreement_t *agr;
@@ -95,12 +103,17 @@ typedef struct {
     /* statistics */
     uint32_t offered, accepted, committed, confirmed, refused, resent, abandoned, out_dropped;
     uint64_t imported; /* internal rate added through the gate, all cycles */
+    vna_link_done_fn done;
+    void *done_ctx;
 } vna_link_t;
 
 /* `seed` (32 bytes) feeds the signature randomness. agr/us: this node's
  * sharing agreement and usage table (checked when it sells). */
 void vna_link_init(vna_link_t *l, vna_book_t *book, const vna_agreement_t *agr, vna_usage_t *us,
                    const uint8_t seed[32], uint64_t retry_ms, uint32_t max_tries);
+
+/* L5: set (or with fn NULL clear) the trade-done hook. */
+void vna_link_on_done(vna_link_t *l, vna_link_done_fn fn, void *ctx);
 
 /* T2: what this node is willing to buy. Returns the want slot or -1. */
 int32_t vna_link_want(vna_link_t *l, uint8_t resource, uint8_t form, uint64_t units,

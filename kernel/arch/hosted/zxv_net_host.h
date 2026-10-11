@@ -14,11 +14,11 @@
  *      the select() set it already uses for HTTP and calls zxv_net_on_readable
  *      when it is readable, and zxv_net_tick on every pass (RPC timeouts,
  *      lookups, republishing). Every datagram goes to vna_node_handle, which
- *      verifies it (ML-DSA-65, PoW, replay window) before acting on it; the
+ *      verifies it (ML-DSA-87, PoW, replay window) before acting on it; the
  *      node's outbox is sent after each call.
  *   U4 ADDRESSES. The Vinea transport address is 6 bytes: IPv4, then the
  *      port, both big-endian.
- *   U5 IDENTITY. A fresh ML-DSA-65 identity per start, seeded from the OS
+ *   U5 IDENTITY. A fresh ML-DSA-87 identity per start, seeded from the OS
  *      CSPRNG (no key is written to disk yet, so the NodeID changes at each
  *      start). The node runs at degree ROUTE with no sharing agreement: it
  *      answers PING / FIND_NODE / FIND_VALUE and refuses STORE and every
@@ -32,9 +32,12 @@
  *      the node sells nothing and wants nothing, so the loop imports 0 until
  *      the owner enables trading.
  *
+ *   U7 TRADES. zxv_net_on_trade hands every applied trade (vna_link.h L5) to
+ *      the app, which credits the owner's verified contributions (quest.h).
+ *      The hook survives restarts of the node.
  * HONEST LIMITS: no LAN multicast discovery yet (vna_lan.h needs a multicast
  * socket; peers are added by address with --peer or POST /api/net), no NAT
- * traversal, no IPv6, frames up to 13,700 bytes rely on IP fragmentation off
+ * traversal, no IPv6, frames up to about 17.6 KB rely on IP fragmentation off
  * the loopback, no persisted peers or identity. Single-threaded.
  */
 #ifndef ZXV_NET_HOST_H
@@ -43,6 +46,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include "swarm_budget.h"
+#include "vna_link.h"
 
 typedef enum { ZXV_NET_OFF = 0, ZXV_NET_LAN, ZXV_NET_ONLINE } zxv_net_mode_t;
 
@@ -118,5 +122,8 @@ int zxv_net_econ_cycle(zxv_net_t *n, swarm_budget_t *sb, uint64_t base_rate, uin
 /* Wall-clock milliseconds (Vinea's replay window compares timestamps
  * between peers, so this is real time, not a monotonic clock). */
 uint64_t zxv_net_wall_ms(void);
+
+/* U7: hear every trade this node applies (NULL clears). */
+void zxv_net_on_trade(zxv_net_t *n, vna_link_done_fn fn, void *ctx);
 
 #endif /* ZXV_NET_HOST_H */

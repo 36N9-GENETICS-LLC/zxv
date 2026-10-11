@@ -16,6 +16,13 @@ void vna_link_init(vna_link_t *l, vna_book_t *book, const vna_agreement_t *agr, 
     l->max_tries = max_tries ? max_tries : 8u;
 }
 
+void vna_link_on_done(vna_link_t *l, vna_link_done_fn fn, void *ctx)
+{
+    if (!l) return;
+    l->done = fn;
+    l->done_ctx = fn ? ctx : 0;
+}
+
 int32_t vna_link_want(vna_link_t *l, uint8_t resource, uint8_t form, uint64_t units,
                       uint64_t max_price)
 {
@@ -188,6 +195,8 @@ static vna_status_t on_signed(vna_link_t *l, const vna_receipt_t *r, const vna_i
     uint8_t rnd[32];
     vna_drbg_gen(&l->rng, rnd, 32);
     uint64_t seq = r->pair_seq; /* the book reuses its own scratch; keep what we need */
+    uint8_t res = r->resource, form = r->form;
+    uint64_t units = r->units;
     vna_status_t st =
         vna_book_apply(l->book, bytes, len, i_sell ? l->agr : 0, i_sell ? l->us : 0, now, rnd);
     vna_link_pend_t *p = pend_of(l, peer);
@@ -202,6 +211,11 @@ static vna_status_t on_signed(vna_link_t *l, const vna_receipt_t *r, const vna_i
             l->committed++;
         } else {
             l->confirmed++;
+        }
+        if (l->done) { /* L5 */
+            uint8_t h[32];
+            vna_sha3(bytes, len, h);
+            l->done(l->done_ctx, i_sell ? VNA_LINK_SELL : VNA_LINK_BUY, peer, res, form, units, h);
         }
         return VNA_OK;
     }

@@ -144,6 +144,13 @@ def main(binary, gguf=None):
         check(s['levied'] == s['fees'] - s['bounties_returned'] and s['bounties_returned'] <= s['fees'],
               'the fee loop: %d levied = %d fees - %d bounties returned' %
               (s['levied'], s['fees'], s['bounties_returned']))
+        check(s['audit'] == 'active' and s['audit_records'] > 0 and s['audit_events'] == 0,
+              'the node self-audits and signs every ledger posting (%d records, state %s)' %
+              (s['audit_records'], s['audit']))
+        q = s['quest']
+        check(len(q['skills']) == 8 and q['refused'] == 0 and
+              all(k['level'] == 0 and k['points'] == 0 for k in q['skills']),
+              'quest: eight skills, nothing credited before the owner trades')
         check(len(s['agents']) >= 1 and s['agents'][0]['name'] == 'Companion', 'companion first')
         check('model' in s, 'state reports the model slot')
         c = s.get('companion', {})

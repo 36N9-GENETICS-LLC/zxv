@@ -84,6 +84,8 @@ typedef int sock_t;
 #include "swarm_governor.h"
 #include "swarm_dna.h"
 #include "settle.h"
+#include "pa_runtime.h"
+#include "quest.h"
 #include "zxv_http_guard.h"
 #include "zxv_model_host.h"
 #include "zxv_budget_gate.h"
@@ -251,6 +253,14 @@ static struct {
     swarm_emotion_state_t e;
     swarm_ledger_t l;
     settle_spine_t spine; /* the swarm's money on the ledger of record (settle.h) */
+    /* the node's self-audit (peer_audit.h layer 1) over every spine posting */
+    pa_ctx_t audit;
+    bool audit_on;
+    uint64_t audit_records;
+    uint8_t audit_last[PA_HASH_LEN];
+    /* the owner's verified contributions (quest.h): the single local person */
+    qst_world_t quest;
+    uint32_t quest_refused;
     swarm_overlap_t o;
     swarm_witness_t w[SWARM_MAX_MODELS];
     uint32_t nw;
@@ -310,6 +320,79 @@ static void scan_hardware(void)
     S.gov = swarm_governor_budget(&S.hw, AGENT_MB, TOKENS_PER_CORE);
 }
 
+/* The node's audit key (ML-DSA-87, the Vinea identity scheme). Ephemeral,
+ * like the net host's identity: made from the OS random source at launch. */
+static uint8_t audit_pk[PA_PK_LEN], audit_sk[PA_SK_LEN];
+static pay_ledger_t audit_tmp; /* replay scratch */
+static pa_record_t audit_rec;
+static pa_runtime_t audit_rt; /* the replica a peer's record is replayed against */
+
+/* settle.h A2: replay the posting on a scratch copy, then self-audit and sign
+ * it (pa_emit_record). A refusal puts the node in the contradiction state and
+ * halts the spine; nothing is signed. The signed records are what a peer
+ * replays (pa_runtime.h); carrying them to peers is the net host's job. */
+static bool audit_posting(void *ctx, const pay_ledger_t *L, const uint8_t *in, uint8_t expect[32])
+{
+    (void) ctx;
+    pa_runtime_t rt = {(pay_ledger_t *) L, &audit_tmp, NULL, NULL, S.spine.asset};
+    uint8_t prev[PA_HASH_LEN], out[PA_XFER_OUT_LEN];
+    uint32_t olen = sizeof out;
+    pa_ledger_state_hash(L, prev);
+    if (pa_runtime_replay(&rt, PA_KIND_LEDGER_TRANSFER, prev, in, PA_XFER_IN_LEN, out, &olen,
+                          expect) != PA_OK)
+        return false;
+    pa_precommit_t pc;
+    pa_ledger_precommit(L, &audit_tmp, S.spine.asset, 1, &pc);
+    if (pa_emit_record(&S.audit, PA_KIND_LEDGER_TRANSFER, prev, in, PA_XFER_IN_LEN, out, olen,
+                       expect, &pc, &audit_rec) != PA_OK)
+        return false;
+    pa_record_hash(&audit_rec, S.audit_last);
+    S.audit_records++;
+    return true;
+}
+
+static void audit_start(void)
+{
+    uint8_t seed[32];
+    if (zxv_os_random(seed, sizeof seed) != 0) return; /* audit stays off, and says so */
+    pqm_mldsa87_keygen(seed, audit_pk, audit_sk);
+    memset(seed, 0, sizeof seed);
+    audit_rt.ledger = &S.spine.L;
+    audit_rt.ledger_tmp = &audit_tmp;
+    pa_init(&S.audit, 0, audit_sk, NULL, pa_runtime_replay, &audit_rt, NULL, NULL);
+    S.audit_on = true;
+}
+
+/* zxv_net_host.h U7: a trade this node applied. Compute or storage it SOLD
+ * was delivered to a peer, which countersigned the receipt: that peer is the
+ * verifier (quest.h Q1), the receipt hash the evidence (claimable once).
+ * Peer verifier ids carry the top bit, so they never equal the owner's local
+ * subject id. Buying is not a contribution. */
+#define QUEST_OWNER 1u
+static void quest_trade(void *ctx, uint8_t role, const vna_id_t *peer, uint8_t resource,
+                        uint8_t form, uint64_t units, const uint8_t hash[32])
+{
+    (void) ctx;
+    (void) form;
+    if (role != VNA_LINK_SELL) return;
+    qst_event_t ev;
+    memset(&ev, 0, sizeof ev);
+    if (resource == VNA_RES_COMPUTE)
+        ev.kind = QST_EV_COMPUTE_SHARED;
+    else if (resource == VNA_RES_STORAGE)
+        ev.kind = QST_EV_STORAGE_SHARED;
+    else
+        return;
+    ev.subject = QUEST_OWNER;
+    ev.source = QST_SRC_FARM;
+    ev.qty = units;
+    memcpy(ev.evidence, hash, 32);
+    ev.verifier = 0x80000000u | ((uint32_t) peer->b[0] << 16 | (uint32_t) peer->b[1] << 8 |
+                                 (uint32_t) peer->b[2]);
+    ev.day = (uint32_t) (zxv_net_wall_ms() / 86400000u);
+    if (qst_record(&S.quest, &ev) < 0) S.quest_refused++;
+}
+
 /* Build (or rebuild) the swarm to the governor's size. */
 static void build_swarm(void)
 {
@@ -348,6 +431,7 @@ static void build_swarm(void)
             swarm_emotion_set_feeling(&S.e, id, t.home);
         }
     }
+    if (S.audit_on) settle_set_audit(&S.spine, audit_posting, NULL);
 }
 
 /* The last cycle's allotments, kept after the cycle closes so the window can
@@ -638,7 +722,8 @@ static void state_json(buf_t *b)
         "\"due_mask\":%u,\"settled\":%llu,\"held\":%llu,\"money_supply\":%llu,\"pot\":%llu,"
         "\"imag\":%llu,\"saved\":%llu,\"mood\":\"%s %u\",\"ledger_postings\":%llu,"
         "\"ledger_synced\":%llu,\"ledger_halt\":%d,\"levied\":%llu,\"fees\":%llu,"
-        "\"bounties_returned\":%llu,\"agents\":[",
+        "\"bounties_returned\":%llu,\"audit\":\"%s\",\"audit_records\":%llu,"
+        "\"audit_events\":%u,",
         S.remote ? "true" : "false", S.hw.cores, S.gov.cores_milli,
         (unsigned long long) S.hw.mem_total_mb, (unsigned long long) S.gov.mem_mb, S.b.num_levels,
         (unsigned long long) S.b.tokens_per_cycle, (unsigned long long) S.tick,
@@ -649,7 +734,20 @@ static void state_json(buf_t *b)
         (unsigned long long) S.e.last_imag_pool, (unsigned long long) S.o.tokens_saved, mood,
         S.e.mood.intensity, (unsigned long long) S.spine.seq, (unsigned long long) S.spine.cycles,
         S.spine.halted ? (int) S.spine.why : 0, (unsigned long long) S.m.levied,
-        (unsigned long long) S.spine.fees, (unsigned long long) S.spine.recycled);
+        (unsigned long long) S.spine.fees, (unsigned long long) S.spine.recycled,
+        !S.audit_on                              ? "off"
+        : S.audit.state == PA_NODE_CONTRADICTION ? "contradiction"
+                                                 : "active",
+        (unsigned long long) S.audit_records, S.audit.n_events);
+    /* the owner's mastery (quest.h Q9: levels and points, no rank or streak) */
+    static qst_view_t qv;
+    qst_view(&S.quest, QUEST_OWNER, (uint32_t) (zxv_net_wall_ms() / 86400000u), &qv);
+    bput(b, "\"quest\":{\"contributed\":%llu,\"refused\":%u,\"skills\":[",
+         (unsigned long long) qv.contributed_units, S.quest_refused);
+    for (uint32_t k = 0; k < QST_SKILL_COUNT; k++)
+        bput(b, "%s{\"skill\":\"%s\",\"level\":%u,\"points\":%u}", k ? "," : "",
+             qst_skill_name((qst_skill_t) k), qv.skill[k].level, qv.skill[k].points);
+    bput(b, "]},\"agents\":[");
     for (uint32_t i = 0; i < S.num_agents; i++) {
         const agent_t *a = &S.agent[i];
         const swarm_slot_t *s = &S.b.slots[i];
@@ -1056,6 +1154,7 @@ int main(int argc, char **argv)
 #else
     signal(SIGPIPE, SIG_IGN);
 #endif
+    audit_start();
     S.instance_seed = (uint64_t) time(NULL) * 0x9E3779B97F4A7C15ull ^ 0x36A9u;
     S.rng = S.instance_seed | 1u;
     swarm_ledger_init(&S.l);
@@ -1086,6 +1185,9 @@ int main(int argc, char **argv)
         fprintf(stderr, "zxv-host: out of memory\n");
         return 1;
     }
+    qst_init(&S.quest, NULL, NULL, &S.bus); /* single-user desktop: no age policy */
+    qst_enrol(&S.quest, QUEST_OWNER);
+    zxv_net_on_trade(S.net, quest_trade, NULL);
 
     /* the model slot: an explicit file, else the first *.gguf in the
      * models folder, else none (the swarm runs without one) */

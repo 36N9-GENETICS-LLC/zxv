@@ -11,6 +11,7 @@
 #include "settle.h"
 #include "swarm_budget.h"
 #include "swarm_emotion.h"
+#include "../peer_audit/pa_runtime.h"
 
 static int pass, fail;
 #define CHECK(c, msg)                                                                              \
@@ -406,8 +407,119 @@ static void test_levy(void)
           "a corrupt fee carry halts, nothing levied");
 }
 
+/* A1-A3: the audit hook. The hook here does what a node's peer_audit layer
+ * does: replay the posting on a scratch copy (pa_runtime_replay), check
+ * conservation on it (pa_ledger_precommit), keep the record and approve the
+ * state it reached. A second replica, fed only the kept records, must land on
+ * the spine's ledger exactly. */
+typedef struct {
+    pay_ledger_t tmp;
+    uint32_t calls, refuse_at, lie_at;
+    uint8_t in[64][PA_XFER_IN_LEN];
+    uint32_t kept;
+} audit_t;
+static audit_t A;
+static pay_ledger_t R; /* the independent replica */
+
+static bool hook(void *ctx, const pay_ledger_t *L, const uint8_t *in, uint8_t expect[32])
+{
+    audit_t *a = (audit_t *) ctx;
+    a->calls++;
+    if (a->calls == a->refuse_at) return false;
+    pa_runtime_t rt = {(pay_ledger_t *) L, &a->tmp, 0, 0, 0};
+    uint8_t prev[32], out[PA_XFER_OUT_LEN];
+    uint32_t olen = sizeof out;
+    pa_ledger_state_hash(L, prev);
+    if (pa_runtime_replay(&rt, PA_KIND_LEDGER_TRANSFER, prev, in, PA_XFER_IN_LEN, out, &olen,
+                          expect) != PA_OK)
+        return false;
+    pa_precommit_t pc;
+    pa_ledger_precommit(L, &a->tmp, 0, 1, &pc);
+    if (pc.sum_before != pc.sum_after) return false;
+    if (a->kept < 64) memcpy(a->in[a->kept++], in, PA_XFER_IN_LEN);
+    if (a->calls == a->lie_at) expect[0] ^= 1;
+    return true;
+}
+
+/* refuse only the posting from B.from into a fee bucket (index >= to_bucket) */
+static struct {
+    uint32_t from, to_bucket;
+    bool hit;
+} B;
+static bool refuse_fee(void *ctx, const pay_ledger_t *L, const uint8_t *in, uint8_t expect[32])
+{
+    const settle_spine_t *sp = (const settle_spine_t *) ctx;
+    pa_xfer_t x;
+    if (!pa_xfer_decode(in, PA_XFER_IN_LEN, &x)) return false;
+    for (uint32_t i = B.to_bucket; i < PAY_ASSURE_BUCKETS; i++)
+        if (x.from == B.from && x.to == sp->bucket[i] && x.to != B.from) {
+            B.hit = true;
+            return false;
+        }
+    /* approve: the state the ledger reaches */
+    static pay_ledger_t tmp;
+    memcpy(&tmp, L, sizeof tmp);
+    uint8_t out[PA_XFER_OUT_LEN];
+    pa_ledger_apply(&tmp, in, PA_XFER_IN_LEN, out);
+    pa_ledger_state_hash(&tmp, expect);
+    return true;
+}
+
+static void test_audit(void)
+{
+    build(&W, 3, 0x71);
+    memcpy(&R, &W.s.L, sizeof R); /* the replica starts where the spine does */
+    memset(&A, 0, sizeof A);
+    settle_set_audit(&W.s, hook, &A);
+    bool ok = true;
+    for (uint32_t c = 0; c < 4 && ok; c++) ok = cycle(&W, c);
+    CHECK(ok && A.calls > 0 && W.s.audited == A.calls, "every posting goes through the hook");
+    CHECK(A.kept == A.calls && A.kept < 64, "the hook kept every approved posting");
+    uint8_t out[PA_XFER_OUT_LEN], h1[32], h2[32];
+    for (uint32_t i = 0; i < A.kept; i++) pa_ledger_apply(&R, A.in[i], PA_XFER_IN_LEN, out);
+    pa_ledger_state_hash(&R, h1);
+    pa_ledger_state_hash(&W.s.L, h2);
+    CHECK(memcmp(h1, h2, 32) == 0, "a replica fed only the records lands on the same ledger");
+
+    uint64_t seq = W.s.seq;
+    A.refuse_at = A.calls + 1;
+    for (uint32_t c = 4; c < 40 && !W.s.halted; c++) cycle(&W, c);
+    CHECK(W.s.halted && W.s.why == SETTLE_ERR_AUDIT && W.s.seq == seq,
+          "a refused posting halts the spine (SETTLE_ERR_AUDIT) and posts nothing");
+    CHECK(W.s.audited == A.refuse_at - 1, "only the approved postings are counted");
+
+    build(&W, 3, 0x72);
+    memset(&A, 0, sizeof A);
+    A.lie_at = 1;
+    settle_set_audit(&W.s, hook, &A);
+    for (uint32_t c = 0; c < 40 && !W.s.halted; c++) cycle(&W, c);
+    CHECK(W.s.halted && W.s.why == SETTLE_ERR_AUDIT && W.s.audited == 0,
+          "a ledger that lands elsewhere than the approved state halts the spine");
+
+    /* a refused fee posting (pot -> reserve) and a refused split posting
+     * (reserve -> another bucket) each halt the levy */
+    for (int which = 0; which < 2; which++) {
+        build(&W, 3, (uint8_t) (0x74 + which));
+        memset(&B, 0, sizeof B);
+        B.from = which ? W.s.bucket[PAY_ASSURE_RESERVE_FLOOR] : W.s.pot;
+        B.to_bucket = which ? 1 : 0;
+        settle_set_audit(&W.s, refuse_fee, &W.s);
+        for (uint32_t c = 0; c < 400 && !W.s.halted; c++) cycle(&W, c);
+        CHECK(W.s.halted && W.s.why == SETTLE_ERR_AUDIT && B.hit,
+              which ? "a refused bucket split halts the levy"
+                    : "a refused fee posting halts the levy");
+    }
+
+    build(&W, 3, 0x73);
+    settle_set_audit(&W.s, hook, &A);
+    settle_set_audit(&W.s, 0, &A);
+    CHECK(W.s.audit == 0 && W.s.audit_ctx == 0, "the hook can be cleared");
+    settle_set_audit(0, hook, &A); /* no crash */
+}
+
 int main(void)
 {
+    test_audit();
     test_long_run();
     test_levy();
     test_deterministic();

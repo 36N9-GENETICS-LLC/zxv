@@ -52,6 +52,21 @@
  *       settle_init. It never edits either book to make them agree: which
  *       book is wrong is a question for the operator, not a repair.
  *
+ * AUDIT (optional, settle_set_audit; peer_audit.h layer 1)
+ * ----------------------------------------------------------
+ *   A1  Every transfer the spine posts is encoded in peer_audit's replayable
+ *       form (pa_runtime.h PA_KIND_LEDGER_TRANSFER) and applied through the
+ *       same code a verifier replays, so a peer holding a replica of the
+ *       ledger can re-run any posting bit for bit.
+ *   A2  With a hook set, the hook sees the ledger and the encoded posting
+ *       BEFORE it is applied. It may refuse (the spine halts with
+ *       SETTLE_ERR_AUDIT and nothing is posted); if it approves, it returns
+ *       the state hash (pa_ledger_state_hash) the ledger must reach.
+ *   A3  After the posting the spine recomputes the state hash; any
+ *       difference from what the hook approved halts the spine.
+ *   The issue at settle_join (money entering) is not a transfer and is not
+ *   passed to the hook.
+ *
  * Postings carry deterministic identifiers derived with SHAKE256 from the
  * node seed and the posting sequence, so a replay of the same cycles gives
  * the same chain hash on every machine.
@@ -83,8 +98,14 @@ typedef enum {
     SETTLE_ERR_CONSERVATION = -4, /* R1 */
     SETTLE_ERR_MISMATCH = -5,     /* R2 */
     SETTLE_ERR_LEDGER = -6,       /* pay_ledger refused a posting */
-    SETTLE_ERR_HALTED = -7        /* R3 */
+    SETTLE_ERR_HALTED = -7,       /* R3 */
+    SETTLE_ERR_AUDIT = -8         /* A2/A3: the audit hook refused or disagreed */
 } settle_status_t;
+
+/* A2: approve a posting. `in` is the PA_XFER_IN_LEN-byte encoded transfer;
+ * on approval write the expected state hash (32 bytes) and return true. */
+typedef bool (*settle_audit_fn)(void *ctx, const pay_ledger_t *L, const uint8_t *in,
+                                uint8_t expect_state[32]);
 
 typedef struct {
     pay_ledger_t L;
@@ -102,6 +123,9 @@ typedef struct {
     uint64_t issued; /* total SWC issued (== the issuer's CREDIT) */
     uint64_t seq;    /* postings made by the spine */
     uint64_t cycles; /* successful syncs */
+    settle_audit_fn audit;
+    void *audit_ctx;
+    uint64_t audited; /* postings the hook approved and the ledger matched */
     bool halted;
     settle_status_t why; /* the reason it halted */
 } settle_spine_t;
@@ -124,6 +148,9 @@ settle_status_t settle_sync(settle_spine_t *s, const swarm_market_t *m, uint64_t
  * on the pot into the buckets. Call it once per cycle, before
  * swarm_market_settle pays the pot out. */
 settle_status_t settle_levy(settle_spine_t *s, swarm_market_t *m, uint64_t tick);
+
+/* A1-A3: set (or with fn NULL clear) the audit hook. */
+void settle_set_audit(settle_spine_t *s, settle_audit_fn fn, void *ctx);
 
 /* A fee bucket's balance (0 for an unknown bucket). */
 uint64_t settle_bucket(const settle_spine_t *s, uint32_t bucket);

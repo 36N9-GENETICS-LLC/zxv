@@ -3,6 +3,7 @@
 /* settle.c — the settlement spine. Design and invariants: settle.h. */
 #include "settle.h"
 #include "../mlkem/keccak.h"
+#include "../peer_audit/pa_runtime.h"
 
 #define SETTLE_POT_OWNER    0xFFFFFFFEu
 #define SETTLE_BUCKET_OWNER SETTLE_RESERVED_IDS /* + bucket index */
@@ -94,14 +95,42 @@ uint64_t settle_bucket(const settle_spine_t *s, uint32_t bucket)
 }
 
 /* One balanced two-line transfer on the ledger of record. */
-static bool post(settle_spine_t *s, uint32_t from, uint32_t to, uint64_t amount, uint64_t tick)
+/* One transfer, in peer_audit's replayable form (pa_runtime.h
+ * PA_KIND_LEDGER_TRANSFER), so any peer holding a replica can re-run it bit
+ * for bit. With an audit hook (A1-A3 in settle.h) the hook approves and signs
+ * it first, and the ledger must then land on the state it signed. */
+static settle_status_t post(settle_spine_t *s, uint32_t from, uint32_t to, uint64_t amount,
+                            uint64_t tick)
 {
-    pay_posting_req_t req;
-    pay_receipt_t rc;
-    new_request(s, &req, tick);
-    if (pay_ledger_transfer(&s->L, &req, from, to, amount, &rc) != PAY_OK) return false;
+    pa_xfer_t x; /* amount < SETTLE_ISSUE_MAX = 2^59 (settle_join), so it fits int64_t */
+    pay_memset(&x, 0, sizeof x);
+    x.from = from;
+    x.to = to;
+    x.amount = (int64_t) amount;
+    x.initiator = SETTLE_NODE_OWNER;
+    x.tick = tick;
+    x.attestor = SETTLE_NODE_OWNER;
+    derive(s, 'I', s->seq, x.idem, sizeof x.idem);
+    derive(s, 'U', s->seq, x.rnd, sizeof x.rnd);
+    uint8_t in[PA_XFER_IN_LEN], out[PA_XFER_OUT_LEN], expect[PA_HASH_LEN], got[PA_HASH_LEN];
+    pa_xfer_encode(&x, in);
+    if (s->audit && !s->audit(s->audit_ctx, &s->L, in, expect)) return SETTLE_ERR_AUDIT;
+    pa_ledger_apply(&s->L, in, PA_XFER_IN_LEN, out);
+    if (pa_xfer_status(out) != PAY_OK) return SETTLE_ERR_LEDGER;
     s->seq++;
-    return true;
+    if (s->audit) {
+        pa_ledger_state_hash(&s->L, got);
+        if (!pay_memeq(got, expect, PA_HASH_LEN)) return SETTLE_ERR_AUDIT; /* A3 */
+        s->audited++;
+    }
+    return SETTLE_OK;
+}
+
+void settle_set_audit(settle_spine_t *s, settle_audit_fn fn, void *ctx)
+{
+    if (!s) return;
+    s->audit = fn;
+    s->audit_ctx = fn ? ctx : 0;
 }
 
 settle_status_t settle_join(settle_spine_t *s, uint32_t model_id, uint64_t endowment, uint64_t tick)
@@ -191,7 +220,8 @@ settle_status_t settle_sync(settle_spine_t *s, const swarm_market_t *m, uint64_t
         }
         if (d[lo] >= 0 || d[hi] <= 0) break;
         uint64_t amt = (uint64_t) -d[lo] < (uint64_t) d[hi] ? (uint64_t) -d[lo] : (uint64_t) d[hi];
-        if (!post(s, ac[lo], ac[hi], amt, tick)) return halt(s, SETTLE_ERR_LEDGER);
+        settle_status_t e = post(s, ac[lo], ac[hi], amt, tick);
+        if (e != SETTLE_OK) return halt(s, e);
         d[lo] += (int64_t) amt;
         d[hi] -= (int64_t) amt;
     }
@@ -210,8 +240,8 @@ settle_status_t settle_levy(settle_spine_t *s, swarm_market_t *m, uint64_t tick)
     /* F2: last cycle's bounties go back into circulation */
     uint64_t back = settle_bucket(s, PAY_ASSURE_INFRA_BOUNTY);
     if (back) {
-        if (!post(s, s->bucket[PAY_ASSURE_INFRA_BOUNTY], s->pot, back, tick))
-            return halt(s, SETTLE_ERR_LEDGER);
+        st = post(s, s->bucket[PAY_ASSURE_INFRA_BOUNTY], s->pot, back, tick);
+        if (st != SETTLE_OK) return halt(s, st);
         if (swarm_market_release(m, back) != SWARM_OK) return halt(s, SETTLE_ERR_MISMATCH);
         s->recycled += back;
     }
@@ -227,10 +257,13 @@ settle_status_t settle_levy(settle_spine_t *s, swarm_market_t *m, uint64_t tick)
         pay_assure_split(s->fees, was);
         pay_assure_split(s->fees + fee, now);
         uint32_t r = PAY_ASSURE_RESERVE_FLOOR; /* bucket 0; the others follow it */
-        if (!post(s, s->pot, s->bucket[r], fee, tick)) return halt(s, SETTLE_ERR_LEDGER);
-        for (uint32_t i = r + 1u; i < PAY_ASSURE_BUCKETS; i++)
-            if (now[i] > was[i] && !post(s, s->bucket[r], s->bucket[i], now[i] - was[i], tick))
-                return halt(s, SETTLE_ERR_LEDGER);
+        st = post(s, s->pot, s->bucket[r], fee, tick);
+        if (st != SETTLE_OK) return halt(s, st);
+        for (uint32_t i = r + 1u; i < PAY_ASSURE_BUCKETS; i++) {
+            if (now[i] <= was[i]) continue;
+            st = post(s, s->bucket[r], s->bucket[i], now[i] - was[i], tick);
+            if (st != SETTLE_OK) return halt(s, st);
+        }
         if (swarm_market_levy(m, fee) != SWARM_OK) return halt(s, SETTLE_ERR_MISMATCH);
         s->fees += fee;
     }
