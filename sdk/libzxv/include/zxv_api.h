@@ -100,7 +100,7 @@ extern "C" {
 
 /* ===== Version ===== */
 #define ZXV_ABI_VERSION_MAJOR 1
-#define ZXV_ABI_VERSION_MINOR 2
+#define ZXV_ABI_VERSION_MINOR 4
 #define ZXV_ABI_VERSION_PATCH 0
 
 /* ===== Status codes (stable; never renumbered) ===== */
@@ -1045,6 +1045,278 @@ ZXV_API int32_t zxv_evm_ledger_state(const zxv_cap *cap, const uint8_t channel_i
                                      uint64_t nonce, const char *ccy, const uint32_t *accounts,
                                      const uint8_t *addresses, uint32_t count, uint8_t *buf,
                                      size_t cap_bytes, size_t *out_len, uint8_t digest[32]);
+
+/* ===================================================================== */
+/* ABI 1.4: hardware emulation and hardware updates (kernel/src/hwemu).  */
+/*                                                                       */
+/* Three pieces, documented in sdk/docs/HW_EMULATION.md and the ZHP-1    */
+/* spec in sdk/docs/HW_PROFILE.md:                                       */
+/*   PROFILES  ZHP-1, the "hardware ROM": a canonical description of a  */
+/*             machine as abstract components with integer capability    */
+/*             descriptors. zxv_hw_profile_probe_host describes the      */
+/*             machine you are on; zxv_hw_profile_reference gives the    */
+/*             public reference machine R1 that ZXV software targets.    */
+/*   MATRIX    functions served by interchangeable providers (fixed      */
+/*             silicon, a reconfigurable region, another component, or a */
+/*             software emulator) behind one call shape. A provider      */
+/*             serves only after it reproduces the function's            */
+/*             conformance vectors bit for bit.                          */
+/*   REGIONS   hardware updates shipped as software: ML-DSA-87 signed    */
+/*             reconfiguration images (bitstreams, microcode, firmware), */
+/*             staged in an inactive slot, read back, proven on          */
+/*             probation, committed or rolled back, and quarantined (S0) */
+/*             on failure.                                               */
+/* Profiles are plain data and take no capability. Matrix calls need     */
+/* ZXV_CAP_HW_MATRIX; region calls need ZXV_CAP_HW_RECONF. A matrix or   */
+/* region handle may be used from several threads (calls are serialized) */
+/* and a provider callback may call zxv_hw_call on the same matrix for   */
+/* the functions it declared as dependencies.                            */
+/* ===================================================================== */
+
+#define ZXV_FEAT_HW (0x08000000u) /* emulation matrix, ZHP-1, reconfig images */
+
+#define ZXV_CAP_HW_MATRIX (UINT64_C(1) << 10) /* build and call the emulation matrix */
+#define ZXV_CAP_HW_RECONF (UINT64_C(1) << 11) /* load hardware images, trust keys    */
+/* ZXV_CAP_ALL keeps its 1.1 value forever; this is every bit as of 1.4. */
+#define ZXV_CAP_ALL_1_4 ((UINT64_C(1) << 12) - 1)
+
+#define ZXV_E_NOPROVIDER  (-25) /* no proven provider can serve the function   */
+#define ZXV_E_DISPUTE     (-26) /* a shadow check found two providers disagree */
+#define ZXV_E_QUARANTINED (-27) /* image failed in hardware: rolled back, logged */
+#define ZXV_E_ROLLBACK    (-28) /* image not newer than the active one / floor */
+#define ZXV_E_BLOCKED     (-29) /* image already quarantined; never reloaded   */
+#define ZXV_E_TARGET      (-30) /* image is for other hardware                 */
+
+typedef struct zxv_hw_matrix zxv_hw_matrix;   /* functions x providers       */
+typedef struct zxv_hw_profile zxv_hw_profile; /* one ZHP-1 machine profile   */
+typedef struct zxv_hw_region zxv_hw_region;   /* one reconfigurable region   */
+
+/* ----- Profiles (ZHP-1) ----- */
+
+/* Component classes (kernel/src/hwemu/hwp.h). Classes from
+ * ZXV_HW_CLASS_PRIVATE up are an implementer's own. */
+#define ZXV_HW_CLASS_MACHINE        1
+#define ZXV_HW_CLASS_CPU_CLUSTER    2
+#define ZXV_HW_CLASS_CPU_CORE       3
+#define ZXV_HW_CLASS_CACHE          4
+#define ZXV_HW_CLASS_MEMORY         5
+#define ZXV_HW_CLASS_INTERCONNECT   6
+#define ZXV_HW_CLASS_MATRIX_UNIT    7
+#define ZXV_HW_CLASS_VECTOR_UNIT    8
+#define ZXV_HW_CLASS_TERNARY_UNIT   9
+#define ZXV_HW_CLASS_HASH_UNIT      10
+#define ZXV_HW_CLASS_CRYPTO_UNIT    11
+#define ZXV_HW_CLASS_CODEC_UNIT     12
+#define ZXV_HW_CLASS_RECONF_FABRIC  13
+#define ZXV_HW_CLASS_STORAGE        14
+#define ZXV_HW_CLASS_NETWORK        15
+#define ZXV_HW_CLASS_RADIO          16
+#define ZXV_HW_CLASS_SENSOR         17
+#define ZXV_HW_CLASS_ACTUATOR       18
+#define ZXV_HW_CLASS_CLOCK          19
+#define ZXV_HW_CLASS_POWER          20
+#define ZXV_HW_CLASS_SECURE_ELEMENT 21
+#define ZXV_HW_CLASS_DISPLAY        22
+#define ZXV_HW_CLASS_AUDIO          23
+#define ZXV_HW_CLASS_WIRE           24
+#define ZXV_HW_CLASS_GPU            25
+#define ZXV_HW_CLASS_PRIVATE        0x80000000u
+
+/* Capability keys: bit 15 critical, bits 14-13 comparison (MIN, EXACT,
+ * MASK, INFO), bits 12-0 id; ids 0x1000-0x1FFF are private. The values
+ * are the kernel's HWP_CAP_* and never change. */
+#define ZXV_HW_CAP_WORD_BITS      0x0001
+#define ZXV_HW_CAP_COUNT          0x0002
+#define ZXV_HW_CAP_FREQ_KHZ       0x6003
+#define ZXV_HW_CAP_BYTES          0x0004
+#define ZXV_HW_CAP_LINE_BYTES     0x6005
+#define ZXV_HW_CAP_ISA            0x2006
+#define ZXV_HW_CAP_INT_WIDTHS     0x4007
+#define ZXV_HW_CAP_RADIX          0x2008
+#define ZXV_HW_CAP_MACS_PER_CYCLE 0x0009
+#define ZXV_HW_CAP_SIMD           0x400A
+#define ZXV_HW_CAP_TICK_NS        0x600B
+#define ZXV_HW_CAP_REGIONS        0x000C
+#define ZXV_HW_CAP_BANDWIDTH_MBPS 0x000D
+#define ZXV_HW_CAP_LATENCY_NS     0x600E
+#define ZXV_HW_CAP_PQ_ALGS        0x400F
+#define ZXV_HW_CAP_HASH_ALGS      0x4010
+#define ZXV_HW_CAP_WIRE_BITS      0x2011
+#define ZXV_HW_CAP_PEAK_OPS_MHZ   0x6012
+
+#define ZXV_HW_ISA_X86_64  1
+#define ZXV_HW_ISA_ARM64   2
+#define ZXV_HW_ISA_RISCV64 3
+#define ZXV_HW_ISA_WASM32  4
+
+#define ZXV_HW_ROOT 0xFFFF /* parent id of a root node */
+
+/* How a target component is served on a host (zxv_hw_profile_pair). */
+#define ZXV_HW_NATIVE  0 /* a host component satisfies it          */
+#define ZXV_HW_EMULATE 1 /* nothing does: the matrix emulates it    */
+#define ZXV_HW_GROUP   2 /* a machine node: grouping, nothing to run */
+
+ZXV_API int32_t zxv_hw_profile_create(zxv_hw_profile **out);
+ZXV_API void zxv_hw_profile_destroy(zxv_hw_profile *p);
+/* Describe this machine: CPU cluster (ISA, cores, SIMD), memory, cache
+ * line. Only what the OS reports reliably; nothing is guessed, so units
+ * that cannot be detected portably (matrix engines, secure enclaves) are
+ * left out and will be emulated. */
+ZXV_API int32_t zxv_hw_profile_probe_host(zxv_hw_profile **out);
+/* A copy of the public reference machine R1. */
+ZXV_API int32_t zxv_hw_profile_reference(zxv_hw_profile **out);
+/* Parse a canonical ZHP-1 encoding (anything non-canonical: ZXV_E_FORMAT). */
+ZXV_API int32_t zxv_hw_profile_decode(const uint8_t *buf, size_t len, zxv_hw_profile **out);
+/* R4 buffer rules: ZXV_E_BUFFER with *out_len = needed. */
+ZXV_API int32_t zxv_hw_profile_encode(const zxv_hw_profile *p, uint8_t *buf, size_t cap,
+                                      size_t *out_len);
+/* SHA-256 of the canonical encoding: the profile's identity. */
+ZXV_API int32_t zxv_hw_profile_digest(const zxv_hw_profile *p, uint8_t out[32]);
+/* Add a node: ids strictly increase, parent first (or ZXV_HW_ROOT). */
+ZXV_API int32_t zxv_hw_profile_node_add(zxv_hw_profile *p, uint32_t id, uint32_t parent,
+                                        uint32_t cls);
+ZXV_API int32_t zxv_hw_profile_cap_set(zxv_hw_profile *p, uint32_t node_id, uint32_t key,
+                                       uint64_t value);
+/* ZXV_E_NOT_FOUND if the node lacks the cap. */
+ZXV_API int32_t zxv_hw_profile_cap_get(const zxv_hw_profile *p, uint32_t node_id, uint32_t key,
+                                       uint64_t *out_value);
+ZXV_API int32_t zxv_hw_profile_count(const zxv_hw_profile *p, uint32_t *out_nodes);
+ZXV_API int32_t zxv_hw_profile_node(const zxv_hw_profile *p, uint32_t index, uint32_t *out_id,
+                                    uint32_t *out_parent, uint32_t *out_cls, uint32_t *out_ncaps);
+/* Match a target against a host: how many target components run natively
+ * and how many must be emulated. */
+ZXV_API int32_t zxv_hw_profile_match(const zxv_hw_profile *host, const zxv_hw_profile *target,
+                                     uint32_t *out_native, uint32_t *out_emulated);
+/* The pairing of target node `index` (in target order): ZXV_HW_NATIVE with
+ * the host node id, ZXV_HW_EMULATE with the first unmet cap key (0 if the
+ * host has no component of that class), or ZXV_HW_GROUP. */
+ZXV_API int32_t zxv_hw_profile_pair(const zxv_hw_profile *host, const zxv_hw_profile *target,
+                                    uint32_t index, uint32_t *out_need_id, int32_t *out_kind,
+                                    uint32_t *out_have_id, uint32_t *out_unmet_key);
+
+/* ----- The emulation matrix ----- */
+
+#define ZXV_HW_KIND_FIXED  0 /* silicon built for the function   */
+#define ZXV_HW_KIND_RECONF 1 /* a reconfigurable region          */
+#define ZXV_HW_KIND_PEER   2 /* another component standing in    */
+#define ZXV_HW_KIND_SOFT   3 /* a software emulator              */
+
+#define ZXV_HW_RES_OK            0
+#define ZXV_HW_RES_FAULTED       1
+#define ZXV_HW_RES_RECONFIGURING 2
+#define ZXV_HW_RES_OFFLINE       3
+
+/* A provider: write at most out_cap bytes to `out`, the length to
+ * *out_len, and return ZXV_OK (or any negative status, reported to the
+ * caller as ZXV_E_INTERNAL with the provider's code in the detail). */
+typedef int32_t (*zxv_hw_call_fn)(void *user, uint32_t op, const uint8_t *in, size_t in_len,
+                                  uint8_t *out, size_t out_cap, size_t *out_len);
+
+ZXV_API int32_t zxv_hw_matrix_create_cap(const zxv_cap *cap, zxv_hw_matrix **out);
+ZXV_API void zxv_hw_matrix_destroy(zxv_hw_matrix *mx);
+/* name: UTF-8, at most 23 bytes, may be NULL. */
+ZXV_API int32_t zxv_hw_function_add(const zxv_cap *cap, zxv_hw_matrix *mx, uint32_t fn_id,
+                                    const char *name);
+/* A conformance vector (copied; output at most 512 bytes). Resets every
+ * provider of the function to unproven. */
+ZXV_API int32_t zxv_hw_vector_add(const zxv_cap *cap, zxv_hw_matrix *mx, uint32_t fn_id,
+                                  uint32_t op, const uint8_t *in, size_t in_len,
+                                  const uint8_t *expect, size_t expect_len);
+ZXV_API int32_t zxv_hw_resource_add(const zxv_cap *cap, zxv_hw_matrix *mx, uint32_t res_id);
+ZXV_API int32_t zxv_hw_resource_set(const zxv_cap *cap, zxv_hw_matrix *mx, uint32_t res_id,
+                                    int32_t state);
+/* *out_provider is the provider's index, used by the calls below. */
+ZXV_API int32_t zxv_hw_provider_add(const zxv_cap *cap, zxv_hw_matrix *mx, uint32_t fn_id,
+                                    uint32_t res_id, int32_t kind, uint32_t cost,
+                                    zxv_hw_call_fn call, void *user, uint32_t *out_provider);
+ZXV_API int32_t zxv_hw_provider_dep(const zxv_cap *cap, zxv_hw_matrix *mx, uint32_t provider,
+                                    uint32_t dep_fn_id);
+ZXV_API int32_t zxv_hw_provider_enable(const zxv_cap *cap, zxv_hw_matrix *mx, uint32_t provider,
+                                       int32_t on);
+/* Run the conformance vectors; *out_lp is ZXV_LP_TRUE (serves),
+ * ZXV_LP_FALSE (a vector failed) or ZXV_LP_NEITHER (no vectors). */
+ZXV_API int32_t zxv_hw_attest(const zxv_cap *cap, zxv_hw_matrix *mx, uint32_t provider,
+                              int32_t *out_lp);
+ZXV_API int32_t zxv_hw_provider_info(const zxv_cap *cap, zxv_hw_matrix *mx, uint32_t provider,
+                                     uint32_t *out_fn_id, int32_t *out_kind, int32_t *out_lp,
+                                     uint64_t *out_calls, uint64_t *out_cost_spent);
+/* The provider that serves the function now (ZXV_E_NOPROVIDER if none). */
+ZXV_API int32_t zxv_hw_bound(const zxv_cap *cap, zxv_hw_matrix *mx, uint32_t fn_id,
+                             uint32_t *out_provider);
+ZXV_API int32_t zxv_hw_call(const zxv_cap *cap, zxv_hw_matrix *mx, uint32_t fn_id, uint32_t op,
+                            const uint8_t *in, size_t in_len, uint8_t *out, size_t out_cap,
+                            size_t *out_len);
+/* zxv_hw_call that also runs the next-best provider and compares. On a
+ * mismatch both providers stop serving: ZXV_E_DISPUTE. */
+ZXV_API int32_t zxv_hw_shadow(const zxv_cap *cap, zxv_hw_matrix *mx, uint32_t fn_id, uint32_t op,
+                              const uint8_t *in, size_t in_len, uint8_t *out, size_t out_cap,
+                              size_t *out_len, int32_t *out_checked);
+/* Declare the function pure and give it a memo of `entries` (a power of
+ * two, at most 65536; 0 removes it). Repeated inputs (<= 64 bytes) skip
+ * the provider. */
+ZXV_API int32_t zxv_hw_memo(const zxv_cap *cap, zxv_hw_matrix *mx, uint32_t fn_id,
+                            uint32_t entries, uint64_t *out_hits, uint64_t *out_misses);
+
+/* ----- Reconfigurable regions: hardware updates as signed images ----- */
+
+#define ZXV_HW_IMG_BITSTREAM 1
+#define ZXV_HW_IMG_PARTIAL   2
+#define ZXV_HW_IMG_MICROCODE 3
+#define ZXV_HW_IMG_FIRMWARE  4
+
+#define ZXV_HW_REGION_EMPTY     0
+#define ZXV_HW_REGION_ACTIVE    1
+#define ZXV_HW_REGION_STAGED    2
+#define ZXV_HW_REGION_PROBATION 3
+#define ZXV_HW_REGION_HALTED    4
+
+/* The device side of a region. Each returns ZXV_OK or a negative status.
+ * readback writes the SHA-256 of what the slot really holds. */
+typedef int32_t (*zxv_hw_load_fn)(void *user, uint32_t slot, const uint8_t *payload, size_t len);
+typedef int32_t (*zxv_hw_readback_fn)(void *user, uint32_t slot, uint8_t digest[32]);
+typedef int32_t (*zxv_hw_activate_fn)(void *user, uint32_t slot);
+
+/* mx/provider: the region's RECONF provider in a matrix, whose conformance
+ * vectors prove each new image; mx may be NULL (no conformance proof).
+ * target_digest may be NULL (zeros). quarantine_cap: log size; when the
+ * log fills the region halts and the context is poisoned (fail closed). */
+ZXV_API int32_t zxv_hw_region_create_cap(const zxv_cap *cap, zxv_hw_matrix *mx,
+                                         uint32_t provider, uint32_t region_id,
+                                         uint32_t target_class, const uint8_t *target_digest,
+                                         zxv_hw_load_fn load, zxv_hw_readback_fn readback,
+                                         zxv_hw_activate_fn activate, void *user,
+                                         uint32_t quarantine_cap, zxv_hw_region **out);
+ZXV_API void zxv_hw_region_destroy(zxv_hw_region *rg);
+/* Trust an ML-DSA-87 release key (copied; at most 4 per region). */
+ZXV_API int32_t zxv_hw_region_trust_key(const zxv_cap *cap, zxv_hw_region *rg,
+                                        const uint8_t pk[2592]);
+/* Verify and load into the inactive slot. ZXV_E_VERIFY and ZXV_E_ROLLBACK
+ * are logged; ZXV_E_QUARANTINED (read-back mismatch) is logged and the
+ * image blocked. */
+ZXV_API int32_t zxv_hw_region_stage(const zxv_cap *cap, zxv_hw_region *rg, const uint8_t *image,
+                                    size_t len);
+/* Switch to the staged image and prove it; ZXV_E_QUARANTINED if it fails
+ * (the previous image, or S0, is back in place). */
+ZXV_API int32_t zxv_hw_region_trial(const zxv_cap *cap, zxv_hw_region *rg, uint32_t ticks);
+ZXV_API int32_t zxv_hw_region_commit(const zxv_cap *cap, zxv_hw_region *rg);
+ZXV_API int32_t zxv_hw_region_rollback(const zxv_cap *cap, zxv_hw_region *rg);
+/* One health tick; an expiring probation rolls back (ZXV_E_QUARANTINED). */
+ZXV_API int32_t zxv_hw_region_tick(const zxv_cap *cap, zxv_hw_region *rg);
+ZXV_API int32_t zxv_hw_region_info(const zxv_cap *cap, zxv_hw_region *rg, int32_t *out_state,
+                                   uint32_t *out_version, uint32_t *out_floor,
+                                   uint32_t *out_quarantined);
+/* The quarantine log's head hash and length; ZXV_E_INVARIANT (and the
+ * context poisoned) if the chain does not verify. */
+ZXV_API int32_t zxv_hw_region_log(const zxv_cap *cap, zxv_hw_region *rg, uint8_t head[32],
+                                  uint32_t *out_count);
+
+/* Build and sign an image (needs CRYPTO_SIGN): header || payload ||
+ * ML-DSA-87 signature. target_digest may be NULL. R4 buffer rules. */
+ZXV_API int32_t zxv_hw_image_build(const zxv_cap *cap, uint32_t kind, uint32_t target_class,
+                                   const uint8_t *target_digest, uint32_t fn_id,
+                                   uint32_t version, uint32_t svn, const uint8_t *payload,
+                                   size_t payload_len, const uint8_t sk[4896], uint8_t *buf,
+                                   size_t cap_bytes, size_t *out_len);
 
 #ifdef __cplusplus
 }

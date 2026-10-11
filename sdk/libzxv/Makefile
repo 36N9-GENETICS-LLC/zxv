@@ -59,20 +59,23 @@ INC := -Iinclude -Isrc -I$(K)/src/iso20022 -I$(K)/src/finance -I$(K)/src/vino_st
        -I$(K)/src/vino -I$(K)/src/surplus -I$(K)/src/edp_risk -I$(K)/src/onepolicy \
        -I$(K)/include -I$(K)/src/rational -I$(K)/src/lpres -I$(K)/src/event_space \
        -I$(K)/src/rmag -I$(K)/src/phase_coord -I$(K)/src/harmonic -I$(K)/src/swarm \
-       -I$(K)/src/mlkem -I$(K)/src/e8 -I$(K)/src/modbind -I$(K)/src/trispace
+       -I$(K)/src/mlkem -I$(K)/src/e8 -I$(K)/src/modbind -I$(K)/src/trispace \
+       -I$(K)/src/hwemu -I$(K)/src/robin_debanks
 
 KSRC := $(K)/src/iso20022/iso20022.c $(K)/src/finance/triple_ledger.c \
         $(K)/src/rational/rational.c $(K)/src/lpres/lpres.c $(K)/src/rmag/rmag.c \
         $(K)/src/phase_coord/phase_coord.c $(K)/src/harmonic/zt_harmonic_wire.c \
         $(K)/src/swarm/swarm_budget.c $(K)/src/swarm/swarm_emotion.c \
-        $(K)/src/mlkem/keccak.c
+        $(K)/src/mlkem/keccak.c $(K)/src/hwemu/hwm.c $(K)/src/hwemu/hwp.c \
+        $(K)/src/hwemu/hwr.c $(K)/src/lpres/lpres_hex.c $(K)/src/robin_debanks/sha256.c
 SRC  := src/zxv_api.c src/zxv_core.c src/zxv_econ.c src/zxv_crypto.c src/zxv_tensor.c \
-        src/zxv_evm.c
+        src/zxv_evm.c src/zxv_hw.c
 DEFS :=
 
 ifeq ($(ZXV_NO_PQC),)
   INC  += -I$(K)/src/pqsec -I$(K)/third_party/ed25519/src
   KSRC += $(K)/src/pqsec/pq_mlkem1024.c $(K)/src/pqsec/pq_mldsa87.c $(K)/src/pqsec/mldsa/fips202.c \
+          $(K)/src/hwemu/hwr_mldsa.c \
           $(wildcard $(K)/third_party/ed25519/src/*.c)
 else
   DEFS += -DZXV_NO_PQC
@@ -135,6 +138,8 @@ $(OUT)/test_zxv_abi11: test/test_zxv_abi11.c include/zxv_api.h $(LIB)
 	$(TESTCC) $< -L$(OUT) -lzxv $(RPATH) -lpthread -o $@
 $(OUT)/test_zxv_abi12: test/test_zxv_abi12.c include/zxv_api.h $(LIB)
 	$(TESTCC) $< -L$(OUT) -lzxv $(RPATH) -lpthread -o $@
+$(OUT)/test_zxv_abi14: test/test_zxv_abi14.c include/zxv_api.h $(LIB)
+	$(TESTCC) $< -L$(OUT) -lzxv $(RPATH) -lpthread -o $@
 # The portable (no __int128) Q16 rounding, forced with -DZXV_NO_INT128 and
 # checked against the 128-bit path and the library.
 $(OUT)/test_q16: test/test_q16.c src/zxv_q16.h include/zxv_api.h $(LIB)
@@ -144,10 +149,11 @@ $(OUT)/gen_vectors: tools/gen_vectors.c include/zxv_api.h $(LIB)
 $(OUT)/mkfixture: tools/mkfixture.c
 	$(CC) -std=c11 -O1 -I$(K)/src/tensor -o $@ $<
 
-test: $(OUT)/test_zxv_api $(OUT)/test_zxv_abi11 $(OUT)/test_zxv_abi12 $(OUT)/test_q16 fixtures
+test: $(OUT)/test_zxv_api $(OUT)/test_zxv_abi11 $(OUT)/test_zxv_abi12 $(OUT)/test_zxv_abi14 $(OUT)/test_q16 fixtures
 	./$(OUT)/test_zxv_api
 	./$(OUT)/test_zxv_abi11 ../conformance/fixtures
 	./$(OUT)/test_zxv_abi12 ../conformance/fixtures
+	./$(OUT)/test_zxv_abi14
 	./$(OUT)/test_q16
 
 fixtures: $(OUT)/mkfixture

@@ -69,6 +69,13 @@ no capability, and the old forms are deprecated but unchanged. The 64-state
 hexagram tag will arrive the same way, as new `zxv_hex_*` functions in a later
 minor, while the four-valued `ZXV_LP_*` values beside it do not move.
 
+ABI 1.4 added the hardware group (`zxv_hw_*`, see
+[HW_EMULATION.md](HW_EMULATION.md)) with two new capability bits. Because
+`ZXV_CAP_ALL` is a released constant, its value stays `(1 << 10) - 1`
+forever; a new `ZXV_CAP_ALL_1_4` names every bit as of 1.4. Each later
+minor that adds capability bits adds its own `ZXV_CAP_ALL_1_N` the same
+way.
+
 ## Before 1.x: what counts as released
 
 The baseline files in [`sdk/libzxv/abi/`](../libzxv/abi/) are the released

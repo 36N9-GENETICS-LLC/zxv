@@ -316,6 +316,7 @@ verify-all: test
 	@echo "=== hosted app: API guard, budget gate, Vinea UDP host, end-to-end API, model slot, peers, updates, notifications ==="; \
 	$(MAKE) --no-print-directory test-settle
 	$(MAKE) --no-print-directory test-lpres-hex
+	$(MAKE) --no-print-directory test-hwemu
 	$(MAKE) --no-print-directory test-sdk-bridge
 	$(MAKE) --no-print-directory test-engine
 	sh arch/hosted/test_hosted.sh > /tmp/test_hosted_app.log 2>&1 && echo "[PASS] test_hosted" || { tail -40 /tmp/test_hosted_app.log; echo "[FAIL] test_hosted"; exit 1; }
@@ -1393,6 +1394,25 @@ test-settle:
 .PHONY: test-lpres-hex
 test-lpres-hex:
 	gcc -std=c11 -O1 -g -Wall -Werror -Wextra -fsanitize=address,undefined -fno-sanitize-recover=all -DTEST_HOST -Iinclude -Isrc/lpres -Isrc/event_space -Isrc/modbind -Isrc/surplus src/lpres/test_lpres_hex.c src/lpres/lpres_hex.c src/lpres/lpres.c src/robin_debanks/sha256.c -o $(ZXV_TMP)/test_lpres_hex && $(ZXV_TMP)/test_lpres_hex > $(ZXV_TMP)/test_lpres_hex.log 2>&1 && echo "[PASS] test_lpres_hex ($$(tail -1 $(ZXV_TMP)/test_lpres_hex.log))" || { cat $(ZXV_TMP)/test_lpres_hex.log; echo "[FAIL] test_lpres_hex"; exit 1; }
+
+HWEMU_CC := gcc -std=c11 -O1 -g -Wall -Werror -Wextra -fsanitize=address,undefined -fno-sanitize-recover=all -DTEST_HOST -Iinclude -Isrc/lpres -Isrc/event_space -Isrc/modbind -Isrc/surplus -Isrc/pqsec
+
+# Hardware emulation matrix, ZHP-1 hardware profiles and signed
+# reconfiguration images (src/hwemu). The first step builds the three
+# policy files freestanding with no FP/SIMD registers, so a float there
+# fails the build.
+.PHONY: test-hwemu
+test-hwemu:
+	@for f in hwm hwp hwr; do gcc -std=c11 -O2 -Wall -Werror -Wextra -ffreestanding -mgeneral-regs-only -DTEST_HOST -Iinclude -Isrc/lpres -Isrc/event_space -Isrc/modbind -Isrc/surplus -c src/hwemu/$$f.c -o $(ZXV_TMP)/hwemu_$$f.o || { echo "[FAIL] hwemu $$f.c freestanding/no-FP"; exit 1; }; done; echo "[PASS] hwemu freestanding, no FP registers"
+	$(HWEMU_CC) src/hwemu/test_hwm.c src/hwemu/hwm.c -o $(ZXV_TMP)/test_hwm && $(ZXV_TMP)/test_hwm > $(ZXV_TMP)/test_hwm.log 2>&1 && echo "[PASS] test_hwm ($$(tail -1 $(ZXV_TMP)/test_hwm.log))" || { cat $(ZXV_TMP)/test_hwm.log; echo "[FAIL] test_hwm"; exit 1; }
+	$(HWEMU_CC) src/hwemu/test_hwp.c src/hwemu/hwp.c src/robin_debanks/sha256.c -o $(ZXV_TMP)/test_hwp && $(ZXV_TMP)/test_hwp > $(ZXV_TMP)/test_hwp.log 2>&1 && echo "[PASS] test_hwp ($$(tail -1 $(ZXV_TMP)/test_hwp.log))" || { cat $(ZXV_TMP)/test_hwp.log; echo "[FAIL] test_hwp"; exit 1; }
+	$(HWEMU_CC) src/hwemu/test_hwr.c src/hwemu/hwr.c src/hwemu/hwr_mldsa.c src/hwemu/hwm.c src/lpres/lpres_hex.c src/lpres/lpres.c src/robin_debanks/sha256.c src/pqsec/pq_mldsa87.c src/pqsec/mldsa/fips202.c -o $(ZXV_TMP)/test_hwr && $(ZXV_TMP)/test_hwr > $(ZXV_TMP)/test_hwr.log 2>&1 && echo "[PASS] test_hwr ($$(tail -1 $(ZXV_TMP)/test_hwr.log))" || { cat $(ZXV_TMP)/test_hwr.log; echo "[FAIL] test_hwr"; exit 1; }
+
+# Not part of verify-all (timings vary by machine): emulated paths against
+# native code and against the machine's peak. See src/hwemu/bench_hwm.c.
+.PHONY: bench-hwemu
+bench-hwemu:
+	gcc -std=c11 -O2 -DTEST_HOST -Iinclude -Isrc/lpres -Isrc/event_space -Isrc/modbind -Isrc/surplus src/hwemu/bench_hwm.c src/hwemu/hwm.c src/robin_debanks/sha256.c -o $(ZXV_TMP)/bench_hwm && $(ZXV_TMP)/bench_hwm
 
 # The SDK capability bridge (src/sdk_bridge/sdk_bridge.h): one id per capability.
 .PHONY: test-sdk-bridge
