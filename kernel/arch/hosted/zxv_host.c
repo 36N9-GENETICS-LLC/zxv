@@ -367,7 +367,8 @@ static void audit_start(void)
  * was delivered to a peer, which countersigned the receipt: that peer is the
  * verifier (quest.h Q1), the receipt hash the evidence (claimable once).
  * Peer verifier ids carry the top bit, so they never equal the owner's local
- * subject id. Buying is not a contribution. */
+ * subject id. Buying is not a contribution. Sales below quest's unit carry
+ * over to the next sale. */
 #define QUEST_OWNER 1u
 static void quest_trade(void *ctx, uint8_t role, const vna_id_t *peer, uint8_t resource,
                         uint8_t form, uint64_t units, const uint8_t hash[32])
@@ -377,15 +378,28 @@ static void quest_trade(void *ctx, uint8_t role, const vna_id_t *peer, uint8_t r
     if (role != VNA_LINK_SELL) return;
     qst_event_t ev;
     memset(&ev, 0, sizeof ev);
-    if (resource == VNA_RES_COMPUTE)
+    /* quest counts whole units (quest.h: 2^20 token-cycles, 2^30 bytes);
+     * smaller sales carry over until a receipt completes a unit, and that
+     * receipt is the evidence */
+    static uint64_t carry[2];
+    uint32_t k, shift;
+    if (resource == VNA_RES_COMPUTE) {
         ev.kind = QST_EV_COMPUTE_SHARED;
-    else if (resource == VNA_RES_STORAGE)
+        k = 0;
+        shift = 20;
+    } else if (resource == VNA_RES_STORAGE) {
         ev.kind = QST_EV_STORAGE_SHARED;
-    else
+        k = 1;
+        shift = 30;
+    } else {
         return;
+    }
+    uint64_t qty = carry[k] + units < carry[k] ? ~(uint64_t) 0 : carry[k] + units;
+    carry[k] = qty & (((uint64_t) 1 << shift) - 1u);
+    if (qty >> shift == 0) return;
     ev.subject = QUEST_OWNER;
     ev.source = QST_SRC_FARM;
-    ev.qty = units;
+    ev.qty = qty - carry[k];
     memcpy(ev.evidence, hash, 32);
     ev.verifier = 0x80000000u | ((uint32_t) peer->b[0] << 16 | (uint32_t) peer->b[1] << 8 |
                                  (uint32_t) peer->b[2]);
@@ -415,6 +429,9 @@ static void build_swarm(void)
         seed[i] = (uint8_t) (x >> (8 * (i & 7)));
     }
     settle_init(&S.spine, seed);
+    /* audited from the first transfer (settle_join's endowments are issues,
+     * which peer_audit does not replay) */
+    if (S.audit_on) settle_set_audit(&S.spine, audit_posting, NULL);
     S.num_agents = 0;
     uint32_t id = 1;
     for (uint32_t d = 0; d < levels; d++) {
@@ -431,7 +448,6 @@ static void build_swarm(void)
             swarm_emotion_set_feeling(&S.e, id, t.home);
         }
     }
-    if (S.audit_on) settle_set_audit(&S.spine, audit_posting, NULL);
 }
 
 /* The last cycle's allotments, kept after the cycle closes so the window can
@@ -723,7 +739,7 @@ static void state_json(buf_t *b)
         "\"imag\":%llu,\"saved\":%llu,\"mood\":\"%s %u\",\"ledger_postings\":%llu,"
         "\"ledger_synced\":%llu,\"ledger_halt\":%d,\"levied\":%llu,\"fees\":%llu,"
         "\"bounties_returned\":%llu,\"audit\":\"%s\",\"audit_records\":%llu,"
-        "\"audit_events\":%u,",
+        "\"audit_events\":%u,\"ledger_audited\":%llu,\"ledger_issues\":%llu,",
         S.remote ? "true" : "false", S.hw.cores, S.gov.cores_milli,
         (unsigned long long) S.hw.mem_total_mb, (unsigned long long) S.gov.mem_mb, S.b.num_levels,
         (unsigned long long) S.b.tokens_per_cycle, (unsigned long long) S.tick,
@@ -738,7 +754,8 @@ static void state_json(buf_t *b)
         !S.audit_on                              ? "off"
         : S.audit.state == PA_NODE_CONTRADICTION ? "contradiction"
                                                  : "active",
-        (unsigned long long) S.audit_records, S.audit.n_events);
+        (unsigned long long) S.audit_records, S.audit.n_events,
+        (unsigned long long) S.spine.audited, (unsigned long long) S.spine.issues);
     /* the owner's mastery (quest.h Q9: levels and points, no rank or streak) */
     static qst_view_t qv;
     qst_view(&S.quest, QUEST_OWNER, (uint32_t) (zxv_net_wall_ms() / 86400000u), &qv);
@@ -813,6 +830,10 @@ static void state_json(buf_t *b)
     json_str(b, ns.bind_ip);
     bput(b, ",\"node_id\":");
     json_str(b, ns.node_id);
+    bput(b, ",\"id\":");
+    json_str(b, ns.node_id_full);
+    bput(b, ",\"share_compute\":%llu,\"share_storage\":%llu,\"wants\":%u",
+         (unsigned long long) ns.share_compute, (unsigned long long) ns.share_storage, ns.wants);
     bput(b,
          ",\"peers\":%u,\"in\":%u,\"out\":%u,\"refused\":%u,\"policy_drops\":%u,"
          "\"trades\":%u,\"receipts_refused\":%u,\"imported\":%llu,\"conserved\":%s,\"error\":",
@@ -863,7 +884,28 @@ static void notes_json(buf_t *b)
     bput(b, "]}");
 }
 
-/* POST /api/net: "off", "lan", "online" or "peer A.B.C.D:PORT". */
+/* "compute" / "storage" -> VNA_RES_*; -1 otherwise. */
+static int net_resource(const char *w)
+{
+    return !strcmp(w, "compute") ? VNA_RES_COMPUTE : !strcmp(w, "storage") ? VNA_RES_STORAGE : -1;
+}
+
+/* 64 hex digits -> 32 bytes. */
+static bool hex32(const char *h, uint8_t out[32])
+{
+    if (strlen(h) != 64) return false;
+    for (int i = 0; i < 64; i++) {
+        int c = h[i], v = c >= '0' && c <= '9' ? c - '0' : c >= 'a' && c <= 'f' ? c - 'a' + 10 : -1;
+        if (v < 0) return false;
+        out[i / 2] = (uint8_t) (i & 1 ? out[i / 2] | v : v << 4);
+    }
+    return true;
+}
+
+/* POST /api/net: "off", "lan", "online", "peer A.B.C.D:PORT", and the owner's
+ * trading (zxv_net_host.h U8): "share COMPUTE STORAGE" (both 0 stops
+ * sharing), "want compute|storage UNITS MAX_PRICE" and
+ * "sell compute|storage UNITS PRICE NODEID" (64 hex digits, on credit). */
 static const char *net_command(const char *body)
 {
     zxv_net_mode_t m;
@@ -875,6 +917,22 @@ static const char *net_command(const char *body)
     }
     if (!strncmp(body, "peer ", 5))
         return zxv_net_add_peer_str(S.net, body + 5, now) == 0 ? "pinged" : "refused";
+    unsigned long long a, b;
+    char res[16], id[72];
+    int used = -1;
+    if (sscanf(body, "share %llu %llu%n", &a, &b, &used) == 2 && body[used] == 0)
+        return zxv_net_share(S.net, a, b) == 0 ? (a || b ? "sharing" : "sharing nothing")
+                                               : "refused";
+    used = -1;
+    if (sscanf(body, "want %15s %llu %llu%n", res, &a, &b, &used) == 3 && body[used] == 0 &&
+        net_resource(res) >= 0)
+        return zxv_net_want(S.net, (uint8_t) net_resource(res), a, b) >= 0 ? "wanted" : "refused";
+    used = -1;
+    uint8_t buyer[32];
+    if (sscanf(body, "sell %15s %llu %llu %71s%n", res, &a, &b, id, &used) == 4 &&
+        body[used] == 0 && net_resource(res) >= 0 && hex32(id, buyer))
+        return zxv_net_sell(S.net, buyer, (uint8_t) net_resource(res), a, b, now) == 0 ? "offered"
+                                                                                       : "refused";
     return NULL;
 }
 
@@ -1042,7 +1100,8 @@ static void handle(sock_t c)
         if (r)
             reply(c, "200 OK", "text/plain", r, strlen(r));
         else
-            reply(c, "400 Bad Request", "text/plain", "off, lan, online or peer IP:PORT", 32);
+            reply(c, "400 Bad Request", "text/plain", "off, lan, online, peer, share, want or sell",
+                  43);
     } else if (PATH_IS("/api/state") || PATH_IS("/api/ask") || PATH_IS("/api/quit") ||
                PATH_IS("/api/notes") || PATH_IS("/api/notes/read") || PATH_IS("/api/update") ||
                PATH_IS("/api/net")) {

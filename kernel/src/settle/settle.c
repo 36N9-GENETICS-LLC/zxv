@@ -153,6 +153,7 @@ settle_status_t settle_join(settle_spine_t *s, uint32_t model_id, uint64_t endow
         if (pay_ledger_issue(&s->L, &req, s->issuer, acct, endowment, &rc) != PAY_OK)
             return halt(s, SETTLE_ERR_LEDGER);
         s->seq++;
+        s->issues++;
     }
     s->model_id[s->n] = model_id;
     s->acct[s->n] = acct;

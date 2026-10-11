@@ -171,12 +171,16 @@ static void test_membership(void)
     CHECK(settle_join(&W.s, 1, 5, 0) == SETTLE_ERR_ARG, "duplicate join refused");
     CHECK(settle_join(&W.s, 0, 5, 0) == SETTLE_ERR_ARG, "node id is reserved");
     CHECK(settle_join(&W.s, 0xFFFFFFFEu, 5, 0) == SETTLE_ERR_ARG, "pot id is reserved");
+    uint64_t iss = W.s.issues, sq = W.s.seq;
+    CHECK(iss == W.n && sq == W.n, "every endowment is one issue posting");
     CHECK(settle_join(&W.s, SETTLE_RESERVED_IDS, 5, 0) == SETTLE_ERR_ARG &&
               settle_join(&W.s, SETTLE_RESERVED_IDS + 3, 5, 0) == SETTLE_ERR_ARG &&
               settle_join(&W.s, SETTLE_RESERVED_IDS - 1, 5, 0) == SETTLE_OK,
           "the bucket ids are reserved, the id below them is not");
     CHECK(settle_join(&W.s, 50, SETTLE_ISSUE_MAX, 0) == SETTLE_ERR_ARG, "endowment over the cap");
-    CHECK(settle_join(&W.s, 51, 0, 0) == SETTLE_OK, "zero endowment joins");
+    CHECK(W.s.issues == iss + 1 && W.s.seq == sq + 1, "a refused join issues nothing");
+    CHECK(settle_join(&W.s, 51, 0, 0) == SETTLE_OK && W.s.issues == iss + 1 && W.s.seq == sq + 1,
+          "zero endowment joins without an issue posting");
     CHECK(settle_balance(&W.s, 51) == 0 && settle_balance(&W.s, 52) == 0, "balances");
     CHECK(settle_sync(0, &W.m, 0) == SETTLE_ERR_ARG && settle_init(0, 0) == SETTLE_ERR_ARG,
           "NULL arguments");
