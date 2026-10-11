@@ -22,6 +22,12 @@
  *      gives the same bits as the scalar C reference (test_zt_simd);
  *      ZT_KERN and ZT_THREADS override the choice. No sampling settings are
  *      exposed yet.
+ *   G5 VERDICT. Each request leaves a zxv_zt_verdict_t (zxv_model_host.h):
+ *      the per-token confidence margin (top-1 minus runner-up logit) summed
+ *      over the first and second half of the reply, how many logits sat on
+ *      the Q16 rails (INT32_MIN or INT32_MAX: saturated arithmetic), and
+ *      whether the forward pass failed. It reads the logits the decode
+ *      already computed; the engine itself is unchanged.
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -44,6 +50,25 @@ static struct {
     void *state_mem;
     uint32_t n_ctx;
 } G;
+
+static zxv_zt_verdict_t V;
+
+void zxv_zt_last_verdict(zxv_zt_verdict_t *out)
+{
+    if (out) *out = V;
+}
+
+/* G5: margin of the chosen token over the runner-up, and rail hits */
+static uint64_t step_margin(const zt_fx *l, uint32_t n, int32_t top, uint32_t *sat)
+{
+    int64_t second = INT64_MIN;
+    for (uint32_t i = 0; i < n; i++) {
+        if (l[i] == INT32_MAX || l[i] == INT32_MIN) (*sat)++;
+        if ((int32_t) i != top && l[i] > second) second = l[i];
+    }
+    if (second == INT64_MIN || (int64_t) l[top] < second) return 0;
+    return (uint64_t) ((int64_t) l[top] - second);
+}
 
 void zxv_zt_release(void)
 {
@@ -126,6 +151,7 @@ int32_t zxv_zt_generate_n(const zt_gguf_t *g, const zt_tok_t *tok, const int32_t
                           uint64_t n_ids, uint32_t max_new, char *out, size_t cap, char *err,
                           size_t err_cap)
 {
+    memset(&V, 0, sizeof V);
     if (!out || cap == 0) return -1;
     out[0] = 0;
     if (!g || !tok || (!ids && n_ids)) {
@@ -187,14 +213,28 @@ int32_t zxv_zt_generate_n(const zt_gguf_t *g, const zt_tok_t *tok, const int32_t
     zt_model_state_seek(&G.s, 0);
     uint32_t n_gen = 0;
     r = zt_model_eval(&G.m, &G.s, p, (uint32_t) n, logits, 0);
+    uint64_t *mg = malloc((size_t) (max_new ? max_new : 1) * sizeof *mg);
+    if (!mg) r = -1;
     while (r == 0 && n_gen < max_new) {
         int32_t t = zt_argmax(logits, G.m.cfg.n_vocab);
         if (t < 0 || t == tok->eos || t == im_end || t == eot) break;
+        mg[n_gen] = step_margin(logits, G.m.cfg.n_vocab, t, &V.n_sat);
         gen[n_gen++] = t;
         if (n_gen == max_new || G.s.pos >= G.n_ctx) break;
         r = zt_model_decode(&G.m, &G.s, t, logits);
     }
+    V.n_gen = n_gen;
+    V.n_first = n_gen / 2;
+    V.n_second = n_gen - V.n_first;
+    for (uint32_t i = 0; i < n_gen; i++) {
+        if (i < V.n_first)
+            V.margin_first += mg ? mg[i] : 0;
+        else
+            V.margin_second += mg ? mg[i] : 0;
+    }
+    free(mg);
     if (r) {
+        V.forward_error = true;
         free(p);
         free(gen);
         free(logits);

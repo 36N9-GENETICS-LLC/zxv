@@ -180,6 +180,18 @@ def main(binary, gguf=None):
             st, _, ans = raw(port, 'POST', '/api/ask', [host, same, auth], b'hello there, swarm')
             check(st == 200 and (b'tokens' in ans or m['can_generate']),
                   'ask goes through the model slot: %s' % ans[:120].decode('utf-8', 'replace'))
+            if m['can_generate']:
+                st, _, body = raw(port, 'GET', '/api/state', [host, auth, ('Sec-Fetch-Site', 'same-origin')])
+                c = json.loads(body)['companion']
+                t = c.get('last_tag', {})
+                check(t.get('base') == 'true' and t.get('phase') == 'manifest' and
+                      t.get('polarity') in ('negentropic', 'neutral', 'entropic') and
+                      t.get('action') in ('proceed', 'wait') and t.get('saturated') == 0 and
+                      t.get('tokens', 0) > 0 and t.get('code') == (48 | ({'entropic': 0,
+                      'neutral': 1, 'negentropic': 3}[t['polarity']] << 2) | 3),
+                      'the answer carries its 64-state tag: %s' % t)
+                check(c.get('quarantined') == 0 and c.get('quarantine_ok') is True,
+                      'a clean answer is not quarantined, and the empty log verifies')
         else:
             check(not s['model']['loaded'], 'no model is a normal state')
 

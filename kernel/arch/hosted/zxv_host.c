@@ -89,6 +89,8 @@ typedef int sock_t;
 #include "zxv_http_guard.h"
 #include "zxv_model_host.h"
 #include "zxv_budget_gate.h"
+#include "zxv_answer_tag.h"
+#include "sha256.h"
 #include "zxv_net_host.h"
 #include "zxv_update_host.h"
 #include "zx_notify.h"
@@ -275,6 +277,14 @@ static struct {
     /* the companion's model answers under the budget (zxv_budget_gate.h) */
     zxv_gate_t last_gate;
     bool have_gate;
+    /* the 64-state tag on the last model answer (zxv_answer_tag.h) and the
+     * quarantine log of forbidden answers (lpres_hex.h X6) */
+    bool have_tag;
+    lpx_t last_tag;
+    uint8_t last_reason;
+    zxv_zt_verdict_t last_verdict;
+    lpx_qrec_t qrec[64];
+    lpx_qlog_t qlog;
     uint64_t asks, exhausted_asks, task_seq;
     /* peers (zxv_net_host.h), updates, notifications */
     zxv_net_t *net;
@@ -429,6 +439,7 @@ static void build_swarm(void)
         seed[i] = (uint8_t) (x >> (8 * (i & 7)));
     }
     settle_init(&S.spine, seed);
+    lpx_qlog_init(&S.qlog, S.qrec, (uint32_t) (sizeof S.qrec / sizeof S.qrec[0]));
     /* audited from the first transfer (settle_join's endowments are issues,
      * which peer_audit does not replay) */
     if (S.audit_on) settle_set_audit(&S.spine, audit_posting, NULL);
@@ -623,7 +634,39 @@ static void answer(const char *q, char *out, size_t cap)
     char reading[512];
     char model_note[400];
     S.asks++;
+    if (S.qlog.n >= S.qlog.cap) { /* X6: a full quarantine log halts answers */
+        snprintf(out, cap,
+                 "The model is stopped: its quarantine log is full (%u withheld answers). "
+                 "Restart the app after the log has been reviewed.",
+                 (unsigned) S.qlog.n);
+        return;
+    }
     int m = zxv_model_answer_ex(q, run_under_budget, NULL, out, cap);
+#if defined(ZXV_HAVE_ZT_GLUE)
+    if (m == 1 || m == 0) {
+        zxv_zt_last_verdict(&S.last_verdict);
+        if (m == 1 || S.last_verdict.forward_error) {
+            S.last_tag = zxv_answer_tag(&S.last_verdict, &S.last_reason);
+            S.have_tag = true;
+        }
+    }
+    if (S.have_tag && (m == 1 || S.last_verdict.forward_error) && lpx_forbidden(S.last_tag)) {
+        /* T2: ROLLBACK. Withhold the reply and keep a record for audit. */
+        uint8_t subject[32];
+        sha256((const uint8_t *) out, strlen(out), subject);
+        uint32_t companion = S.num_agents ? S.agent[0].id : 0;
+        lpx_qlog_append(&S.qlog, S.last_tag, S.last_reason, companion, subject);
+        snprintf(
+            out, cap,
+            "The answer was withheld: the engine's integrity check failed (%s). It is recorded "
+            "in the quarantine log (%u so far).",
+            S.last_reason == ZXV_TAG_R_SATURATED ? "saturated arithmetic in the logits"
+                                                 : "the forward pass failed",
+            (unsigned) S.qlog.n);
+        note_task(false, out);
+        return;
+    }
+#endif
     if (m == 1) { /* a real model answered, within the budget */
         char sum[96];
         snprintf(sum, sizeof sum, "%u tokens of the %llu left this cycle",
@@ -823,6 +866,18 @@ static void state_json(buf_t *b)
              (unsigned long long) S.last_gate.remaining_before, (unsigned) S.last_gate.max_new,
              (unsigned) S.last_gate.generated, (unsigned long long) S.last_gate.charged,
              S.last_gate.exhausted ? "true" : "false");
+    if (S.have_tag)
+        bput(b,
+             ",\"last_tag\":{\"code\":%u,\"base\":\"%s\",\"polarity\":\"%s\",\"phase\":\"%s\","
+             "\"action\":\"%s\",\"reason\":%u,\"tokens\":%u,\"margin_first\":%llu,"
+             "\"margin_second\":%llu,\"saturated\":%u}",
+             (unsigned) S.last_tag, lpx_base_name(lpx_base(S.last_tag)),
+             lpx_pol_name(lpx_pol(S.last_tag)), lpx_phase_name(lpx_phase(S.last_tag)),
+             lpx_action_name(lpx_action(S.last_tag)), (unsigned) S.last_reason,
+             (unsigned) S.last_verdict.n_gen, (unsigned long long) S.last_verdict.margin_first,
+             (unsigned long long) S.last_verdict.margin_second, (unsigned) S.last_verdict.n_sat);
+    bput(b, ",\"quarantined\":%u,\"quarantine_ok\":%s", (unsigned) S.qlog.n,
+         lpx_qlog_verify(&S.qlog) ? "true" : "false");
     zxv_net_status_t ns;
     zxv_net_status(S.net, &ns);
     bput(b, "},\"net\":{\"mode\":\"%s\",\"bound\":%s,\"port\":%u,\"bind\":",

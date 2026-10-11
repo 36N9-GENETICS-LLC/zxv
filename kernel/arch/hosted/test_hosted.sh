@@ -64,6 +64,13 @@ if [ -n "$DEFS" ]; then
     "$T/test_glue"
 fi
 
+# the 64-state tag on one answer (zxv_answer_tag.h)
+printf '%s\n' arch/hosted/test_zxv_answer_tag.c arch/hosted/zxv_answer_tag.c src/lpres/lpres_hex.c \
+    src/lpres/lpres.c src/robin_debanks/sha256.c > "$T/tag"
+args "$T/tag"
+run_cc "$T/test_tag"
+"$T/test_tag"
+
 # the swarm budget governs generation (zxv_budget_gate.h)
 printf '%s\n' arch/hosted/test_zxv_budget_gate.c arch/hosted/zxv_budget_gate.c \
     src/swarm/swarm_budget.c > "$T/gate"
