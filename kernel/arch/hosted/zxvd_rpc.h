@@ -13,8 +13,9 @@
  * TRANSPORT
  *   T1  A stream UNIX socket at a path the owner chooses (--rpc PATH). It is
  *       created with mode 0600 inside a directory zxvd creates with 0700 if
- *       missing; a stale socket file is replaced only if nothing answers on
- *       it, and a path that exists and is not a socket is refused.
+ *       missing; an existing directory must be ours and not group- or
+ *       other-writable. A stale socket file is replaced only if nothing
+ *       answers on it, and a path that exists and is not a socket is refused.
  *   T2  Every connection's peer must run as the same user as zxvd
  *       (SO_PEERCRED on Linux, getpeereid on macOS/BSD); others are closed
  *       before a byte is read. There is no token: the file permission and
