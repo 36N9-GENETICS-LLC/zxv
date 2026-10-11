@@ -220,6 +220,10 @@ typedef struct {
     zt_fx *scores; /* [n_ctx] */
     int64_t *acc;  /* [head_dim] */
     int32_t *qs;   /* [head_dim] */
+    /* Values that hit the Q16 range limit (+-32768) since zt_model_state_init:
+     * matrix-product outputs and residual-stream additions. Same count on
+     * every kernel and thread count. 0 means nothing clipped. */
+    uint32_t n_sat;
 } zt_model_state_t;
 
 uint64_t zt_model_state_bytes(const zt_model_t *m, uint32_t n_ctx, uint32_t n_batch,

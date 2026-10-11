@@ -5,6 +5,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <pthread.h>
 #include <time.h>
 
 #include "zt_gguf.h"
@@ -66,6 +67,9 @@ static void *alloc64(uint64_t bytes)
  *             (the control for phi: re-rounding alone)
  *   phi       T3 at full precision: each block's scale snapped UP to the next
  *             power of the golden ratio, then the block re-quantised
+ *   pow2 / sqrt2   controls for phi: the same snapping on ratio 2 or sqrt 2
+ *   shareN    (rules only) layer l takes the codes of layer l - l % N
+ *   int4      control tier: symmetric 4-bit per block of 32
  *   phi16     T3 exactly as the engine ships it: zt_quantize(golden = true)
  *             on the Q16 values (its phi ladder is held in Q16)
  *   e8 / e8down    T17: every 8 weights rounded to the E8 codebook (1.875
@@ -76,6 +80,10 @@ static void *alloc64(uint64_t bytes)
  *             smallest golden coil that holds it, holographically encoded
  *             (each place minus its parent), and decoded with all 10 shells
  *             (must be lossless) or with 9 (the innermost shell dropped)
+ * --rules "MODE:SEL;..." puts a different mode on each matrix (see rule_mode),
+ * and --scan FILE --outdir DIR runs many such variants after one load, each
+ * line "LABEL RULES" writing DIR/LABEL.f32 (bench/tensor/compare/cmp_scan.py
+ * scores them against the float64 reference).
  * It prints golden.* lines: what was changed, the entropy of the codes before
  * and after holographic coding (bits a weight, an estimate of how far an
  * entropy coder could compress them), and timings. Then it either writes every
@@ -133,9 +141,12 @@ static void tf_block(zt_q8_t *b, const char *mode, const int8_t *e8tab)
     double a = amax32(v);
     if (!strcmp(mode, "requant")) {
         store_block(v, a / 127.0, b);
-    } else if (!strcmp(mode, "phi")) {
+    } else if (!strcmp(mode, "phi") || !strcmp(mode, "pow2") || !strcmp(mode, "sqrt2")) {
+        /* scale snapped up to the next power of the ratio, so a block's scale is
+         * just an exponent; pow2 and sqrt2 are the controls on either side of phi */
+        double q = !strcmp(mode, "phi") ? PHI : !strcmp(mode, "pow2") ? 2.0 : sqrt(2.0);
         double s = a / 127.0;
-        if (s > 0) s = pow(PHI, ceil(log(s) / log(PHI) - 1e-12));
+        if (s > 0) s = pow(q, ceil(log(s) / log(q) - 1e-12));
         store_block(v, s, b);
     } else if (!strcmp(mode, "phi16")) {
         zt_fx x[32];
@@ -152,6 +163,14 @@ static void tf_block(zt_q8_t *b, const char *mode, const int8_t *e8tab)
             zt_e8_dequantize(v2, sc, y + 8 * g);
         }
         for (int i = 0; i < 32; i++) v[i] = y[i] / 65536.0;
+        store_block(v, amax32(v) / 127.0, b);
+    } else if (!strncmp(mode, "int4", 4)) {
+        /* control tier: symmetric 4-bit, 15 levels -7..7 times amax / 7 */
+        double d = a / 7.0;
+        for (int i = 0; i < 32 && d > 0; i++) {
+            double l = round(v[i] / d);
+            v[i] = (l > 7 ? 7 : l < -7 ? -7 : l) * d;
+        }
         store_block(v, amax32(v) / 127.0, b);
     } else if (!strncmp(mode, "int2", 4)) {
         /* levels (+-0.5, +-1.5) * d; d chosen by a small search for least error */
@@ -213,30 +232,151 @@ static void tf_holo_row(zt_q8_t *row, uint32_t nb, uint32_t shells, gstats_t *st
     free(val), free(res), free(dec), free(pos);
 }
 
-static void tf_mat(const zt_mat_t *mm, const char *mode, const int8_t *e8tab, gstats_t *st)
+typedef struct {
+    const zt_mat_t *mm;
+    const char *mode;
+    const int8_t *e8tab;
+    uint64_t r0, r1;
+    gstats_t st;
+} tf_job_t;
+
+static void *tf_rows(void *p)
 {
-    if (!mm->q8) return;
-    zt_q8_t *w = (zt_q8_t *) mm->q8; /* the arena is ours */
-    uint32_t nb = mm->cols / 32;
-    st->n_mats++;
-    for (uint64_t r = 0; r < mm->rows; r++) {
+    tf_job_t *j = p;
+    zt_q8_t *w = (zt_q8_t *) j->mm->q8; /* the arena is ours */
+    uint32_t nb = j->mm->cols / 32;
+    for (uint64_t r = j->r0; r < j->r1; r++) {
         for (uint32_t b = 0; b < nb; b++) {
             zt_q8_t *blk = &w[r * nb + b];
-            if (blk->shift > st->max_shift) st->max_shift = blk->shift;
-            if (blk->shift < st->min_shift) st->min_shift = blk->shift;
+            if (blk->shift > j->st.max_shift) j->st.max_shift = blk->shift;
+            if (blk->shift < j->st.min_shift) j->st.min_shift = blk->shift;
         }
-        if (!strncmp(mode, "holo", 4))
-            tf_holo_row(&w[r * nb], nb, (uint32_t) atoi(mode + 4), st);
+        if (!strncmp(j->mode, "holo", 4))
+            tf_holo_row(&w[r * nb], nb, (uint32_t) atoi(j->mode + 4), &j->st);
         else
-            for (uint32_t b = 0; b < nb; b++) tf_block(&w[r * nb + b], mode, e8tab);
-        st->n_blocks += nb;
-        st->n_w += mm->cols;
+            for (uint32_t b = 0; b < nb; b++) tf_block(&w[r * nb + b], j->mode, j->e8tab);
+        j->st.n_blocks += nb;
+        j->st.n_w += j->mm->cols;
     }
+    return NULL;
+}
+
+static uint32_t g_tf_threads = 1;
+
+/* Rows are independent, so the result does not depend on the thread count. */
+static void tf_mat(const zt_mat_t *mm, const char *mode, const int8_t *e8tab, gstats_t *st)
+{
+    if (!mm->q8 || !strcmp(mode, "none")) return;
+    st->n_mats++;
+    tf_job_t jobs[64];
+    pthread_t th[64];
+    uint32_t nt = g_tf_threads > 64 ? 64 : g_tf_threads;
+    for (uint32_t t = 0; t < nt; t++) {
+        jobs[t] = (tf_job_t){mm,
+                             mode,
+                             e8tab,
+                             mm->rows * t / nt,
+                             mm->rows * (t + 1) / nt,
+                             {0, 0, 0, 0, 0, 0, 0, 255}};
+        if (nt > 1)
+            pthread_create(&th[t], NULL, tf_rows, &jobs[t]);
+        else
+            tf_rows(&jobs[t]);
+    }
+    for (uint32_t t = 0; t < nt; t++) {
+        if (nt > 1) pthread_join(th[t], NULL);
+        gstats_t *g = &jobs[t].st;
+        st->h_q += g->h_q, st->h_res += g->h_res, st->n_w += g->n_w, st->n_blocks += g->n_blocks;
+        st->holo_mismatch += g->holo_mismatch;
+        if (g->max_shift > st->max_shift) st->max_shift = g->max_shift;
+        if (g->min_shift < st->min_shift) st->min_shift = g->min_shift;
+    }
+}
+
+/* ---- rules: which part goes on which matrix ----
+ * RULES is "MODE:SEL;MODE:SEL;...": each matrix takes the first rule whose
+ * SEL matches it (none if no rule does). SEL is a comma list of items
+ * TYPES[@LO[-HI]] where TYPES is letters of qkvogud (attn_q, _k, _v,
+ * _output, ffn_gate, _up, _down), "all", or "out" (the output matrix),
+ * and LO-HI a layer range (default every layer). */
+static bool sel_match(const char *sel, char type, int layer)
+{
+    char buf[512];
+    snprintf(buf, sizeof buf, "%s", sel);
+    for (char *it = strtok(buf, ","); it; it = strtok(NULL, ",")) {
+        int lo = 0, hi = 1 << 20;
+        char *at = strchr(it, '@');
+        if (at) {
+            *at = 0;
+            lo = hi = atoi(at + 1);
+            char *dash = strchr(at + 1, '-');
+            if (dash) hi = atoi(dash + 1);
+        }
+        if (layer < lo || layer > hi) continue;
+        if (!strcmp(it, "all")) return true;
+        if (!strcmp(it, "out")) {
+            if (type == 'O') return true;
+            continue;
+        }
+        if (type != 'O' && strchr(it, type)) return true;
+    }
+    return false;
+}
+
+static const char *rule_mode(const char *rules, char type, int layer, char *mode_out)
+{
+    char buf[2048];
+    snprintf(buf, sizeof buf, "%s", rules);
+    char *save = NULL;
+    for (char *r = strtok_r(buf, ";", &save); r; r = strtok_r(NULL, ";", &save)) {
+        char *colon = strchr(r, ':');
+        if (!colon) continue;
+        *colon = 0;
+        if (sel_match(colon + 1, type, layer)) {
+            snprintf(mode_out, 32, "%s", r);
+            return mode_out;
+        }
+    }
+    snprintf(mode_out, 32, "none");
+    return mode_out;
+}
+
+/* Apply rules to every converted matrix. */
+static void apply_rules(zt_model_t *m, const char *rules, const int8_t *e8tab, gstats_t *st)
+{
+    static const char types[] = "qkvogud";
+    char mode[32];
+    for (uint32_t l = 0; l < m->cfg.n_layer; l++) {
+        zt_layer_t *L = &m->layers[l];
+        const zt_mat_t *all[] = {&L->wq, &L->wk, &L->wv, &L->wo, &L->wg, &L->wu, &L->wd};
+        for (int k = 0; k < 7; k++) {
+            rule_mode(rules, types[k], (int) l, mode);
+            if (!strncmp(mode, "share", 5)) {
+                /* "octave" sharing: layer l reuses the codes of the first layer of
+                 * its group of N (shareN), so only one layer in N keeps its own */
+                uint32_t g = (uint32_t) atoi(mode + 5), base = g ? l - l % g : l;
+                const zt_mat_t *src[] = {&m->layers[base].wq, &m->layers[base].wk,
+                                         &m->layers[base].wv, &m->layers[base].wo,
+                                         &m->layers[base].wg, &m->layers[base].wu,
+                                         &m->layers[base].wd};
+                if (base != l && all[k]->q8 && src[k]->q8) {
+                    memcpy((void *) all[k]->q8, src[k]->q8,
+                           (size_t) all[k]->rows * (all[k]->cols / 32) * sizeof(zt_q8_t));
+                    st->n_mats++;
+                    st->n_w += (uint64_t) all[k]->rows * all[k]->cols;
+                }
+                continue;
+            }
+            tf_mat(all[k], mode, e8tab, st);
+        }
+    }
+    tf_mat(&m->out, rule_mode(rules, 'O', 0, mode), e8tab, st);
 }
 
 int main(int argc, char **argv)
 {
-    const char *out_path = NULL, *eos_list = "";
+    const char *out_path = NULL, *eos_list = "", *rules_arg = NULL, *scan_path = NULL,
+               *outdir = ".";
     uint32_t n_threads = 1, n_batch = 32, n_gen = 0;
     if (argc < 4) {
         fprintf(stderr,
@@ -257,6 +397,12 @@ int main(int argc, char **argv)
             n_threads = (uint32_t) strtoul(argv[i + 1], NULL, 10);
         else if (!strcmp(argv[i], "--batch"))
             n_batch = (uint32_t) strtoul(argv[i + 1], NULL, 10);
+        else if (!strcmp(argv[i], "--rules"))
+            rules_arg = argv[i + 1];
+        else if (!strcmp(argv[i], "--scan"))
+            scan_path = argv[i + 1];
+        else if (!strcmp(argv[i], "--outdir"))
+            outdir = argv[i + 1];
         else
             return 2;
     }
@@ -278,35 +424,35 @@ int main(int argc, char **argv)
         return 4;
     }
     int8_t *e8tab = NULL;
-    if (!strncmp(mode, "e8", 2)) {
+    if (strstr(mode, "e8") || (rules_arg && strstr(rules_arg, "e8")) || scan_path) {
         e8tab = malloc(26641 * 8);
         if (!e8tab || zt_e8_codebook_build(e8tab) != 26641) return 5;
     }
+    g_tf_threads = n_threads;
+    char rules[2048];
+    if (rules_arg)
+        snprintf(rules, sizeof rules, "%s", rules_arg);
+    else if (strstr(mode, "down"))
+        snprintf(rules, sizeof rules, "%s:d", mode);
+    else
+        snprintf(rules, sizeof rules, "%s:all,out", mode);
     gstats_t st = {0};
     st.min_shift = 255;
-    double t0 = now_s();
-    if (strcmp(mode, "none") != 0) {
-        bool down_only = strstr(mode, "down") != NULL;
-        for (uint32_t l = 0; l < m.cfg.n_layer; l++) {
-            zt_layer_t *L = &m.layers[l];
-            if (down_only) {
-                tf_mat(&L->wd, mode, e8tab, &st);
-                continue;
-            }
-            const zt_mat_t *all[] = {&L->wq, &L->wk, &L->wv, &L->wo, &L->wg, &L->wu, &L->wd};
-            for (int k = 0; k < 7; k++) tf_mat(all[k], mode, e8tab, &st);
-        }
-        if (!down_only) tf_mat(&m.out, mode, e8tab, &st);
+    double t0 = now_s(), t1 = t0;
+    if (!scan_path) {
+        apply_rules(&m, rules, e8tab, &st);
+        t1 = now_s();
+        printf("golden.mode=%s\ngolden.rules=%s\ngolden.mats=%llu\ngolden.weights=%llu\n"
+               "golden.transform_s=%.2f\n",
+               mode, rules, (unsigned long long) st.n_mats, (unsigned long long) st.n_w, t1 - t0);
+        printf("golden.out_matrix=%s\n",
+               m.out.q8 ? "converted (transformed)" : "raw Q8_0 (untouched)");
+        if (st.n_w) printf("golden.shift_range=%d..%d\n", st.min_shift, st.max_shift);
+        if (!strncmp(mode, "holo", 4) && st.n_w)
+            printf("golden.entropy_codes_bits=%.4f\ngolden.entropy_residuals_bits=%.4f\n"
+                   "golden.holo_changed_weights=%llu\n",
+                   st.h_q / st.n_w, st.h_res / st.n_w, (unsigned long long) st.holo_mismatch);
     }
-    double t1 = now_s();
-    printf("golden.mode=%s\ngolden.mats=%llu\ngolden.weights=%llu\ngolden.transform_s=%.2f\n", mode,
-           (unsigned long long) st.n_mats, (unsigned long long) st.n_w, t1 - t0);
-    printf("golden.out_matrix=%s\n", m.out.q8 ? "converted (transformed)" : "raw Q8_0 (untouched)");
-    if (st.n_w) printf("golden.shift_range=%d..%d\n", st.min_shift, st.max_shift);
-    if (!strncmp(mode, "holo", 4) && st.n_w)
-        printf("golden.entropy_codes_bits=%.4f\ngolden.entropy_residuals_bits=%.4f\n"
-               "golden.holo_changed_weights=%llu\n",
-               st.h_q / st.n_w, st.h_res / st.n_w, (unsigned long long) st.holo_mismatch);
 
     zt_pool_t *pool = n_threads > 1 ? zt_pool_new(n_threads) : NULL;
     zt_kern_t kern;
@@ -319,7 +465,45 @@ int main(int argc, char **argv)
     if (!smem || zt_model_state_init(&s, &m, n_ctx, n_batch, ZT_KV_Q16, smem, sbytes) != 0)
         return 5;
     uint32_t nv = m.cfg.n_vocab;
-    if (n_gen) {
+    if (scan_path) {
+        /* each line "LABEL RULES": restore the loaded weights, apply RULES, write
+         * OUTDIR/LABEL.f32 (every position's logits) */
+        FILE *sf = fopen(scan_path, "r");
+        void *pristine = alloc64(mbytes);
+        zt_fx *lg = malloc((size_t) n * nv * sizeof *lg);
+        float *row = malloc((size_t) nv * sizeof *row);
+        if (!sf || !pristine || !lg || !row) return 3;
+        memcpy(pristine, marena, mbytes);
+        char line[2304];
+        while (fgets(line, sizeof line, sf)) {
+            char label[128], rl[2048];
+            if (line[0] == '#' || sscanf(line, "%127s %2047s", label, rl) != 2) continue;
+            memcpy(marena, pristine, mbytes);
+            gstats_t gs = {0};
+            gs.min_shift = 255;
+            double a0 = now_s();
+            apply_rules(&m, rl, e8tab, &gs);
+            double a1 = now_s();
+            if (zt_model_state_init(&s, &m, n_ctx, n_batch, ZT_KV_Q16, smem, sbytes) != 0 ||
+                zt_model_eval(&m, &s, ids0, n, lg, ZT_EVAL_ALL_LOGITS) != 0)
+                return 5;
+            char path[1024];
+            snprintf(path, sizeof path, "%s/%s.f32", outdir, label);
+            FILE *o = fopen(path, "wb");
+            if (!o) return 3;
+            for (uint32_t p = 0; p < n; p++) {
+                for (uint32_t j = 0; j < nv; j++)
+                    row[j] = (float) lg[(uint64_t) p * nv + j] / 65536.0f;
+                fwrite(row, sizeof *row, nv, o);
+            }
+            fclose(o);
+            printf("scan %s rules=%s mats=%llu weights=%llu transform_s=%.2f run_s=%.2f\n", label,
+                   rl, (unsigned long long) gs.n_mats, (unsigned long long) gs.n_w, a1 - a0,
+                   now_s() - a1);
+            fflush(stdout);
+        }
+        fclose(sf);
+    } else if (n_gen) {
         zt_fx *lg = malloc((size_t) nv * sizeof *lg);
         if (!lg || zt_model_eval(&m, &s, ids0, n, lg, 0) != 0) return 5;
         printf("golden.ids=");

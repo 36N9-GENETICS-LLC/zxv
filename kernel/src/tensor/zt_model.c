@@ -662,13 +662,14 @@ typedef struct {
     zt_dot_raw_fn dot_raw;
     zt_dot_q8_fn dot_q8;
     zt_dot_k_fn dot_q4k, dot_q6k;
+    uint32_t *nsat; /* zt_model_state_t.n_sat */
 } mm_job_t;
 
 static void mm_rows(void *ctx, uint32_t r0, uint32_t r1)
 {
     const mm_job_t *j = ctx;
     const zt_mat_t *w = j->w;
-    uint32_t nb = w->cols / 32, as = j->astride;
+    uint32_t nb = w->cols / 32, as = j->astride, nsat = 0;
     for (uint32_t r = r0; r < r1; r++) {
         int64_t bv = j->bias ? j->bias[r] : 0;
         for (uint32_t b = 0; b < j->B; b++) {
@@ -691,12 +692,15 @@ static void mm_rows(void *ctx, uint32_t r0, uint32_t r1)
                 const zt_q8_t *row = w->q8 + (uint64_t) r * nb;
                 d = j->dot_q8 ? j->dot_q8(row, a, ash, nb) : zt_dot_q8_c(row, a, ash, nb);
             }
-            j->y[(uint64_t) b * j->ystride + r] = sat32(d + bv);
+            int64_t v = (int64_t) d + bv;
+            nsat += v >= INT32_MAX || v <= INT32_MIN; /* the kernel's own clamp, or this one */
+            j->y[(uint64_t) b * j->ystride + r] = sat32(v);
         }
     }
+    if (nsat) __atomic_fetch_add(j->nsat, nsat, __ATOMIC_RELAXED); /* rows may run in threads */
 }
 
-static void matmul(const zt_model_t *m, const zt_mat_t *w, const zt_model_state_t *s, uint32_t B,
+static void matmul(const zt_model_t *m, const zt_mat_t *w, zt_model_state_t *s, uint32_t B,
                    zt_fx *y, uint32_t ystride, const zt_fx *bias)
 {
     const zt_kern_t *k = m->kern;
@@ -712,7 +716,8 @@ static void matmul(const zt_model_t *m, const zt_mat_t *w, const zt_model_state_
                   k ? k->dot_raw : 0,
                   k ? k->dot_q8 : 0,
                   k ? k->dot_q4k : 0,
-                  k ? k->dot_q6k : 0};
+                  k ? k->dot_q6k : 0,
+                  &s->n_sat};
     if (k && k->par_rows)
         k->par_rows(k->pctx, mm_rows, &j, w->rows, (uint64_t) w->rows * w->cols * B);
     else
@@ -846,6 +851,7 @@ int32_t zt_model_state_init(zt_model_state_t *s, const zt_model_t *m, uint32_t n
     s->n_ctx = n_ctx;
     s->n_batch = n_batch;
     s->pos = 0;
+    s->n_sat = 0;
     return ZT_GGUF_OK;
 }
 
@@ -988,7 +994,11 @@ static int32_t forward(const zt_model_t *m, zt_model_state_t *s, const int32_t *
         matmul(m, &L->wo, s, B, s->xn, ne, 0);
         for (uint32_t b = 0; b < B; b++) {
             zt_fx *x = s->x + b * ne, *o = s->xn + b * ne;
-            for (uint32_t i = 0; i < ne; i++) x[i] = sat32((int64_t) x[i] + o[i]);
+            for (uint32_t i = 0; i < ne; i++) {
+                int64_t v = (int64_t) x[i] + o[i];
+                s->n_sat += v > INT32_MAX || v < INT32_MIN;
+                x[i] = sat32(v);
+            }
             rmsnorm(x, ne, &L->ffn_norm, m->eps_q48, o);
             act_quant(o, ne, s->a16 + b * as, s->ash + b * (as / 32), s->asum + b * (as / 32));
         }
@@ -1002,7 +1012,11 @@ static int32_t forward(const zt_model_t *m, zt_model_state_t *s, const int32_t *
         matmul(m, &L->wd, s, B, s->xn, ne, 0);
         for (uint32_t b = 0; b < B; b++) {
             zt_fx *x = s->x + b * ne, *o = s->xn + b * ne;
-            for (uint32_t i = 0; i < ne; i++) x[i] = sat32((int64_t) x[i] + o[i]);
+            for (uint32_t i = 0; i < ne; i++) {
+                int64_t v = (int64_t) x[i] + o[i];
+                s->n_sat += v > INT32_MAX || v < INT32_MIN;
+                x[i] = sat32(v);
+            }
         }
     }
     s->pos = p0 + B;
